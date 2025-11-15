@@ -1,20 +1,75 @@
-use crate::resource_manager::ResourceManager;
-use crate::resources::CameraUniform;
-use crate::resources::RendererTexture;
-use pill_engine::internal::{Pass, Renderer, WorldQuery};
-use std::sync::Arc;
-
-use anyhow::{Error, Result};
-use glam::{Mat4, Vec3, Vec4};
-use pill_core::{PillSlotMapKey, RendererError};
-use pill_engine::internal::{
-    get_renderer_resource_handle_from_camera_component, CameraComponent, ComponentStorage,
-    EntityHandle, MaterialDesc, RenderQueueItem, RendererMaterialHandle, RendererMeshHandle,
-    TransformComponent,
+use crate::graphics::renderer::{
+    Pass, PillRenderer as EnginePillRenderer, PipelineV2, PipelineV2Desc, ShaderDesc, WorldQuery,
 };
-use pill_engine::internal::{BufferDesc, PillRenderer, PipelineV2, PipelineV2Desc, ShaderDesc};
-use wgpu::util::DeviceExt;
+use crate::graphics::{
+    BufferDesc, RendererMaterialHandle, RendererMeshHandle, RendererTextureHandle,
+};
+use crate::internal;
+use anyhow::Result;
+use glam::{EulerRot, Mat4, Quat, Vec3, Vec4};
+use pill_core::PillSlotMapKey;
 use wgpu::CommandEncoder;
+
+// Minimal camera uniform used by this pass (matches WGSL layout: position + viewProjection)
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct CameraUniform {
+    position: [f32; 4],
+    view_projection_matrix: [[f32; 4]; 4],
+}
+
+impl CameraUniform {
+    fn new() -> Self {
+        Self {
+            position: [0.0; 4],
+            view_projection_matrix: Mat4::IDENTITY.to_cols_array_2d(),
+        }
+    }
+
+    // Matches renderer CameraUniform math (OPENGL_TO_WGPU * perspective * view)
+    const OPENGL_TO_WGPU_MATRIX: Mat4 = Mat4::from_cols_array(&[
+        1.0, 0.0, 0.0, 0.0, //
+        0.0, 1.0, 0.0, 0.0, //
+        0.0, 0.0, 0.5, 0.5, //
+        0.0, 0.0, 0.0, 1.0, //
+    ]);
+
+    fn update_data(
+        &mut self,
+        camera_component: &crate::ecs::CameraComponent,
+        transform_component: &crate::ecs::TransformComponent,
+    ) {
+        // Position
+        self.position = [
+            transform_component.position.x,
+            transform_component.position.y,
+            transform_component.position.z,
+            0.0,
+        ];
+
+        // View matrix (Yaw-Pitch-Roll: Y then X then Z; forward = +Z)
+        let yaw = transform_component.rotation.y.to_radians();
+        let pitch = transform_component.rotation.x.to_radians();
+        let roll = transform_component.rotation.z.to_radians();
+        let q = Quat::from_euler(EulerRot::YXZ, yaw, pitch, roll);
+        let eye = Vec3::new(
+            transform_component.position.x,
+            transform_component.position.y,
+            transform_component.position.z,
+        );
+        let dir = q * Vec3::Z;
+        let view = Mat4::look_to_rh(eye, dir, Vec3::Y);
+
+        // Projection matrix (with OpenGL->WGPU depth transform)
+        let fov_y = camera_component.fov.to_radians();
+        let aspect = camera_component.aspect.get_value();
+        let z_near = camera_component.range.start;
+        let z_far = camera_component.range.end;
+        let proj = Self::OPENGL_TO_WGPU_MATRIX * Mat4::perspective_rh(fov_y, aspect, z_near, z_far);
+
+        self.view_projection_matrix = (proj * view).to_cols_array_2d();
+    }
+}
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -76,9 +131,9 @@ pub(crate) struct GroupCmd {
 
 pub struct PassScene {
     label: String,
-    // Resources
-    offscreen_color_texture: Arc<RendererTexture>,
-    depth_texture: Arc<RendererTexture>,
+    offscreen_color_texture: RendererTextureHandle,
+    depth_texture: RendererTextureHandle,
+    color_format: wgpu::TextureFormat,
     // Per-frame dynamic UBO ring (Milestone 5)
     per_draw_stride: u64,
     per_draw_capacity: u64,
@@ -103,13 +158,15 @@ struct PassSceneState {
 impl PassScene {
     pub fn new(
         label: &str,
-        offscreen_color_texture: Arc<RendererTexture>,
-        depth_texture: Arc<RendererTexture>,
+        offscreen_color_texture: RendererTextureHandle,
+        depth_texture: RendererTextureHandle,
+        color_format: wgpu::TextureFormat,
     ) -> Self {
         Self {
             label: label.to_string(),
-            offscreen_color_texture: offscreen_color_texture,
-            depth_texture: depth_texture,
+            offscreen_color_texture,
+            depth_texture,
+            color_format,
             per_draw_stride: PER_DRAW_STRIDE_BYTES as u64,
             per_draw_capacity: 0,
             visible_pre_draw_buffer: Vec::with_capacity(MAX_EXPECTED_PER_DRAW_INSTANCES),
@@ -133,7 +190,7 @@ impl Pass for PassScene {
         &self.label
     }
 
-    fn init(&mut self, renderer: &mut Renderer) -> Result<()> {
+    fn init(&mut self, renderer: &mut dyn EnginePillRenderer) -> Result<()> {
         // [SIMILAR] Prebuilt PSO used; avoid hot-path pipeline creation per TALK
         // Shaders: must match bind group layout indices: 0(camera),1(material textures),2(material params),3(per-draw)
         let vertex_wgsl = r#"
@@ -413,12 +470,12 @@ impl Pass for PassScene {
             },
             bind_groups,
             targets: &[Some(wgpu::ColorTargetState {
-                format: self.offscreen_color_texture.texture.format(),
+                format: self.color_format,
                 blend: Some(wgpu::BlendState::REPLACE),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
             depth_stencil: Some(wgpu::DepthStencilState {
-                format: self.depth_texture.texture.format(),
+                format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: true,
                 depth_compare: wgpu::CompareFunction::Less,
                 stencil: wgpu::StencilState::default(),
@@ -430,21 +487,24 @@ impl Pass for PassScene {
         let pipeline = renderer.create_pipeline_v2(desc)?;
 
         // Camera buffer and bind group using pipeline's camera layout (group 0)
-        let device = &renderer.ctx.device;
-        let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("camera_buffer"),
-            size: std::mem::size_of::<CameraUniform>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("camera_bind_group"),
-            layout: &pipeline.bind_group_layouts[MATERIAL_BIND_GROUP_GLOBALS],
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            }],
-        });
+        let (camera_buffer, camera_bind_group) = {
+            let device = renderer.get_device();
+            let camera_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("camera_buffer"),
+                size: std::mem::size_of::<CameraUniform>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("camera_bind_group"),
+                layout: &pipeline.bind_group_layouts[MATERIAL_BIND_GROUP_GLOBALS],
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                }],
+            });
+            (camera_buffer, camera_bind_group)
+        };
 
         // Pre-create per-draw dynamic UBO ring and its bind group with large preallocation
         // Creation happens in init; growth/recreation only when capacity is insufficient during draw
@@ -455,29 +515,26 @@ impl Pass for PassScene {
             byte_size: size,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         })?;
-        let layout_ptr: *const wgpu::BindGroupLayout =
-            &pipeline.bind_group_layouts[MATERIAL_BIND_GROUP_PERDRAW as usize] as *const _;
-        let per_draw_bind_group =
-            renderer
-                .ctx
-                .device
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("per_draw_bind_group"),
-                    layout: unsafe { &*layout_ptr },
-                    entries: &[wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &per_draw_buffer,
-                            offset: 0,
-                            size: Some(
-                                std::num::NonZeroU64::new(
-                                    std::mem::size_of::<PerDrawStd140>() as u64
-                                )
+        let per_draw_bind_group = {
+            let layout_ptr: *const wgpu::BindGroupLayout =
+                &pipeline.bind_group_layouts[MATERIAL_BIND_GROUP_PERDRAW as usize] as *const _;
+            let device = renderer.get_device();
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("per_draw_bind_group"),
+                layout: unsafe { &*layout_ptr },
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &per_draw_buffer,
+                        offset: 0,
+                        size: Some(
+                            std::num::NonZeroU64::new(std::mem::size_of::<PerDrawStd140>() as u64)
                                 .unwrap(),
-                            ),
-                        }),
-                    }],
-                });
+                        ),
+                    }),
+                }],
+            })
+        };
 
         self.state = Some(PassSceneState {
             camera_uniform: CameraUniform::new(),
@@ -494,7 +551,7 @@ impl Pass for PassScene {
     fn draw(
         &mut self,
         encoder: &mut CommandEncoder,
-        renderer: &mut Renderer,
+        renderer: &mut dyn EnginePillRenderer,
         _frame: &wgpu::SurfaceTexture,
         _view: &wgpu::TextureView,
         world: &WorldQuery,
@@ -525,7 +582,7 @@ impl Pass for PassScene {
             state
                 .camera_uniform
                 .update_data(active_camera_component, active_camera_transform_component);
-            renderer.ctx.queue.write_buffer(
+            renderer.get_queue().write_buffer(
                 &state.camera_buffer,
                 0,
                 bytemuck::bytes_of(&state.camera_uniform),
@@ -537,34 +594,10 @@ impl Pass for PassScene {
         // View-projection matrix
         let vp_mat: Mat4 = Mat4::from_cols_array_2d(&vp_mat_arr);
 
-        // Extract frustum planes
-        let row3 = vp_mat.row(3);
-        let row0 = vp_mat.row(0);
-        let row1 = vp_mat.row(1);
-        let row2 = vp_mat.row(2);
-        let make_plane = |plane_vec: Vec4| -> (Vec3, f32) {
-            let normal = Vec3::new(plane_vec.x, plane_vec.y, plane_vec.z);
-            let len = normal.length();
-            if len > 0.0 {
-                let normalized = normal / len;
-                (normalized, plane_vec.w / len)
-            } else {
-                (normal, plane_vec.w)
-            }
-        };
-        let planes = [
-            make_plane(row3 + row0),
-            make_plane(row3 - row0),
-            make_plane(row3 + row1),
-            make_plane(row3 - row1),
-            make_plane(row3 + row2),
-            make_plane(row3 - row2),
-        ];
-
         // Build visible set
         self.visible_pre_draw_buffer.clear();
         for render_queue_item in world.render_queue.iter() {
-            let key = pill_engine::internal::decompose_render_queue_key(render_queue_item.key);
+            let key = internal::decompose_render_queue_key(render_queue_item.key);
             let mesh_handle =
                 RendererMeshHandle::from_parts(key.mesh_index as u32, key.mesh_version as u32);
             let material_handle = RendererMaterialHandle::from_parts(
@@ -580,65 +613,10 @@ impl Pass for PassScene {
                 .unwrap()
                 .as_ref()
                 .unwrap();
-            let model_arr = pill_engine::internal::get_model_matrix(transform);
+            let model_arr = internal::get_model_matrix(transform);
             let model: Mat4 = Mat4::from_cols_array_2d(&model_arr);
 
-            // Mesh AABB -> world AABB
-            let mesh = renderer
-                .state
-                .resource_manager
-                .meshes
-                .get(mesh_handle)
-                .unwrap();
-            let local_min = Vec3::new(mesh.aabb_min[0], mesh.aabb_min[1], mesh.aabb_min[2]);
-            let local_max = Vec3::new(mesh.aabb_max[0], mesh.aabb_max[1], mesh.aabb_max[2]);
-            let corners = [
-                Vec3::new(local_min.x, local_min.y, local_min.z),
-                Vec3::new(local_max.x, local_min.y, local_min.z),
-                Vec3::new(local_min.x, local_max.y, local_min.z),
-                Vec3::new(local_max.x, local_max.y, local_min.z),
-                Vec3::new(local_min.x, local_min.y, local_max.z),
-                Vec3::new(local_max.x, local_min.y, local_max.z),
-                Vec3::new(local_min.x, local_max.y, local_max.z),
-                Vec3::new(local_max.x, local_max.y, local_max.z),
-            ];
-            let mut world_min = Vec3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
-            let mut world_max = Vec3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
-            for c in &corners {
-                let p4 = model * Vec4::new(c.x, c.y, c.z, 1.0);
-                let p = Vec3::new(p4.x, p4.y, p4.z);
-                world_min = world_min.min(p);
-                world_max = world_max.max(p);
-            }
-            // Frustum culling
-            let mut outside = false;
-            for (normal, d) in &planes {
-                let p = Vec3::new(
-                    if normal.x >= 0.0 {
-                        world_max.x
-                    } else {
-                        world_min.x
-                    },
-                    if normal.y >= 0.0 {
-                        world_max.y
-                    } else {
-                        world_min.y
-                    },
-                    if normal.z >= 0.0 {
-                        world_max.z
-                    } else {
-                        world_min.z
-                    },
-                );
-                let dist = normal.dot(p) + *d;
-                if dist < 0.0 {
-                    outside = true;
-                    break;
-                }
-            }
-            if outside {
-                continue;
-            }
+            // NOTE: Temporarily skip AABB-based frustum culling to avoid accessing renderer internals.
 
             let view_proj: Mat4 = vp_mat;
             let mvp: [[f32; 4]; 4] = (view_proj * model).to_cols_array_2d();
@@ -737,16 +715,21 @@ impl Pass for PassScene {
         {
             let state_ref: &PassSceneState = unsafe { self.state.as_ref().unwrap_unchecked() };
             renderer
-                .ctx
-                .queue
+                .get_queue()
                 .write_buffer(&state_ref.per_draw_buffer, 0, &self.staging_buffer);
         }
 
         // Encode offscreen pass
+        let color_view = renderer
+            .get_texture(self.offscreen_color_texture)
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_view = renderer
+            .get_texture(self.depth_texture)
+            .create_view(&wgpu::TextureViewDescriptor::default());
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("m6_offscreen_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &self.offscreen_color_texture.texture_view,
+                view: &color_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -759,7 +742,7 @@ impl Pass for PassScene {
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.depth_texture.texture_view,
+                view: &depth_view,
                 depth_ops: Some(wgpu::Operations {
                     load: wgpu::LoadOp::Clear(1.0),
                     store: wgpu::StoreOp::Store,
@@ -778,48 +761,21 @@ impl Pass for PassScene {
                 &state_ref.camera_bind_group,
                 &[],
             );
-            // Bind group-specific material (HOT-ish path; debug-validated, unchecked in release)
-            let material = unsafe {
-                let m = renderer
-                    .state
-                    .resource_manager
-                    .materials
-                    .get(group.material_handle);
-                debug_assert!(
-                    m.is_some(),
-                    "stale RendererMaterialHandle {:?} in render queue",
-                    group.material_handle
-                );
-                m.unwrap_unchecked()
-            };
             rpass.set_bind_group(
                 MATERIAL_BIND_GROUP_TEXTURES as u32,
-                &material.texture_bind_group,
+                renderer.get_material_texture_bind_group(group.material_handle),
                 &[],
             );
             rpass.set_bind_group(
                 MATERIAL_BIND_GROUP_PARAMS as u32,
-                &material.param_bind_group,
+                renderer.get_material_params_bind_group(group.material_handle),
                 &[],
             );
             for batch in &group.batches {
-                // Hot path: assume valid handles (render queue built from alive resources).
-                // Debug-only validation; no branches in release.
-                let mesh = unsafe {
-                    let m = renderer
-                        .state
-                        .resource_manager
-                        .meshes
-                        .get(batch.mesh_handle);
-                    debug_assert!(
-                        m.is_some(),
-                        "stale RendererMeshHandle {:?} in render queue",
-                        batch.mesh_handle
-                    );
-                    m.unwrap_unchecked()
-                };
-                rpass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                rpass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                let (vbuf, ibuf, index_count) =
+                    renderer.get_mesh_buffers_and_count(batch.mesh_handle);
+                rpass.set_vertex_buffer(0, vbuf.slice(..));
+                rpass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
                 for i in 0..batch.instances.len() {
                     let offset = batch
                         .base_offset_u32
@@ -829,7 +785,7 @@ impl Pass for PassScene {
                         &state_ref.per_draw_bind_group,
                         &[offset],
                     );
-                    rpass.draw_indexed(0..mesh.index_count, 0, 0..1);
+                    rpass.draw_indexed(0..index_count, 0, 0..1);
                 }
             }
         }
