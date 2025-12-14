@@ -1,3 +1,4 @@
+use crate::graphics::projection::perspective_rh_zo;
 use crate::graphics::renderer::{
     Pass, PillRenderer as EnginePillRenderer, PipelineV2, PipelineV2Desc, ShaderDesc, WorldQuery,
 };
@@ -328,17 +329,11 @@ impl Pass for PassSkyboxEquirect {
         // Engine forward is -Z; use -Z so that camera forward maps to center of the equirect
         let dir = q * -Vec3::Z;
         let view = Mat4::look_to_rh(eye, dir, Vec3::Y);
-        const OPENGL_TO_WGPU_MATRIX: Mat4 = Mat4::from_cols_array(&[
-            1.0, 0.0, 0.0, 0.0, //
-            0.0, 1.0, 0.0, 0.0, //
-            0.0, 0.0, 0.5, 0.5, //
-            0.0, 0.0, 0.0, 1.0, //
-        ]);
         let fov_y = camera.fov.to_radians();
         let aspect = camera.aspect.get_value();
         let z_near = camera.range.start;
         let z_far = camera.range.end;
-        let proj = OPENGL_TO_WGPU_MATRIX * Mat4::perspective_rh(fov_y, aspect, z_near, z_far);
+        let proj = perspective_rh_zo(fov_y, aspect, z_near, z_far);
         let view_proj = proj * view;
         let inv_proj = proj.inverse();
         let inv_view = view.inverse();

@@ -8,6 +8,7 @@ use crate::{
     engine::Engine,
 };
 
+use crate::ecs::components::render_state_component::RenderStateComponent;
 use egui::Ui;
 use indexmap::IndexMap;
 use pill_core::{PillTypeMapKey, Timer, TimerRecord};
@@ -69,6 +70,11 @@ impl EguiManagerComponent {
         let frame_delta_time = engine.frame_delta_time;
         let window_w = engine.window_size.width;
         let window_h = engine.window_size.height;
+        let post_process = engine
+            .get_global_component::<RenderStateComponent>()
+            .ok()
+            .map(|rs| rs.post_process.clone())
+            .unwrap_or_else(|| engine.resource_manager.post_process.clone());
 
         // Snapshot draw call counter from last frame
         let total_draw_calls: Option<u64> = engine
@@ -97,6 +103,18 @@ impl EguiManagerComponent {
                                 ui.label(format!("FPS {:.1}", 1000.0 / frame_delta_time));
                                 ui.label(format!("{}x{}", window_w, window_h));
                             });
+                            // Focus controls
+                            {
+                                let mut pp = post_process.lock().unwrap();
+                                ui.add(
+                                    egui::Slider::new(&mut pp.focus_point, 0.1..=200.0)
+                                        .text("focusPoint (m)"),
+                                );
+                                ui.add(
+                                    egui::Slider::new(&mut pp.focus_scale, 0.0..=50.0)
+                                        .text("focusScale"),
+                                );
+                            }
                             ui.add(egui::Label::new(format!(
                                 "Frame Delta Time: {:.4} ms",
                                 frame_delta_time

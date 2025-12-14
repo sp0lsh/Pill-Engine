@@ -1,5 +1,6 @@
 use crate::ecs::get_model_matrix;
 use crate::graphics::decompose_render_queue_key;
+use crate::graphics::projection::perspective_rh_zo;
 use crate::graphics::renderer::{
     Pass, PillRenderer as EnginePillRenderer, PipelineV2, PipelineV2Desc, ShaderDesc, WorldQuery,
 };
@@ -27,14 +28,6 @@ impl CameraUniform {
         }
     }
 
-    // Matches renderer CameraUniform math (OPENGL_TO_WGPU * perspective * view)
-    const OPENGL_TO_WGPU_MATRIX: Mat4 = Mat4::from_cols_array(&[
-        1.0, 0.0, 0.0, 0.0, //
-        0.0, 1.0, 0.0, 0.0, //
-        0.0, 0.0, 0.5, 0.5, //
-        0.0, 0.0, 0.0, 1.0, //
-    ]);
-
     fn update_data(
         &mut self,
         camera_component: &crate::ecs::CameraComponent,
@@ -61,12 +54,12 @@ impl CameraUniform {
         let dir = q * Vec3::Z;
         let view = Mat4::look_to_rh(eye, dir, Vec3::Y);
 
-        // Projection matrix (with OpenGL->WGPU depth transform)
+        // Projection matrix (see projection.rs reference comment)
         let fov_y = camera_component.fov.to_radians();
         let aspect = camera_component.aspect.get_value();
         let z_near = camera_component.range.start;
         let z_far = camera_component.range.end;
-        let proj = Self::OPENGL_TO_WGPU_MATRIX * Mat4::perspective_rh(fov_y, aspect, z_near, z_far);
+        let proj = perspective_rh_zo(fov_y, aspect, z_near, z_far);
 
         self.view_projection_matrix = (proj * view).to_cols_array_2d();
     }

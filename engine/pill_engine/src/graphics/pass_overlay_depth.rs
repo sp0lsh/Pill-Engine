@@ -66,7 +66,7 @@ impl Pass for PassOverlayDepth {
 
         let vs = r#"
           @group(1) @binding(0) var<uniform> URect: vec4<f32>; // bottom-left, top-right in [0,1]
-  
+   
           struct VSOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
           @vertex fn main(@builtin(vertex_index) vi: u32) -> VSOut {
             var unit = array<vec2<f32>, 6>(
@@ -85,13 +85,28 @@ impl Pass for PassOverlayDepth {
           "#;
 
         let fs = r#"
-          @group(0) @binding(0) var tex: texture_2d<f32>;
+          @group(0) @binding(0) var tex: texture_depth_2d;
           @group(0) @binding(1) var<uniform> UTint: vec4<f32>;
+
+          // Hardcoded toggle (compile-time): false=raw depth (0..1), true=linear view-space depth normalized by FAR.
+          const SHOW_VIEWSPACE_DEPTH: bool = true;
+          const NEAR: f32 = 0.1;
+          const FAR: f32 = 100.0;
+
+          fn linearize_depth(rawDepth: f32) -> f32 {
+            // See projection.rs reference comment.
+            let depthMul = (FAR * NEAR) / (FAR - NEAR);
+            let depthAdd = FAR / (FAR - NEAR);
+            return depthMul / (depthAdd - rawDepth);
+          }
+
           @fragment fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
             let dims = textureDimensions(tex, 0u);
             let coord = vec2<i32>(uv * vec2<f32>(dims));
-            let d : f32 = textureLoad(tex, coord, 0).r;
-            let vis = fract(100.0*d);
+            let d : f32 = textureLoad(tex, coord, 0);
+
+            let linear_depth = linearize_depth(d) / FAR;
+            let vis = select(d, linear_depth, SHOW_VIEWSPACE_DEPTH);
             return vec4<f32>(vis, vis, vis, 1.0) * UTint;
           }
           "#;
@@ -106,7 +121,7 @@ impl Pass for PassOverlayDepth {
                     ty: wgpu::BindingType::Texture {
                         multisampled: false,
                         view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        sample_type: wgpu::TextureSampleType::Depth,
                     },
                     count: None,
                 },

@@ -37,7 +37,9 @@ pub mod pass_compose;
 pub use pass_compose::PassCompose;
 pub mod pass_scene;
 pub use pass_scene::PassScene;
+pub mod pass_dof_bokeh;
 pub mod pass_egui;
+pub use pass_dof_bokeh::PassDofBokeh;
 pub use pass_egui::PassEgui;
 pub mod pass_skybox_equirect;
 pub use pass_skybox_equirect::PassSkyboxEquirect;
@@ -45,3 +47,5 @@ pub mod pass_ibl_diffuse_equirect;
 pub use pass_ibl_diffuse_equirect::PassIblDiffuseEquirect;
 pub mod pass_ibl_specular_equirect;
 pub use pass_ibl_specular_equirect::PassIblSpecularEquirect;
+
+pub mod projection;

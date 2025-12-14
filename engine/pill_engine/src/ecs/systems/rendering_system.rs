@@ -25,6 +25,7 @@ use crate::config::{
     MAX_MESHES, MAX_MODELS, MAX_SOUNDS, MAX_TEXTURES,
 };
 use crate::ecs::components::render_state_component::RenderStateComponent;
+use crate::ecs::TimeComponent;
 use crate::graphics::{Pass, PassCompose, PassLogo, PassOverlayDepth, PassOverlayUV};
 use crate::resources::{Resource, ResourceLoadType, Texture, TextureHandle, TextureType};
 
@@ -67,10 +68,13 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
 
             // Ensure EguiClient exists in global render state
             let egui_client = {
+                let post_process = engine.resource_manager.post_process.clone();
                 let rs = engine.get_global_component_mut::<RenderStateComponent>()?;
                 if rs.egui_client.is_none() {
                     rs.egui_client = Some(crate::ecs::EguiClient::new());
                 }
+                // Share post-process params between Engine render state and ResourceManager for passes.
+                rs.post_process = post_process;
                 rs.egui_client.as_ref().unwrap().clone()
             };
 
@@ -81,7 +85,7 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
             let offscreen_color_texture =
                 engine.renderer.create_render_target(RendererTargetDesc {
                     name: "offscreen_color".to_string(),
-                    format: fmt,
+                    format: wgpu::TextureFormat::Rgba16Float, // HDR for PBR and bokeh
                     width: engine.window_size.width,
                     height: engine.window_size.height,
                 })?;
@@ -89,10 +93,18 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
             // Create depth and color texture
             let depth_texture = engine.renderer.create_depth_texture("depth_texture")?;
 
-            // Linear-depth render target for post-processing
-            let linear_depth_rt = engine.renderer.create_render_target(RendererTargetDesc {
-                name: "linear_depth".to_string(),
+            // Depth copy render target for depth-based effects
+            let depth_copy_rt = engine.renderer.create_render_target(RendererTargetDesc {
+                name: "depth_copy".to_string(),
                 format: wgpu::TextureFormat::R16Float,
+                width: engine.window_size.width,
+                height: engine.window_size.height,
+            })?;
+
+            // DOF output render target (HDR to preserve bokeh highlights)
+            let dof_output_texture = engine.renderer.create_render_target(RendererTargetDesc {
+                name: "dof_output".to_string(),
+                format: wgpu::TextureFormat::Rgba16Float,
                 width: engine.window_size.width,
                 height: engine.window_size.height,
             })?;
@@ -234,14 +246,14 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
                 Box::new(crate::graphics::PassSkyboxEquirect::new(
                     "skybox_equirect",
                     offscreen_color_texture,
-                    fmt,
+                    wgpu::TextureFormat::Rgba16Float, // HDR format
                     env_tex_rt,
                 )),
                 Box::new(crate::graphics::pass_scene::PassScene::new(
                     "scene",
                     offscreen_color_texture,
                     depth_texture,
-                    fmt,
+                    wgpu::TextureFormat::Rgba16Float, // HDR format
                     true, // load offscreen color (skybox already cleared/drew background)
                     Some(ibl_irradiance_rt),
                     Some(ibl_prefilter_rt),
@@ -249,14 +261,22 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
                 )),
                 // Linearize scene depth into a color RT for later passes
                 Box::new(crate::graphics::PassLinearizeDepth::new(
-                    "linearize_depth",
+                    "copy_depth",
                     depth_texture,
-                    linear_depth_rt,
+                    depth_copy_rt,
                     wgpu::TextureFormat::R16Float,
                 )),
+                Box::new(crate::graphics::PassDofBokeh::new(
+                    "dof_bokeh",
+                    offscreen_color_texture,
+                    depth_copy_rt,
+                    dof_output_texture,
+                    wgpu::TextureFormat::Rgba16Float,
+                )),
+                // Compose reads from DoF output texture
                 Box::new(crate::graphics::PassCompose::new(
                     "compose",
-                    offscreen_color_texture,
+                    dof_output_texture,
                     fmt,
                 )),
                 Box::new(crate::graphics::PassOverlayUV::new(
@@ -269,7 +289,7 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
                     [0.75, 0.50, 0.95, 0.70],
                     [1.0, 1.0, 1.0, 1.0],
                     fmt,
-                    linear_depth_rt,
+                    depth_texture,
                 )),
                 Box::new(PassLogo::new(
                     "overlay_logo",
@@ -298,6 +318,13 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
     let mut timer = Timer::new();
     timer.begin_context("rendering_system update");
     timer.record("Get active camera");
+
+    // Update shared post-process params (time) for render passes
+    if let Ok(tc) = engine.get_global_component::<TimeComponent>() {
+        if let Ok(mut pp) = engine.resource_manager.post_process.lock() {
+            pp.time_s = tc.time;
+        }
+    }
 
     let active_scene_handle = engine.scene_manager.get_active_scene_handle()?;
     let mut active_camera_entity_handle_result: Option<EntityHandle> = None;

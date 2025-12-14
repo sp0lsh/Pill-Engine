@@ -8,13 +8,16 @@ use crate::{
 
 use pill_core::{get_type_name, EngineError, PillSlotMapKey, PillTypeMap, PillTypeMapKey};
 
+use crate::ecs::PostProcessParams;
 use anyhow::{Context, Error, Result};
 use boolinator::Boolinator;
+use std::sync::{Arc, Mutex};
 use std::{collections::HashMap, convert::TryInto, env, num::NonZeroU32, path::PathBuf};
 
 pub struct ResourceManager {
     resources: PillTypeMap,
     pub gpu: crate::resources::GpuResources,
+    pub post_process: Arc<Mutex<PostProcessParams>>,
 }
 
 impl ResourceManager {
@@ -22,6 +25,11 @@ impl ResourceManager {
         Self {
             resources: PillTypeMap::new(),
             gpu: crate::resources::GpuResources::new(),
+            post_process: Arc::new(Mutex::new(PostProcessParams {
+                time_s: 0.0,
+                focus_point: 5.0,
+                focus_scale: 3.0,
+            })),
         }
     }
 

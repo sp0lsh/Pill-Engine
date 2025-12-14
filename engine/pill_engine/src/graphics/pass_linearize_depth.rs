@@ -1,37 +1,48 @@
 use anyhow::Result;
 use wgpu::CommandEncoder;
 
+use crate::graphics::projection::{depth_unpack_consts_from_proj, perspective_rh_no};
 use crate::graphics::renderer::{
     Pass, PillRenderer as EnginePillRenderer, PipelineV2, RendererTextureHandle, WorldQuery,
 };
+use bytemuck::{Pod, Zeroable};
 use pill_core::PillSlotMapKey;
+use wgpu::util::DeviceExt;
 
 pub struct PassLinearizeDepth {
     label: String,
     pipeline: Option<PipelineV2>,
     bind_group_material: Option<wgpu::BindGroup>,
-    near_far_buffer: Option<wgpu::Buffer>,
+    params_buffer: Option<wgpu::Buffer>,
     target_format: wgpu::TextureFormat,
     // Inputs/outputs
     depth_texture: RendererTextureHandle,
-    linear_depth_target: RendererTextureHandle,
+    depth_copy_target: RendererTextureHandle,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct DepthUnpackParams {
+    depth_mul: f32,
+    depth_add: f32,
+    _pad: [f32; 2],
 }
 
 impl PassLinearizeDepth {
     pub fn new(
         label: &str,
         depth_texture: RendererTextureHandle,
-        linear_depth_target: RendererTextureHandle,
+        depth_copy_target: RendererTextureHandle,
         target_format: wgpu::TextureFormat,
     ) -> Self {
         Self {
             label: label.to_string(),
             pipeline: None,
             bind_group_material: None,
-            near_far_buffer: None,
+            params_buffer: None,
             target_format,
             depth_texture,
-            linear_depth_target,
+            depth_copy_target,
         }
     }
 }
@@ -70,32 +81,38 @@ impl Pass for PassLinearizeDepth {
         "#;
 
         let fs = r#"
-        struct NearFar {
-          near: f32,
-          far:  f32,
-          _pad: vec2<f32>,
-        };
         @group(0) @binding(0) var texDepth: texture_depth_2d;
-        @group(0) @binding(1) var<uniform> UNearFar: NearFar;
+        @group(0) @binding(1) var<uniform> u_depthUnpack: vec4<f32>; // (mul, add, _, _)
 
-        fn linearizeDepth(depth: f32, near: f32, far: f32) -> f32 {
-          // WebGPU 0..1 depth convention
-          return (near * far) / (far - depth * (far - near));
+        fn linearize_depth(screenDepth: f32) -> f32 {
+          // See projection.rs reference comment.
+          // linear = depthMul / (depthAdd - screenDepth)
+          let depthMul = u_depthUnpack.x;
+          let depthAdd = u_depthUnpack.y;
+          return depthMul / (depthAdd - screenDepth);
         }
 
         @fragment fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+          // IMPORTANT: textureLoad requires in-bounds coords; fullscreen-triangle UVs can go slightly out of range,
+          // so clamp to [0..dims-1] to avoid undefined results (often "two flat values").
           let dims = textureDimensions(texDepth, 0u);
-          let coord = vec2<i32>(uv * vec2<f32>(dims));
-          let d = textureLoad(texDepth, coord, 0);
-          let lin = linearizeDepth(d, UNearFar.near, UNearFar.far);
-          // Pack: X = non-linear depth, Y = linear depth, Z = normalized linear depth
-          return vec4<f32>(d, lin, lin / UNearFar.far, 1.0);
+          let w = i32(dims.x);
+          let h = i32(dims.y);
+          let px = vec2<f32>(f32(dims.x), f32(dims.y));
+          let uv_clamped = clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0) - vec2<f32>(1.0) / px);
+          let coord_f = uv_clamped * px;
+          let cx = clamp(i32(coord_f.x), 0, w - 1);
+          let cy = clamp(i32(coord_f.y), 0, h - 1);
+          let raw = textureLoad(texDepth, vec2<i32>(cx, cy), 0);
+          let lin = linearize_depth(raw);
+          // Linear view-space depth in meters in R (render target is R16Float)
+          return vec4<f32>(lin, 0.0, 0.0, 1.0);
         }
         "#;
 
-        // Bind group layout: depth texture + near/far UBO
+        // Bind group layout: depth texture + depth unpack params
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("linearize_depth_bgl"),
+            label: Some("copy_depth_bgl"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -113,8 +130,12 @@ impl Pass for PassLinearizeDepth {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        // 16B to satisfy alignment (near, far, pad)
-                        min_binding_size: Some(std::num::NonZeroU64::new(16).unwrap()),
+                        min_binding_size: Some(
+                            std::num::NonZeroU64::new(
+                                std::mem::size_of::<DepthUnpackParams>() as u64
+                            )
+                            .unwrap(),
+                        ),
                     },
                     count: None,
                 },
@@ -160,7 +181,18 @@ impl Pass for PassLinearizeDepth {
             multiview: None,
         });
 
-        // Material bind group: depth view + UBO (initialized with defaults; updated per-frame)
+        // Params buffer (updated per-frame from active camera projection)
+        let params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("depth_unpack_params"),
+            contents: bytemuck::bytes_of(&DepthUnpackParams {
+                depth_mul: 0.0,
+                depth_add: 1.0,
+                _pad: [0.0; 2],
+            }),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        // Material bind group: depth view + params buffer
         let depth_view = resources
             .gpu()
             .textures
@@ -168,14 +200,8 @@ impl Pass for PassLinearizeDepth {
             .expect("scene depth")
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let near_far_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("linearize_depth_near_far"),
-            size: 16,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
         let bind_group_material = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("linearize_depth_bg"),
+            label: Some("copy_depth_bg"),
             layout: &bgl,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -184,7 +210,7 @@ impl Pass for PassLinearizeDepth {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: near_far_buffer.as_entire_binding(),
+                    resource: params_buf.as_entire_binding(),
                 },
             ],
         });
@@ -194,7 +220,7 @@ impl Pass for PassLinearizeDepth {
             bind_group_layouts: vec![bgl],
         });
         self.bind_group_material = Some(bind_group_material);
-        self.near_far_buffer = Some(near_far_buffer);
+        self.params_buffer = Some(params_buf);
 
         Ok(())
     }
@@ -208,27 +234,35 @@ impl Pass for PassLinearizeDepth {
         _view: &wgpu::TextureView,
         world: &WorldQuery,
     ) -> Result<()> {
-        // Update near/far from active camera
-        let active_camera_entity_handle = world.active_camera;
+        // Depth unpack consts derived from a [-1..1] depth projection.
         let camera_storage = world
             .camera_components
             .data
-            .get(active_camera_entity_handle.data().index as usize)
+            .get(world.active_camera.data().index as usize)
             .unwrap();
         let cam = camera_storage.as_ref().unwrap();
-        let near_far = [cam.range.start, cam.range.end, 0.0_f32, 0.0_f32];
+        let fov_y = cam.fov.to_radians();
+        let aspect = cam.aspect.get_value();
+        let z_near = cam.range.start;
+        let z_far = cam.range.end;
+        let proj2 = perspective_rh_no(fov_y, aspect, z_near, z_far);
+        let (depth_mul, depth_add) = depth_unpack_consts_from_proj(proj2);
         renderer.get_queue().write_buffer(
-            self.near_far_buffer.as_ref().unwrap(),
+            self.params_buffer.as_ref().unwrap(),
             0,
-            bytemuck::bytes_of(&near_far),
+            bytemuck::bytes_of(&DepthUnpackParams {
+                depth_mul,
+                depth_add,
+                _pad: [0.0; 2],
+            }),
         );
 
-        // Target view: write to the linear-depth render target
+        // Target view: write to the depth copy render target
         let out_view = resources
             .gpu()
             .textures
-            .get(self.linear_depth_target)
-            .expect("linear depth target")
+            .get(self.depth_copy_target)
+            .expect("depth copy target")
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
