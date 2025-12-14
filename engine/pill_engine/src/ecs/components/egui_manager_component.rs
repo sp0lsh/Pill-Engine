@@ -114,6 +114,26 @@ impl EguiManagerComponent {
                                     egui::Slider::new(&mut pp.focus_scale, 0.0..=50.0)
                                         .text("focusScale"),
                                 );
+                                ui.checkbox(&mut pp.mb_enabled, "Motion blur enabled");
+                                ui.checkbox(&mut pp.mb_debug_velocity, "MB debug overlay");
+                                ui.add(
+                                    egui::Slider::new(&mut pp.mb_strength, 0.0..=4.0)
+                                        .text("MB velocity scale"),
+                                );
+                                ui.add(
+                                    egui::Slider::new(&mut pp.mb_min_speed, 0.0..=0.05)
+                                        .text("MB min speed (texels)"),
+                                );
+                                ui.add(
+                                    egui::Slider::new(&mut pp.mb_depth_softness, 0.0..=200.0)
+                                        .text("MB depth softness"),
+                                );
+                                let mut max_samples_i = pp.mb_max_samples as i32;
+                                ui.add(
+                                    egui::Slider::new(&mut max_samples_i, 1..=64)
+                                        .text("MB max samples"),
+                                );
+                                pp.mb_max_samples = max_samples_i as u32;
                             }
                             ui.add(egui::Label::new(format!(
                                 "Frame Delta Time: {:.4} ms",

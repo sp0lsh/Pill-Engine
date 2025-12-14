@@ -12,7 +12,7 @@ pub(crate) mod input_component;
 pub(crate) mod mesh_rendering_component;
 pub(crate) mod render_state_component;
 pub(crate) mod time_component;
-pub(crate) mod transform_component;
+pub mod transform_component;
 
 // --- Use ---
 

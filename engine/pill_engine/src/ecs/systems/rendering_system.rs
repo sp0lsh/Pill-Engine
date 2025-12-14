@@ -89,6 +89,12 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
                     width: engine.window_size.width,
                     height: engine.window_size.height,
                 })?;
+            let velocity_texture = engine.renderer.create_render_target(RendererTargetDesc {
+                name: "velocity_buffer".to_string(),
+                format: wgpu::TextureFormat::Rg16Float,
+                width: engine.window_size.width,
+                height: engine.window_size.height,
+            })?;
 
             // Create depth and color texture
             let depth_texture = engine.renderer.create_depth_texture("depth_texture")?;
@@ -104,6 +110,12 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
             // DOF output render target (HDR to preserve bokeh highlights)
             let dof_output_texture = engine.renderer.create_render_target(RendererTargetDesc {
                 name: "dof_output".to_string(),
+                format: wgpu::TextureFormat::Rgba16Float,
+                width: engine.window_size.width,
+                height: engine.window_size.height,
+            })?;
+            let motion_blur_output = engine.renderer.create_render_target(RendererTargetDesc {
+                name: "motion_blur_output".to_string(),
                 format: wgpu::TextureFormat::Rgba16Float,
                 width: engine.window_size.width,
                 height: engine.window_size.height,
@@ -252,8 +264,10 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
                 Box::new(crate::graphics::pass_scene::PassScene::new(
                     "scene",
                     offscreen_color_texture,
+                    velocity_texture,
                     depth_texture,
                     wgpu::TextureFormat::Rgba16Float, // HDR format
+                    wgpu::TextureFormat::Rg16Float,   // velocity format
                     true, // load offscreen color (skybox already cleared/drew background)
                     Some(ibl_irradiance_rt),
                     Some(ibl_prefilter_rt),
@@ -273,16 +287,31 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
                     dof_output_texture,
                     wgpu::TextureFormat::Rgba16Float,
                 )),
-                // Compose reads from DoF output texture
+                Box::new(crate::graphics::PassMotionBlur::new(
+                    "motion_blur",
+                    dof_output_texture,
+                    velocity_texture,
+                    depth_copy_rt,
+                    motion_blur_output,
+                    wgpu::TextureFormat::Rgba16Float,
+                )),
+                // Compose reads from motion blur output texture
                 Box::new(crate::graphics::PassCompose::new(
                     "compose",
-                    dof_output_texture,
+                    motion_blur_output,
                     fmt,
                 )),
                 Box::new(crate::graphics::PassOverlayUV::new(
                     "overlay_uv",
                     [0.75, 0.75, 0.95, 0.95],
                     fmt,
+                )),
+                Box::new(crate::graphics::PassOverlayVelocity::new(
+                    "overlay_velocity",
+                    [0.75, 0.25, 0.95, 0.45],
+                    [2.0, 0.0, 16.0, 2.0], // scale, mode, spacing_px, thickness_px
+                    fmt,
+                    velocity_texture,
                 )),
                 Box::new(crate::graphics::PassOverlayDepth::new(
                     "overlay_depth",

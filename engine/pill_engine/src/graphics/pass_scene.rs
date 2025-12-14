@@ -1,4 +1,4 @@
-use crate::ecs::get_model_matrix;
+use crate::ecs::{get_model_matrix, get_prev_model_matrix};
 use crate::graphics::decompose_render_queue_key;
 use crate::graphics::projection::perspective_rh_zo;
 use crate::graphics::renderer::{
@@ -69,6 +69,7 @@ impl CameraUniform {
 #[derive(Copy, Clone)]
 pub(crate) struct PerDrawStd140 {
     mvp: [[f32; 4]; 4],
+    prev_mvp: [[f32; 4]; 4],
     model: [[f32; 4]; 4],
 }
 unsafe impl bytemuck::Zeroable for PerDrawStd140 {}
@@ -107,6 +108,7 @@ pub(crate) struct VisiblePreDraw {
     pub(crate) mesh_handle: RendererMeshHandle,
     pub(crate) entity_index: u32,
     pub(crate) mvp: [[f32; 4]; 4],
+    pub(crate) prev_mvp: [[f32; 4]; 4],
     pub(crate) model: [[f32; 4]; 4],
 }
 
@@ -126,8 +128,10 @@ pub(crate) struct GroupCmd {
 pub struct PassScene {
     label: String,
     offscreen_color_texture: RendererTextureHandle,
+    velocity_texture: RendererTextureHandle,
     depth_texture: RendererTextureHandle,
     color_format: wgpu::TextureFormat,
+    velocity_format: wgpu::TextureFormat,
     load_existing_color: bool,
     ibl_irradiance_tex: Option<RendererTextureHandle>,
     ibl_prefilter_tex: Option<RendererTextureHandle>,
@@ -146,6 +150,7 @@ pub struct PassScene {
 struct PassSceneState {
     camera_uniform: CameraUniform,
     camera_buffer: wgpu::Buffer,
+    prev_view_projection: Mat4,
     globals_bind_group: wgpu::BindGroup,
     pipeline: PipelineV2,
     ibl_sampler: wgpu::Sampler,
@@ -158,8 +163,10 @@ impl PassScene {
     pub fn new(
         label: &str,
         offscreen_color_texture: RendererTextureHandle,
+        velocity_texture: RendererTextureHandle,
         depth_texture: RendererTextureHandle,
         color_format: wgpu::TextureFormat,
+        velocity_format: wgpu::TextureFormat,
         load_existing_color: bool,
         ibl_irradiance_tex: Option<RendererTextureHandle>,
         ibl_prefilter_tex: Option<RendererTextureHandle>,
@@ -168,8 +175,10 @@ impl PassScene {
         Self {
             label: label.to_string(),
             offscreen_color_texture,
+            velocity_texture,
             depth_texture,
             color_format,
+            velocity_format,
             load_existing_color,
             ibl_irradiance_tex,
             ibl_prefilter_tex,
@@ -213,7 +222,7 @@ impl Pass for PassScene {
             // IBL irradiance moved into globals (set 0)
             @group(0) @binding(1) var texIrradiance: texture_2d<f32>;
             @group(0) @binding(2) var smpIrradiance: sampler;
-            struct PerDraw { mvp: mat4x4<f32>, model: mat4x4<f32>, };
+            struct PerDraw { mvp: mat4x4<f32>, prev_mvp: mat4x4<f32>, model: mat4x4<f32>, };
             @group(3) @binding(0) var<uniform> UPerDraw: PerDraw;
             struct VSIn {
               @location(0) pos: vec3<f32>,
@@ -225,13 +234,19 @@ impl Pass for PassScene {
               @location(0) uv: vec2<f32>,
               @location(1) worldPos: vec3<f32>,
               @location(2) worldNormal: vec3<f32>,
+              @location(3) clipCurr: vec4<f32>,
+              @location(4) clipPrev: vec4<f32>,
             };
             @vertex fn main(input: VSIn) -> VSOut {
               var out: VSOut;
               let worldPos4 = UPerDraw.model * vec4<f32>(input.pos, 1.0);
               // TODO: Use a proper normal matrix (inverse-transpose of model) if non-uniform scaling is used.
               let n = normalize((UPerDraw.model * vec4<f32>(input.normal, 0.0)).xyz);
-              out.pos = UPerDraw.mvp * vec4<f32>(input.pos, 1.0);
+              let clip_curr = UPerDraw.mvp * vec4<f32>(input.pos, 1.0);
+              let clip_prev = UPerDraw.prev_mvp * vec4<f32>(input.pos, 1.0);
+              out.pos = clip_curr;
+              out.clipCurr = clip_curr;
+              out.clipPrev = clip_prev;
               out.uv = input.uv;
               out.worldPos = worldPos4.xyz;
               out.worldNormal = n;
@@ -256,7 +271,7 @@ impl Pass for PassScene {
             }
             @group(2) @binding(0) var<uniform> UMaterial: MaterialParams;
             // Per-draw
-            struct PerDraw { mvp: mat4x4<f32>, model: mat4x4<f32>, };
+            struct PerDraw { mvp: mat4x4<f32>, prev_mvp: mat4x4<f32>, model: mat4x4<f32>, };
             @group(3) @binding(0) var<uniform> UPerDraw: PerDraw;
             struct Camera {
               position: vec4<f32>,
@@ -349,11 +364,18 @@ impl Pass for PassScene {
               return (kD * (albedo / PI) + specular) * radiance * NdotL;
             }
 
+            struct FSOut {
+              @location(0) color: vec4<f32>,
+              @location(1) velocity: vec2<f32>,
+            };
+
             @fragment fn main(
               @location(0) uv: vec2<f32>,
               @location(1) WorldPos: vec3<f32>,
-              @location(2) NormalIn: vec3<f32>
-            ) -> @location(0) vec4<f32> {
+              @location(2) NormalIn: vec3<f32>,
+              @location(3) clipCurr: vec4<f32>,
+              @location(4) clipPrev: vec4<f32>
+            ) -> FSOut {
               // Surface parameters
               var albedo = textureSample(texBaseColor, smpBaseColor, uv).rgb * UMaterial.baseColorFactor;
               let mr = textureSample(texMetallicRoughness, smpMetallicRoughness, uv).gb;
@@ -390,11 +412,21 @@ impl Pass for PassScene {
               let F = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
               let specular = prefilteredColor * (F * envBRDF.x + envBRDF.y);
               color = color + ambient_diffuse + specular;
-              // color = vec3<f32>(uv, 0.0); // DBG uv
-              // color = vec3<f32>(N*0.5+0.5); // DBG Normal
-              // color = vec3<f32>(WorldPos); // DBG WorldPos
-              // color = vec3<f32>(roughness); // DBG roughness
-              return vec4<f32>(color, 1.0);
+              // Velocity (screen space) for motion blur
+              // Preserve sign of w (required for correct perspective divide); only clamp magnitude to avoid INF.
+              let w_curr = sign(clipCurr.w) * max(abs(clipCurr.w), 1e-4);
+              let w_prev = sign(clipPrev.w) * max(abs(clipPrev.w), 1e-4);
+              // Convert NDC (y-up) to texture UV (y-down) to match fullscreen post-process passes.
+              let ndc_curr = clipCurr.xy / w_curr;
+              let ndc_prev = clipPrev.xy / w_prev;
+              let a = vec2<f32>(ndc_curr.x * 0.5 + 0.5, -ndc_curr.y * 0.5 + 0.5);
+              let b = vec2<f32>(ndc_prev.x * 0.5 + 0.5, -ndc_prev.y * 0.5 + 0.5);
+              let vel = a - b;
+
+              var out: FSOut;
+              out.color = vec4<f32>(color, 1.0);
+              out.velocity = vel;
+              return out;
             }
         "#;
 
@@ -569,11 +601,18 @@ impl Pass for PassScene {
             },
             vertex_buffers: &[<crate::renderer::resources::RendererMesh as crate::renderer::resources::Vertex>::data_layout_descriptor()],
             bind_groups,
-            targets: &[Some(wgpu::ColorTargetState {
-                format: self.color_format,
-                blend: Some(wgpu::BlendState::REPLACE),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
+            targets: &[
+                Some(wgpu::ColorTargetState {
+                    format: self.color_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+                Some(wgpu::ColorTargetState {
+                    format: self.velocity_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                }),
+            ],
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: true,
@@ -736,6 +775,7 @@ impl Pass for PassScene {
         self.state = Some(PassSceneState {
             camera_uniform: CameraUniform::new(),
             camera_buffer,
+            prev_view_projection: Mat4::IDENTITY,
             globals_bind_group,
             pipeline,
             ibl_sampler,
@@ -776,8 +816,9 @@ impl Pass for PassScene {
         let active_camera_transform_component = camera_transform_storage.as_ref().unwrap();
 
         // Update camera uniform and write to GPU buffer (no allocations)
-        let vp_mat_arr: [[f32; 4]; 4] = {
+        let (prev_view_proj, vp_mat_arr): (Mat4, [[f32; 4]; 4]) = {
             let state = get_state(self);
+            let prev = state.prev_view_projection;
             state
                 .camera_uniform
                 .update_data(active_camera_component, active_camera_transform_component);
@@ -786,7 +827,9 @@ impl Pass for PassScene {
                 0,
                 bytemuck::bytes_of(&state.camera_uniform),
             );
-            state.camera_uniform.view_projection_matrix
+            let current_vp = Mat4::from_cols_array_2d(&state.camera_uniform.view_projection_matrix);
+            state.prev_view_projection = current_vp;
+            (prev, state.camera_uniform.view_projection_matrix)
         };
         let clear_color = active_camera_component.clear_color;
 
@@ -814,16 +857,20 @@ impl Pass for PassScene {
                 .unwrap();
             let model_arr = get_model_matrix(transform);
             let model: Mat4 = Mat4::from_cols_array_2d(&model_arr);
+            let prev_model_arr = get_prev_model_matrix(transform);
+            let prev_model: Mat4 = Mat4::from_cols_array_2d(&prev_model_arr);
 
             // NOTE: Temporarily skip AABB-based frustum culling to avoid accessing renderer internals.
 
             let view_proj: Mat4 = vp_mat;
             let mvp: [[f32; 4]; 4] = (view_proj * model).to_cols_array_2d();
+            let prev_mvp: [[f32; 4]; 4] = (prev_view_proj * prev_model).to_cols_array_2d();
             self.visible_pre_draw_buffer.push(VisiblePreDraw {
                 material_handle,
                 mesh_handle,
                 entity_index: render_queue_item.entity_index,
                 mvp,
+                prev_mvp,
                 model: model.to_cols_array_2d(),
             });
         }
@@ -859,6 +906,7 @@ impl Pass for PassScene {
             {
                 batch.instances.push(PerDrawStd140 {
                     mvp: v.mvp,
+                    prev_mvp: v.prev_mvp,
                     model: v.model,
                 });
             } else {
@@ -866,6 +914,7 @@ impl Pass for PassScene {
                     mesh_handle: v.mesh_handle,
                     instances: vec![PerDrawStd140 {
                         mvp: v.mvp,
+                        prev_mvp: v.prev_mvp,
                         model: v.model,
                     }],
                     base_offset_u32: 0,
@@ -929,6 +978,16 @@ impl Pass for PassScene {
                 label: Some("scene_offscreen_color_view"),
                 ..Default::default()
             });
+        let velocity_view = resources
+            .gpu()
+            .textures
+            .get(self.velocity_texture)
+            .expect("velocity texture")
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor {
+                label: Some("scene_velocity_view"),
+                ..Default::default()
+            });
         let depth_view = resources
             .gpu()
             .textures
@@ -941,26 +1000,36 @@ impl Pass for PassScene {
             });
         let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("m6_offscreen_pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &color_view,
-                resolve_target: None,
-                ops: if self.load_existing_color {
-                    wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
+            color_attachments: &[
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &color_view,
+                    resolve_target: None,
+                    ops: if self.load_existing_color {
+                        wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }
+                    } else {
+                        wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: clear_color.x as f64,
+                                g: clear_color.y as f64,
+                                b: clear_color.z as f64,
+                                a: 1.0,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        }
+                    },
+                }),
+                Some(wgpu::RenderPassColorAttachment {
+                    view: &velocity_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
-                    }
-                } else {
-                    wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: clear_color.x as f64,
-                            g: clear_color.y as f64,
-                            b: clear_color.z as f64,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    }
-                },
-            })],
+                    },
+                }),
+            ],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &depth_view,
                 depth_ops: Some(wgpu::Operations {

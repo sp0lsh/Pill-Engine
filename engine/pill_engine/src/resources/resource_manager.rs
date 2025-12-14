@@ -27,8 +27,14 @@ impl ResourceManager {
             gpu: crate::resources::GpuResources::new(),
             post_process: Arc::new(Mutex::new(PostProcessParams {
                 time_s: 0.0,
-                focus_point: 5.0,
-                focus_scale: 3.0,
+                focus_point: 0.0,
+                focus_scale: 0.0,
+                mb_enabled: true,
+                mb_debug_velocity: false,
+                mb_strength: 1.0,
+                mb_max_samples: 16,
+                mb_min_speed: 0.001,
+                mb_depth_softness: 1.0,
             })),
         }
     }

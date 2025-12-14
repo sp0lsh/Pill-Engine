@@ -121,7 +121,7 @@ impl Pass for PassDofBokeh {
         // NOTE: Split view for proof:
         // - uv.y > 0.5 : debug visualization
         // - uv.y <= 0.5: DoF result
-        const DEBUG_VIEW: i32 = 2; // 0=None, 1=pass-through, 2=abs(CoC), 3=linearDepthNormalized
+        const DEBUG_VIEW: i32 = 0; // 0=None, 1=pass-through, 2=abs(CoC), 3=linearDepthNormalized
 
         const GOLDEN_ANGLE: f32 = 2.39996323;
         const MAX_BLUR_SIZE: f32 = 20.0;

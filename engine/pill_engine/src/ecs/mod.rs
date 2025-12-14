@@ -63,6 +63,10 @@ pub use systems::time_system::time_system;
 
 pub use systems::audio_system::audio_system;
 
+pub fn get_prev_model_matrix(transform_component: &TransformComponent) -> [[f32; 4]; 4] {
+    components::transform_component::get_prev_model_matrix(transform_component)
+}
+
 // - Other
 
 pub use entity::{Entity, EntityBuilder, EntityHandle};

@@ -70,6 +70,8 @@ pub struct TransformComponent {
 
     model_matrix: [[f32; 4]; 4],
     normal_matrix: [[f32; 3]; 3],
+    #[serde(skip)]
+    prev_model_matrix: [[f32; 4]; 4],
 
     // There may me multiple updates of the position/rotation/scale in the single frame.
     // Not to calculate matrices multiple times, we will update them only once per frame
@@ -90,6 +92,7 @@ impl TransformComponent {
             scale: Vector3f::new(1.0, 1.0, 1.0),
             model_matrix: cgmath::Matrix4::identity().into(),
             normal_matrix: cgmath::Matrix3::identity().into(),
+            prev_model_matrix: cgmath::Matrix4::identity().into(),
             matrix_update_required: true,
             net_dirty: false,
         }
@@ -199,6 +202,9 @@ impl TransformComponent {
 
 pub fn update_transform_matrices(transform_component: &mut TransformComponent) {
     // SIMD path via glam: quat + SRT
+    // Capture last frame's model before computing the new one.
+    transform_component.prev_model_matrix = transform_component.model_matrix;
+
     let pos = Vec3::new(
         transform_component.position.x,
         transform_component.position.y,
@@ -232,6 +238,10 @@ pub fn update_transform_matrices(transform_component: &mut TransformComponent) {
 
 pub fn get_model_matrix(transform_component: &TransformComponent) -> [[f32; 4]; 4] {
     transform_component.model_matrix
+}
+
+pub fn get_prev_model_matrix(transform_component: &TransformComponent) -> [[f32; 4]; 4] {
+    transform_component.prev_model_matrix
 }
 
 pub fn get_normal_matrix(transform_component: &TransformComponent) -> [[f32; 3]; 3] {
