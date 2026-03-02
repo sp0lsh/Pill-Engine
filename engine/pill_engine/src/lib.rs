@@ -60,19 +60,27 @@ macro_rules! define_global_component {
 pub mod game {
     pub use crate::{
         ecs::{
-            AudioListenerComponent, AudioManagerComponent, AudioSourceComponent, CameraAspectRatio,
+            CameraAspectRatio,
             CameraComponent, Component, ComponentStorage, EguiManagerComponent, EntityHandle,
             GamepadAxis, GamepadButton, GlobalComponent, GlobalComponentStorage, InputComponent,
-            MeshRenderingComponent, PlayerId, SceneHandle, SoundType, TimeComponent,
+            MeshRenderingComponent, PlayerId, SceneHandle, TimeComponent,
             TransformComponent, UpdatePhase,
         },
         engine::{Engine, KeyboardKey, MouseButton, PillGame},
         resources::{
             Material, MaterialHandle, Mesh, MeshHandle, Resource, ResourceLoader, ResourceStorage,
-            Shader, ShaderParameterSlot, ShaderParameterType, ShaderTextureSlot, Sound, Texture,
+            Shader, ShaderParameterSlot, ShaderParameterType, ShaderTextureSlot, Texture,
             TextureHandle, TextureType,
         },
     };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use crate::ecs::{
+        AudioListenerComponent, AudioManagerComponent, AudioSourceComponent, SoundType,
+    };
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub use crate::resources::Sound;
 
     extern crate pill_core;
     pub use pill_core::{
@@ -84,8 +92,8 @@ pub mod game {
     pub use anyhow::{Context, Error, Result};
 }
 
-#[cfg(feature = "internal")]
-pub mod internal {
+#[cfg(not(target_arch = "wasm32"))]
+mod internal_mod {
     pub use crate::{
         config::*,
         ecs::{
@@ -111,4 +119,42 @@ pub mod internal {
             ShaderTextureSlot, Texture, TextureHandle, TextureType,
         },
     };
+}
+
+#[cfg(target_arch = "wasm32")]
+mod internal_mod {
+    pub use crate::{
+        config::*,
+        ecs::{
+            get_model_matrix, get_normal_matrix,
+            get_renderer_resource_handle_from_camera_component,
+            update_transform_matrices,
+            CameraAspectRatio, CameraComponent,
+            ComponentStorage, EguiManagerComponent, EntityHandle, InputComponent,
+            MeshRenderingComponent,
+            Scene, TimeComponent, TransformComponent,
+        },
+        engine::{Engine, PillGame},
+        graphics::{
+            decompose_render_queue_key, PillRenderer, RenderQueueItem, RenderQueueKey,
+            RenderQueueKeyFields, RendererCameraHandle, RendererMaterialHandle, RendererMeshHandle,
+            RendererShaderHandle, RendererTextureHandle, RENDER_QUEUE_KEY_ORDER,
+        },
+        resources::{
+            get_renderer_texture_handle_from_material_texture, Material, MaterialHandle,
+            MaterialParameter, MaterialTexture, Mesh, MeshData, MeshHandle, MeshVertex,
+            ResourceLoader, ResourceManager, ShaderParameterSlot, ShaderParameterType,
+            ShaderTextureSlot, Texture, TextureHandle, TextureType,
+        },
+    };
+}
+
+#[cfg(feature = "internal")]
+pub mod internal {
+    pub use super::internal_mod::*;
+}
+
+#[cfg(not(feature = "internal"))]
+pub(crate) mod internal {
+    pub use super::internal_mod::*;
 }

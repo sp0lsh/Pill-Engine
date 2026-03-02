@@ -11,9 +11,18 @@ use crate::{
 use pill_core::{warn, EngineError, LogContext, PillSlotMapKey, PillStyle, RendererError, Timer};
 
 use anyhow::{Context, Error, Result};
-use std::time::Instant;
+use web_time::Instant;
 
 pub fn rendering_system(engine: &mut Engine) -> Result<()> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        static RENDER_CALL_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let count = RENDER_CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count < 5 {
+            log::info!("rendering_system called #{}", count);
+        }
+    }
+
     let mut timer = Timer::new();
     timer.begin_context("rendering_system update");
     timer.record("Get active camera");
@@ -30,6 +39,13 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
         for (entity_handle, camera_component) in
             active_scene.get_one_component_iterator_mut::<CameraComponent>()?
         {
+            #[cfg(target_arch = "wasm32")]
+            {
+                static CAMERA_FOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                if !CAMERA_FOUND.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    log::info!("Found camera, enabled={}", camera_component.enabled);
+                }
+            }
             if camera_component.enabled {
                 // Update active camera aspect ratio if it is set to automatic
                 if let CameraAspectRatio::Automatic(_) = camera_component.aspect {
@@ -40,6 +56,14 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
                 active_camera_entity_handle_result = Some(entity_handle);
                 break;
             }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    if active_camera_entity_handle_result.is_none() {
+        static NO_CAM_WARN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !NO_CAM_WARN.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            log::warn!("No active camera found!");
         }
     }
 

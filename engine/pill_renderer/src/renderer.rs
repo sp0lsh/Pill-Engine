@@ -29,12 +29,27 @@ pub struct Renderer {
     pub state: State,
 }
 
+impl Renderer {
+    /// Async constructor for WASM - call this instead of PillRenderer::new on web
+    pub async fn new_async(window: Arc<winit::window::Window>, config: config::Config) -> Result<Self> {
+        info!(LogContext::Rendering => "Initializing {}", "Renderer".module_object_style());
+        let state: State = State::new(window, config).await?;
+        Ok(Self { state })
+    }
+}
+
 impl PillRenderer for Renderer {
+    #[cfg(not(target_arch = "wasm32"))]
     fn new(window: Arc<winit::window::Window>, config: config::Config) -> Result<Self> {
         info!(LogContext::Rendering => "Initializing {}", "Renderer".module_object_style());
         let state: State = pollster::block_on(State::new(window, config))?;
 
         Ok(Self { state })
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn new(_window: Arc<winit::window::Window>, _config: config::Config) -> Result<Self> {
+        panic!("Use Renderer::new_async on WASM")
     }
 
     // --- Create ---
@@ -338,9 +353,14 @@ impl State {
         // 4. Surface configuration
         let (surface_configuration, color_format, depth_format) = {
             let preferred_format = wgpu::TextureFormat::Rgba8UnormSrgb;
-
-            // Get supported present modes and choose the best one
             let surface_caps = surface.get_capabilities(&adapter);
+
+            // Present mode: on wasm, Mailbox/Immediate aren't universally
+            // supported — stick to Fifo. On native, prefer Mailbox → Immediate
+            // → Fifo based on what the surface advertises.
+            #[cfg(target_arch = "wasm32")]
+            let present_mode = wgpu::PresentMode::Fifo;
+            #[cfg(not(target_arch = "wasm32"))]
             let present_mode = if surface_caps
                 .present_modes
                 .contains(&wgpu::PresentMode::Mailbox)
@@ -355,7 +375,7 @@ impl State {
                 wgpu::PresentMode::Fifo
             };
 
-            // Choose the best supported format
+            // Choose the best supported format.
             let format = if surface_caps.formats.contains(&preferred_format) {
                 preferred_format
             } else if surface_caps
@@ -380,7 +400,7 @@ impl State {
                 desired_maximum_frame_latency: 2,
                 present_mode,
                 alpha_mode: wgpu::CompositeAlphaMode::Auto,
-                view_formats: vec![format],
+                view_formats: vec![],
             };
             surface.configure(&device, &surface_configuration);
             let color_format = surface_configuration.format;
@@ -487,6 +507,15 @@ impl State {
         timer: &mut Timer,
     ) -> Result<()> {
         debug!(LogContext::Frame => "Starting frame render");
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            static FRAME_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let frame_num = FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if frame_num < 5 || frame_num % 60 == 0 {
+                log::info!("Render frame {} - surface {}x{}", frame_num, self.surface_configuration.width, self.surface_configuration.height);
+            }
+        }
 
         timer.record("Get frame");
         // self.profiler.begin_frame();
@@ -652,6 +681,15 @@ impl State {
 
         // Present the frame
         frame.present();
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            static PRESENT_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let count = PRESENT_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if count < 5 {
+                log::info!("Frame {} presented successfully", count);
+            }
+        }
 
         Ok(())
     }
