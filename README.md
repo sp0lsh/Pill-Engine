@@ -24,6 +24,8 @@ Data-driven game engine written in Rust
 - Error chaining
 - Launcher tool
 - Game project hot-reloading
+- Engine code hot-reloading
+- Serialization/deserialization of scene 🚧
 - Shader code hot-reloading 🚧
 - Lights 🚧
 - Skybox 🚧
