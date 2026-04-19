@@ -73,7 +73,10 @@ impl Mesh {
     /// targets without a filesystem (wasm), or to bundle assets into the
     /// binary. Companion to [`Self::new`] which loads from a path.
     pub fn from_obj_bytes(name: &str, bytes: &[u8]) -> Result<Self> {
-        Ok(Self::from_data(name, MeshData::from_obj_bytes(bytes, false)?))
+        Ok(Self::from_data(
+            name,
+            MeshData::from_obj_bytes(bytes, false)?,
+        ))
     }
 }
 
@@ -174,19 +177,13 @@ impl MeshData {
     /// inside the OBJ are ignored — materials have to be set up separately.
     pub fn from_obj_bytes(bytes: &[u8], flip_uv_y: bool) -> Result<Self> {
         let mut reader = std::io::Cursor::new(bytes);
-        let (models, _materials) = tobj::load_obj_buf(
-            &mut reader,
-            &obj_load_options(),
-            |_| Err(tobj::LoadError::OpenFileFailed),
-        )?;
+        let (models, _materials) = tobj::load_obj_buf(&mut reader, &obj_load_options(), |_| {
+            Err(tobj::LoadError::OpenFileFailed)
+        })?;
         Self::from_tobj_models(models, "<in-memory>", flip_uv_y)
     }
 
-    fn from_tobj_models(
-        models: Vec<tobj::Model>,
-        source: &str,
-        flip_uv_y: bool,
-    ) -> Result<Self> {
+    fn from_tobj_models(models: Vec<tobj::Model>, source: &str, flip_uv_y: bool) -> Result<Self> {
         // Check data validity
         if models.len() > 1 {
             return Err(Error::new(EngineError::InvalidModelFileMultipleMeshes(
@@ -195,7 +192,9 @@ impl MeshData {
         }
 
         if models.is_empty() {
-            return Err(Error::new(EngineError::InvalidModelFile(source.to_string())));
+            return Err(Error::new(EngineError::InvalidModelFile(
+                source.to_string(),
+            )));
         }
 
         // Load vertex data from model
@@ -299,45 +298,189 @@ impl MeshData {
 
     pub fn cube(size: f32) -> Self {
         let s = size / 2.0;
-        
+
         // 6 faces, 4 vertices each = 24 vertices (each face has unique normals)
         let vertices = vec![
             // Front face (Z+)
-            MeshVertex { position: [-s, -s,  s], texture_coordinates: [0.0, 1.0], normal: [0.0, 0.0, 1.0], tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 1.0, 0.0] },
-            MeshVertex { position: [ s, -s,  s], texture_coordinates: [1.0, 1.0], normal: [0.0, 0.0, 1.0], tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 1.0, 0.0] },
-            MeshVertex { position: [ s,  s,  s], texture_coordinates: [1.0, 0.0], normal: [0.0, 0.0, 1.0], tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 1.0, 0.0] },
-            MeshVertex { position: [-s,  s,  s], texture_coordinates: [0.0, 0.0], normal: [0.0, 0.0, 1.0], tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 1.0, 0.0] },
+            MeshVertex {
+                position: [-s, -s, s],
+                texture_coordinates: [0.0, 1.0],
+                normal: [0.0, 0.0, 1.0],
+                tangent: [1.0, 0.0, 0.0],
+                bitangent: [0.0, 1.0, 0.0],
+            },
+            MeshVertex {
+                position: [s, -s, s],
+                texture_coordinates: [1.0, 1.0],
+                normal: [0.0, 0.0, 1.0],
+                tangent: [1.0, 0.0, 0.0],
+                bitangent: [0.0, 1.0, 0.0],
+            },
+            MeshVertex {
+                position: [s, s, s],
+                texture_coordinates: [1.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                tangent: [1.0, 0.0, 0.0],
+                bitangent: [0.0, 1.0, 0.0],
+            },
+            MeshVertex {
+                position: [-s, s, s],
+                texture_coordinates: [0.0, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                tangent: [1.0, 0.0, 0.0],
+                bitangent: [0.0, 1.0, 0.0],
+            },
             // Back face (Z-)
-            MeshVertex { position: [ s, -s, -s], texture_coordinates: [0.0, 1.0], normal: [0.0, 0.0, -1.0], tangent: [-1.0, 0.0, 0.0], bitangent: [0.0, 1.0, 0.0] },
-            MeshVertex { position: [-s, -s, -s], texture_coordinates: [1.0, 1.0], normal: [0.0, 0.0, -1.0], tangent: [-1.0, 0.0, 0.0], bitangent: [0.0, 1.0, 0.0] },
-            MeshVertex { position: [-s,  s, -s], texture_coordinates: [1.0, 0.0], normal: [0.0, 0.0, -1.0], tangent: [-1.0, 0.0, 0.0], bitangent: [0.0, 1.0, 0.0] },
-            MeshVertex { position: [ s,  s, -s], texture_coordinates: [0.0, 0.0], normal: [0.0, 0.0, -1.0], tangent: [-1.0, 0.0, 0.0], bitangent: [0.0, 1.0, 0.0] },
+            MeshVertex {
+                position: [s, -s, -s],
+                texture_coordinates: [0.0, 1.0],
+                normal: [0.0, 0.0, -1.0],
+                tangent: [-1.0, 0.0, 0.0],
+                bitangent: [0.0, 1.0, 0.0],
+            },
+            MeshVertex {
+                position: [-s, -s, -s],
+                texture_coordinates: [1.0, 1.0],
+                normal: [0.0, 0.0, -1.0],
+                tangent: [-1.0, 0.0, 0.0],
+                bitangent: [0.0, 1.0, 0.0],
+            },
+            MeshVertex {
+                position: [-s, s, -s],
+                texture_coordinates: [1.0, 0.0],
+                normal: [0.0, 0.0, -1.0],
+                tangent: [-1.0, 0.0, 0.0],
+                bitangent: [0.0, 1.0, 0.0],
+            },
+            MeshVertex {
+                position: [s, s, -s],
+                texture_coordinates: [0.0, 0.0],
+                normal: [0.0, 0.0, -1.0],
+                tangent: [-1.0, 0.0, 0.0],
+                bitangent: [0.0, 1.0, 0.0],
+            },
             // Top face (Y+)
-            MeshVertex { position: [-s,  s,  s], texture_coordinates: [0.0, 1.0], normal: [0.0, 1.0, 0.0], tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 0.0, -1.0] },
-            MeshVertex { position: [ s,  s,  s], texture_coordinates: [1.0, 1.0], normal: [0.0, 1.0, 0.0], tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 0.0, -1.0] },
-            MeshVertex { position: [ s,  s, -s], texture_coordinates: [1.0, 0.0], normal: [0.0, 1.0, 0.0], tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 0.0, -1.0] },
-            MeshVertex { position: [-s,  s, -s], texture_coordinates: [0.0, 0.0], normal: [0.0, 1.0, 0.0], tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 0.0, -1.0] },
+            MeshVertex {
+                position: [-s, s, s],
+                texture_coordinates: [0.0, 1.0],
+                normal: [0.0, 1.0, 0.0],
+                tangent: [1.0, 0.0, 0.0],
+                bitangent: [0.0, 0.0, -1.0],
+            },
+            MeshVertex {
+                position: [s, s, s],
+                texture_coordinates: [1.0, 1.0],
+                normal: [0.0, 1.0, 0.0],
+                tangent: [1.0, 0.0, 0.0],
+                bitangent: [0.0, 0.0, -1.0],
+            },
+            MeshVertex {
+                position: [s, s, -s],
+                texture_coordinates: [1.0, 0.0],
+                normal: [0.0, 1.0, 0.0],
+                tangent: [1.0, 0.0, 0.0],
+                bitangent: [0.0, 0.0, -1.0],
+            },
+            MeshVertex {
+                position: [-s, s, -s],
+                texture_coordinates: [0.0, 0.0],
+                normal: [0.0, 1.0, 0.0],
+                tangent: [1.0, 0.0, 0.0],
+                bitangent: [0.0, 0.0, -1.0],
+            },
             // Bottom face (Y-)
-            MeshVertex { position: [-s, -s, -s], texture_coordinates: [0.0, 1.0], normal: [0.0, -1.0, 0.0], tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 0.0, 1.0] },
-            MeshVertex { position: [ s, -s, -s], texture_coordinates: [1.0, 1.0], normal: [0.0, -1.0, 0.0], tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 0.0, 1.0] },
-            MeshVertex { position: [ s, -s,  s], texture_coordinates: [1.0, 0.0], normal: [0.0, -1.0, 0.0], tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 0.0, 1.0] },
-            MeshVertex { position: [-s, -s,  s], texture_coordinates: [0.0, 0.0], normal: [0.0, -1.0, 0.0], tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 0.0, 1.0] },
+            MeshVertex {
+                position: [-s, -s, -s],
+                texture_coordinates: [0.0, 1.0],
+                normal: [0.0, -1.0, 0.0],
+                tangent: [1.0, 0.0, 0.0],
+                bitangent: [0.0, 0.0, 1.0],
+            },
+            MeshVertex {
+                position: [s, -s, -s],
+                texture_coordinates: [1.0, 1.0],
+                normal: [0.0, -1.0, 0.0],
+                tangent: [1.0, 0.0, 0.0],
+                bitangent: [0.0, 0.0, 1.0],
+            },
+            MeshVertex {
+                position: [s, -s, s],
+                texture_coordinates: [1.0, 0.0],
+                normal: [0.0, -1.0, 0.0],
+                tangent: [1.0, 0.0, 0.0],
+                bitangent: [0.0, 0.0, 1.0],
+            },
+            MeshVertex {
+                position: [-s, -s, s],
+                texture_coordinates: [0.0, 0.0],
+                normal: [0.0, -1.0, 0.0],
+                tangent: [1.0, 0.0, 0.0],
+                bitangent: [0.0, 0.0, 1.0],
+            },
             // Right face (X+)
-            MeshVertex { position: [ s, -s,  s], texture_coordinates: [0.0, 1.0], normal: [1.0, 0.0, 0.0], tangent: [0.0, 0.0, -1.0], bitangent: [0.0, 1.0, 0.0] },
-            MeshVertex { position: [ s, -s, -s], texture_coordinates: [1.0, 1.0], normal: [1.0, 0.0, 0.0], tangent: [0.0, 0.0, -1.0], bitangent: [0.0, 1.0, 0.0] },
-            MeshVertex { position: [ s,  s, -s], texture_coordinates: [1.0, 0.0], normal: [1.0, 0.0, 0.0], tangent: [0.0, 0.0, -1.0], bitangent: [0.0, 1.0, 0.0] },
-            MeshVertex { position: [ s,  s,  s], texture_coordinates: [0.0, 0.0], normal: [1.0, 0.0, 0.0], tangent: [0.0, 0.0, -1.0], bitangent: [0.0, 1.0, 0.0] },
+            MeshVertex {
+                position: [s, -s, s],
+                texture_coordinates: [0.0, 1.0],
+                normal: [1.0, 0.0, 0.0],
+                tangent: [0.0, 0.0, -1.0],
+                bitangent: [0.0, 1.0, 0.0],
+            },
+            MeshVertex {
+                position: [s, -s, -s],
+                texture_coordinates: [1.0, 1.0],
+                normal: [1.0, 0.0, 0.0],
+                tangent: [0.0, 0.0, -1.0],
+                bitangent: [0.0, 1.0, 0.0],
+            },
+            MeshVertex {
+                position: [s, s, -s],
+                texture_coordinates: [1.0, 0.0],
+                normal: [1.0, 0.0, 0.0],
+                tangent: [0.0, 0.0, -1.0],
+                bitangent: [0.0, 1.0, 0.0],
+            },
+            MeshVertex {
+                position: [s, s, s],
+                texture_coordinates: [0.0, 0.0],
+                normal: [1.0, 0.0, 0.0],
+                tangent: [0.0, 0.0, -1.0],
+                bitangent: [0.0, 1.0, 0.0],
+            },
             // Left face (X-)
-            MeshVertex { position: [-s, -s, -s], texture_coordinates: [0.0, 1.0], normal: [-1.0, 0.0, 0.0], tangent: [0.0, 0.0, 1.0], bitangent: [0.0, 1.0, 0.0] },
-            MeshVertex { position: [-s, -s,  s], texture_coordinates: [1.0, 1.0], normal: [-1.0, 0.0, 0.0], tangent: [0.0, 0.0, 1.0], bitangent: [0.0, 1.0, 0.0] },
-            MeshVertex { position: [-s,  s,  s], texture_coordinates: [1.0, 0.0], normal: [-1.0, 0.0, 0.0], tangent: [0.0, 0.0, 1.0], bitangent: [0.0, 1.0, 0.0] },
-            MeshVertex { position: [-s,  s, -s], texture_coordinates: [0.0, 0.0], normal: [-1.0, 0.0, 0.0], tangent: [0.0, 0.0, 1.0], bitangent: [0.0, 1.0, 0.0] },
+            MeshVertex {
+                position: [-s, -s, -s],
+                texture_coordinates: [0.0, 1.0],
+                normal: [-1.0, 0.0, 0.0],
+                tangent: [0.0, 0.0, 1.0],
+                bitangent: [0.0, 1.0, 0.0],
+            },
+            MeshVertex {
+                position: [-s, -s, s],
+                texture_coordinates: [1.0, 1.0],
+                normal: [-1.0, 0.0, 0.0],
+                tangent: [0.0, 0.0, 1.0],
+                bitangent: [0.0, 1.0, 0.0],
+            },
+            MeshVertex {
+                position: [-s, s, s],
+                texture_coordinates: [1.0, 0.0],
+                normal: [-1.0, 0.0, 0.0],
+                tangent: [0.0, 0.0, 1.0],
+                bitangent: [0.0, 1.0, 0.0],
+            },
+            MeshVertex {
+                position: [-s, s, -s],
+                texture_coordinates: [0.0, 0.0],
+                normal: [-1.0, 0.0, 0.0],
+                tangent: [0.0, 0.0, 1.0],
+                bitangent: [0.0, 1.0, 0.0],
+            },
         ];
 
         let indices = vec![
-            0,  1,  2,  0,  2,  3,  // front
-            4,  5,  6,  4,  6,  7,  // back
-            8,  9,  10, 8,  10, 11, // top
+            0, 1, 2, 0, 2, 3, // front
+            4, 5, 6, 4, 6, 7, // back
+            8, 9, 10, 8, 10, 11, // top
             12, 13, 14, 12, 14, 15, // bottom
             16, 17, 18, 16, 18, 19, // right
             20, 21, 22, 20, 22, 23, // left

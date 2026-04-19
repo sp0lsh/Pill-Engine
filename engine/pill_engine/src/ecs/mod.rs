@@ -40,9 +40,6 @@ pub use components::input_component::{
     KeyboardEvent, MouseEvent, PlayerId,
 };
 
-#[cfg(not(target_arch = "wasm32"))]
-pub use components::input_component::{Effect, GamepadId};
-
 pub use components::transform_component::{
     get_model_matrix, get_normal_matrix, update_transform_matrices, TransformComponent,
 };

@@ -380,12 +380,23 @@ impl Engine {
     pub fn update(&mut self, delta_time: std::time::Duration) {
         #[cfg(target_arch = "wasm32")]
         {
-            static UPDATE_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            static UPDATE_COUNT: std::sync::atomic::AtomicU32 =
+                std::sync::atomic::AtomicU32::new(0);
             let count = UPDATE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if count < 3 {
                 let num_phases = self.system_manager.update_phases.len();
-                let total_systems: usize = self.system_manager.update_phases.iter().map(|p| p.1.len()).sum();
-                log::info!("Engine.update #{} - {} phases, {} systems total", count, num_phases, total_systems);
+                let total_systems: usize = self
+                    .system_manager
+                    .update_phases
+                    .iter()
+                    .map(|p| p.1.len())
+                    .sum();
+                log::info!(
+                    "Engine.update #{} - {} phases, {} systems total",
+                    count,
+                    num_phases,
+                    total_systems
+                );
             }
         }
 
@@ -630,7 +641,7 @@ impl Engine {
     // --- Entity API ---
 
     /// Returns EntityBuilder, allowing for handy entity creation
-    pub fn build_entity(&mut self, scene_handle: SceneHandle) -> EntityBuilder {
+    pub fn build_entity(&mut self, scene_handle: SceneHandle) -> EntityBuilder<'_> {
         let entity_handle = self.create_entity(scene_handle).unwrap();
         EntityBuilder {
             engine: self,

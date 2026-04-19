@@ -35,8 +35,12 @@ pub struct Effect;
 
 #[cfg(target_arch = "wasm32")]
 impl Effect {
-    pub fn add_gamepad(&self, _gamepad: &()) -> Result<()> { Ok(()) }
-    pub fn play(&self) -> Result<()> { Ok(()) }
+    pub fn add_gamepad(&self, _gamepad: &()) -> Result<()> {
+        Ok(())
+    }
+    pub fn play(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[repr(u8)]
@@ -199,24 +203,40 @@ pub type KeyState = [bool; KEYBOARD_KEY_MAX];
 pub type GamepadButtonState = [bool; GAMEPAD_BUTTON_MAX];
 
 #[cfg(not(target_arch = "wasm32"))]
-const fn key_state_zero() -> KeyState { BitArray::ZERO }
+const fn key_state_zero() -> KeyState {
+    BitArray::ZERO
+}
 #[cfg(not(target_arch = "wasm32"))]
-const fn gamepad_button_state_zero() -> GamepadButtonState { BitArray::ZERO }
+const fn gamepad_button_state_zero() -> GamepadButtonState {
+    BitArray::ZERO
+}
 
 #[cfg(target_arch = "wasm32")]
-const fn key_state_zero() -> KeyState { [false; KEYBOARD_KEY_MAX] }
+const fn key_state_zero() -> KeyState {
+    [false; KEYBOARD_KEY_MAX]
+}
 #[cfg(target_arch = "wasm32")]
-const fn gamepad_button_state_zero() -> GamepadButtonState { [false; GAMEPAD_BUTTON_MAX] }
+const fn gamepad_button_state_zero() -> GamepadButtonState {
+    [false; GAMEPAD_BUTTON_MAX]
+}
 
 #[cfg(not(target_arch = "wasm32"))]
-fn set_key_state(state: &mut KeyState, i: usize, v: bool) { state.set(i, v); }
+fn set_key_state(state: &mut KeyState, i: usize, v: bool) {
+    state.set(i, v);
+}
 #[cfg(not(target_arch = "wasm32"))]
-fn set_gamepad_state(state: &mut GamepadButtonState, i: usize, v: bool) { state.set(i, v); }
+fn set_gamepad_state(state: &mut GamepadButtonState, i: usize, v: bool) {
+    state.set(i, v);
+}
 
 #[cfg(target_arch = "wasm32")]
-fn set_key_state(state: &mut KeyState, i: usize, v: bool) { state[i] = v; }
+fn set_key_state(state: &mut KeyState, i: usize, v: bool) {
+    state[i] = v;
+}
 #[cfg(target_arch = "wasm32")]
-fn set_gamepad_state(state: &mut GamepadButtonState, i: usize, v: bool) { state[i] = v; }
+fn set_gamepad_state(state: &mut GamepadButtonState, i: usize, v: bool) {
+    state[i] = v;
+}
 
 pub struct InputComponent {
     pub(crate) pressed_keyboard_keys: KeyState,

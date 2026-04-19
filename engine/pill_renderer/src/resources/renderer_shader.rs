@@ -4,11 +4,6 @@ use pill_core::{debug, LogContext, PillStyle, RendererError};
 use pill_engine::internal::{ShaderParameterSlot, ShaderTextureSlot};
 use std::collections::HashMap;
 
-pub enum ShaderBindGroupLayout {
-    Parameters,
-    Textures,
-}
-
 pub struct RendererShader {
     pub name: String,
     pub render_pipeline: wgpu::RenderPipeline,

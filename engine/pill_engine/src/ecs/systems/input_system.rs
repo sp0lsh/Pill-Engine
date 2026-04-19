@@ -1,7 +1,7 @@
 use crate::{
     ecs::{
-        GamepadAxis, GamepadButton, GamepadEvent, HapticCommand, InputComponent,
-        InputEvent, KeyboardEvent, MouseEvent,
+        GamepadAxis, GamepadButton, GamepadEvent, HapticCommand, InputComponent, InputEvent,
+        KeyboardEvent, MouseEvent,
     },
     engine::Engine,
 };
@@ -73,13 +73,9 @@ mod native {
                                 id: event.id,
                             }))
                     }
-                    EventType::Disconnected => {
-                        engine
-                            .input_queue
-                            .push_back(InputEvent::Gamepad(GamepadEvent::Disconnected {
-                                id: event.id,
-                            }))
-                    }
+                    EventType::Disconnected => engine.input_queue.push_back(InputEvent::Gamepad(
+                        GamepadEvent::Disconnected { id: event.id },
+                    )),
                     EventType::ForceFeedbackEffectCompleted => {
                         engine.input_queue.push_back(InputEvent::Gamepad(
                             GamepadEvent::ForceFeedbackEffectCompleted { id: event.id },
@@ -175,9 +171,8 @@ mod native {
     #[inline]
     fn command_player_index(command: &HapticCommand) -> Result<usize> {
         let pid = match command {
-            HapticCommand::Rumble { player_id, .. } | HapticCommand::PlayEffect { player_id, .. } => {
-                *player_id
-            }
+            HapticCommand::Rumble { player_id, .. }
+            | HapticCommand::PlayEffect { player_id, .. } => *player_id,
         };
         Ok(pid as usize)
     }
@@ -335,7 +330,7 @@ fn process_input_queue(engine: &mut Engine) -> Result<()> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use native::{haptics_system, input_system, GILRS};
+pub use native::{haptics_system, input_system};
 
 #[cfg(target_arch = "wasm32")]
 pub use wasm::{haptics_system, input_system};

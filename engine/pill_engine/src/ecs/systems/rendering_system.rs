@@ -16,7 +16,8 @@ use web_time::Instant;
 pub fn rendering_system(engine: &mut Engine) -> Result<()> {
     #[cfg(target_arch = "wasm32")]
     {
-        static RENDER_CALL_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        static RENDER_CALL_COUNT: std::sync::atomic::AtomicU32 =
+            std::sync::atomic::AtomicU32::new(0);
         let count = RENDER_CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if count < 5 {
             log::info!("rendering_system called #{}", count);
@@ -41,7 +42,8 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
         {
             #[cfg(target_arch = "wasm32")]
             {
-                static CAMERA_FOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                static CAMERA_FOUND: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
                 if !CAMERA_FOUND.swap(true, std::sync::atomic::Ordering::Relaxed) {
                     log::info!("Found camera, enabled={}", camera_component.enabled);
                 }
@@ -61,7 +63,8 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
 
     #[cfg(target_arch = "wasm32")]
     if active_camera_entity_handle_result.is_none() {
-        static NO_CAM_WARN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        static NO_CAM_WARN: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
         if !NO_CAM_WARN.swap(true, std::sync::atomic::Ordering::Relaxed) {
             log::warn!("No active camera found!");
         }

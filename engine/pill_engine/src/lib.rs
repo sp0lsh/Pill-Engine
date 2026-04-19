@@ -63,10 +63,9 @@ macro_rules! define_global_component {
 pub mod game {
     pub use crate::{
         ecs::{
-            CameraAspectRatio,
-            CameraComponent, Component, ComponentStorage, EguiManagerComponent, EntityHandle,
-            GamepadAxis, GamepadButton, GlobalComponent, GlobalComponentStorage, InputComponent,
-            MeshRenderingComponent, PlayerId, SceneHandle, TimeComponent,
+            CameraAspectRatio, CameraComponent, Component, ComponentStorage, EguiManagerComponent,
+            EntityHandle, GamepadAxis, GamepadButton, GlobalComponent, GlobalComponentStorage,
+            InputComponent, MeshRenderingComponent, PlayerId, SceneHandle, TimeComponent,
             TransformComponent, UpdatePhase,
         },
         engine::{Engine, KeyboardKey, MouseButton, PillGame},
@@ -130,12 +129,10 @@ mod internal_mod {
         config::*,
         ecs::{
             get_model_matrix, get_normal_matrix,
-            get_renderer_resource_handle_from_camera_component,
-            update_transform_matrices,
-            CameraAspectRatio, CameraComponent,
-            ComponentStorage, EguiManagerComponent, EntityHandle, InputComponent,
-            MeshRenderingComponent,
-            Scene, TimeComponent, TransformComponent,
+            get_renderer_resource_handle_from_camera_component, update_transform_matrices,
+            CameraAspectRatio, CameraComponent, ComponentStorage, EguiManagerComponent,
+            EntityHandle, InputComponent, MeshRenderingComponent, Scene, TimeComponent,
+            TransformComponent,
         },
         engine::{Engine, PillGame},
         graphics::{

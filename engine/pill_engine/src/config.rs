@@ -1,8 +1,8 @@
 use crate::{
     ecs::{
-        deferred_update_system, haptics_system, input_system, rendering_system,
-        time_system, DeferredUpdateComponent, EguiManagerComponent,
-        InputComponent, PlayerId, SystemFunction, TimeComponent, UpdatePhase,
+        deferred_update_system, haptics_system, input_system, rendering_system, time_system,
+        DeferredUpdateComponent, EguiManagerComponent, InputComponent, PlayerId, SystemFunction,
+        TimeComponent, UpdatePhase,
     },
     graphics::{RendererMaterialHandle, RendererShaderHandle, RendererTextureHandle},
     resources::{MaterialHandle, ShaderHandle, TextureHandle, TextureType},

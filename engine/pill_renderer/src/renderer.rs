@@ -31,7 +31,10 @@ pub struct Renderer {
 
 impl Renderer {
     /// Async constructor for WASM - call this instead of PillRenderer::new on web
-    pub async fn new_async(window: Arc<winit::window::Window>, config: config::Config) -> Result<Self> {
+    pub async fn new_async(
+        window: Arc<winit::window::Window>,
+        config: config::Config,
+    ) -> Result<Self> {
         info!(LogContext::Rendering => "Initializing {}", "Renderer".module_object_style());
         let state: State = State::new(window, config).await?;
         Ok(Self { state })
@@ -280,7 +283,6 @@ pub struct State {
     egui_drawer: EguiDrawer,
     // Other
     camera_bind_group_layout: wgpu::BindGroupLayout,
-    config: config::Config,
     //profiler: Profiler,
 }
 
@@ -473,7 +475,6 @@ impl State {
             egui_drawer,
             // Other
             camera_bind_group_layout,
-            config,
             // profiler
         };
 
@@ -513,7 +514,12 @@ impl State {
             static FRAME_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             let frame_num = FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if frame_num < 5 || frame_num % 60 == 0 {
-                log::info!("Render frame {} - surface {}x{}", frame_num, self.surface_configuration.width, self.surface_configuration.height);
+                log::info!(
+                    "Render frame {} - surface {}x{}",
+                    frame_num,
+                    self.surface_configuration.width,
+                    self.surface_configuration.height
+                );
             }
         }
 
@@ -693,7 +699,8 @@ impl State {
 
         #[cfg(target_arch = "wasm32")]
         {
-            static PRESENT_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            static PRESENT_COUNT: std::sync::atomic::AtomicU32 =
+                std::sync::atomic::AtomicU32::new(0);
             let count = PRESENT_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if count < 5 {
                 log::info!("Frame {} presented successfully", count);
