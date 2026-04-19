@@ -5,120 +5,149 @@ use pill_engine::{define_component, game::*};
 // Camera
 const CAMERA_POSITION_Z: f32 = 0.0;
 const CAMERA_FOV: f32 = 60.0;
-const CLEAR_COLOR_R: f32 = 0.02;
-const CLEAR_COLOR_G: f32 = 0.02;
-const CLEAR_COLOR_B: f32 = 0.05;
+const CLEAR_COLOR: (f32, f32, f32) = (0.02, 0.02, 0.05);
 
-// Camera drift — gentle sine-wave floating to make the composition breathe.
-const CAMERA_DRIFT_SPEED_X: f32 = 0.30;
-const CAMERA_DRIFT_SPEED_Y: f32 = 0.22;
-const CAMERA_DRIFT_AMPLITUDE_X: f32 = 0.35;
-const CAMERA_DRIFT_AMPLITUDE_Y: f32 = 0.25;
+// Subtle sine-wave drift on camera position — breathes life into an otherwise
+// fixed viewpoint without disorienting the viewer.
+const CAMERA_DRIFT_SPEED: (f32, f32) = (0.30, 0.22);
+const CAMERA_DRIFT_AMPLITUDE: (f32, f32) = (0.35, 0.25);
 
-// Tunnel geometry
-// Concentric layers — each entry is one nested tube radius. Add/remove entries
-// to add layers; pills-per-ring and ring count are shared across layers.
-const TUNNEL_LAYER_RADII: &[f32] = &[6.0, 9.5, 13.0];
+// Particle tunnel — N pills streaming forward through a donut-shaped emitter.
+// Camera looks down +Z; pills start spread uniformly along Z so steady-state
+// density is reached on frame 1. Each pill wraps back to far when it crosses near.
+const PILL_COUNT: usize = 1440;
+const EMITTER_RADIUS_MIN: f32 = 6.0;
+const EMITTER_RADIUS_MAX: f32 = 13.0;
 const TUNNEL_NEAR_Z: f32 = -3.0;
 const TUNNEL_FAR_Z: f32 = 80.0;
-const PILL_RINGS: usize = 30;
-const PILLS_PER_RING: usize = 16;
-const RING_ANGLE_STAGGER: f32 = 1.0;
-
-// Tunnel pill appearance and motion
-const PILL_SCALE: f32 = 0.5;
 const PILL_FORWARD_SPEED: f32 = 8.0;
-const PILL_SPIN_X: f32 = 0.4;
-const PILL_SPIN_Y: f32 = 0.8;
-const PILL_SPIN_Z: f32 = 1.2;
-const PILL_SCALE_JITTER: f32 = 0.25; // +/- fraction of PILL_SCALE applied per pill
-const PILL_SPIN_VARIANCE: f32 = 0.4; // +/- fraction of base spin applied per pill
+const PILL_SCALE: f32 = 0.5;
+const PILL_SCALE_JITTER: f32 = 0.25; // ± fraction per particle
+const PILL_SPIN: (f32, f32, f32) = (0.4, 0.8, 1.2);
+const PILL_SPIN_VARIANCE: f32 = 0.4;  // ± fraction per particle
 
-// Hero pill — anchors the composition with a large, slowly rotating
-// centerpiece. Camera looks down +Z (tunnel pills approach from high +Z and
-// wrap past near-Z = -3); positive Z is "in front".
-const HERO_POSITION_Z: f32 = 6.0;
+// Hero pill — large, slowly rotating centerpiece anchoring the composition.
+const HERO_POSITION_Z: f32 = 12.0;
 const HERO_SCALE: f32 = 1.5;
-const HERO_SPIN_X: f32 = 0.15;
-const HERO_SPIN_Y: f32 = 0.25;
-const HERO_SPIN_Z: f32 = 0.10;
+const HERO_SPIN: (f32, f32, f32) = (0.15, 0.25, 0.10);
 
-// Brand-cohesive palette: 4 warm pinks/amber + 1 cool lavender for contrast.
-// Each ring is tinted from this palette, giving the tunnel a chromatic rhythm
-// without drifting off-brand.
+// Brand-cohesive palette: 4 warm tints + 1 cool lavender accent.
 const PALETTE: &[(f32, f32, f32)] = &[
     (1.00, 0.45, 0.60), // coral pink — brand primary
     (1.00, 0.72, 0.38), // amber
     (1.00, 0.32, 0.52), // rose
     (0.95, 0.40, 0.82), // magenta
-    (0.70, 0.55, 1.00), // lavender (cool accent)
+    (0.70, 0.55, 1.00), // lavender
 ];
 const HERO_TINT: (f32, f32, f32) = (1.00, 0.55, 0.65);
 
+// --- Deterministic hash RNG --------------------------------------------------
+// Wang-style integer hash + salt table → six independent streams per particle.
+// No `rand` dep, reproducible across runs.
+
+const SALT_ANGLE: u32 = 0x9e37_79b9;
+const SALT_RADIUS: u32 = 0x85eb_ca6b;
+const SALT_Z: u32 = 0xc2b2_ae35;
+const SALT_SCALE: u32 = 0x27d4_eb2d;
+const SALT_SPIN: u32 = 0x1656_67b1;
+const SALT_MATERIAL: u32 = 0x7ed5_5d16;
+
+fn hash_u32(mut n: u32) -> u32 {
+    n = (n ^ 61) ^ (n >> 16);
+    n = n.wrapping_mul(9);
+    n ^= n >> 4;
+    n = n.wrapping_mul(0x27d4_eb2d);
+    n ^= n >> 15;
+    n
+}
+fn hash_f32(i: usize, salt: u32) -> f32 {
+    hash_u32((i as u32).wrapping_add(salt)) as f32 / u32::MAX as f32
+}
+fn hash_usize(i: usize, salt: u32, bound: usize) -> usize {
+    hash_u32((i as u32).wrapping_add(salt)) as usize % bound
+}
+// Centered in [-1, 1).
+fn hash_signed(i: usize, salt: u32) -> f32 {
+    hash_f32(i, salt) * 2.0 - 1.0
+}
+
+// --- Helpers -----------------------------------------------------------------
+
+fn apply_spin(transform: &mut TransformComponent, rate: (f32, f32, f32), dt: f32) {
+    let r = transform.rotation;
+    transform.set_rotation(Vector3f::new(
+        r.x + rate.0 * dt,
+        r.y + rate.1 * dt,
+        r.z + rate.2 * dt,
+    ));
+}
+
+fn tinted_pill_material(
+    engine: &mut Engine,
+    name: &str,
+    tint: (f32, f32, f32),
+    color_tex: TextureHandle,
+    normal_tex: TextureHandle,
+) -> Result<MaterialHandle> {
+    engine.add_resource(
+        Material::builder(name)
+            .texture("color", color_tex)?
+            .texture("normal", normal_tex)?
+            .color_parameter("tint", Color::new(tint.0, tint.1, tint.2))?
+            .build(),
+    )
+}
+
 // --- Components --------------------------------------------------------------
 
-define_component!(TunnelPillComponent { angle: f32 });
+define_component!(PillParticleComponent { spin_multiplier: f32 });
 define_component!(HeroPillComponent {});
 
 pub struct WebGame {}
 
 // --- Systems -----------------------------------------------------------------
 
-// Streams tunnel pills forward; wraps them back to the far end when they pass
-// the near plane. Adds per-pill spin variance driven by the pill's `angle` seed
-// so neighbors rotate at slightly different rates (organic, not grid-like).
-fn tunnel_pills_system(engine: &mut Engine) -> Result<()> {
+fn pill_particle_system(engine: &mut Engine) -> Result<()> {
     let dt = engine.get_global_component::<TimeComponent>()?.delta_time;
     let tunnel_length = TUNNEL_FAR_Z - TUNNEL_NEAR_Z;
 
     for (_entity, transform, pill) in
-        engine.iterate_two_components_mut::<TransformComponent, TunnelPillComponent>()?
+        engine.iterate_two_components_mut::<TransformComponent, PillParticleComponent>()?
     {
         let mut z = transform.position.z - PILL_FORWARD_SPEED * dt;
         while z < TUNNEL_NEAR_Z {
             z += tunnel_length;
         }
-        // Preserve x/y (baked in at spawn from angle × layer_radius); only z advances.
         transform.set_position(Vector3f::new(transform.position.x, transform.position.y, z));
 
-        let spin_variance = 1.0 + PILL_SPIN_VARIANCE * (pill.angle * 3.0).sin();
-        let rot = transform.rotation;
-        transform.set_rotation(Vector3f::new(
-            rot.x + PILL_SPIN_X * dt * spin_variance,
-            rot.y + PILL_SPIN_Y * dt * spin_variance,
-            rot.z + PILL_SPIN_Z * dt,
-        ));
+        let m = pill.spin_multiplier;
+        apply_spin(
+            transform,
+            (PILL_SPIN.0 * m, PILL_SPIN.1 * m, PILL_SPIN.2 * m),
+            dt,
+        );
     }
-
     Ok(())
 }
 
-// Slowly rotates the hero pill. Tagged separately so tunnel motion skips it.
 fn hero_pill_system(engine: &mut Engine) -> Result<()> {
     let dt = engine.get_global_component::<TimeComponent>()?.delta_time;
     for (_entity, transform, _hero) in
         engine.iterate_two_components_mut::<TransformComponent, HeroPillComponent>()?
     {
-        let rot = transform.rotation;
-        transform.set_rotation(Vector3f::new(
-            rot.x + HERO_SPIN_X * dt,
-            rot.y + HERO_SPIN_Y * dt,
-            rot.z + HERO_SPIN_Z * dt,
-        ));
+        apply_spin(transform, HERO_SPIN, dt);
     }
     Ok(())
 }
 
-// Adds subtle sine-wave drift to the camera position — breathes life into an
-// otherwise fixed viewpoint without disorienting the viewer.
 fn camera_drift_system(engine: &mut Engine) -> Result<()> {
     let time = engine.get_global_component::<TimeComponent>()?.time;
     for (_entity, transform, _cam) in
         engine.iterate_two_components_mut::<TransformComponent, CameraComponent>()?
     {
-        let drift_x = (time * CAMERA_DRIFT_SPEED_X).sin() * CAMERA_DRIFT_AMPLITUDE_X;
-        let drift_y = (time * CAMERA_DRIFT_SPEED_Y).cos() * CAMERA_DRIFT_AMPLITUDE_Y;
-        transform.set_position(Vector3f::new(drift_x, drift_y, CAMERA_POSITION_Z));
+        let x = (time * CAMERA_DRIFT_SPEED.0).sin() * CAMERA_DRIFT_AMPLITUDE.0;
+        let y = (time * CAMERA_DRIFT_SPEED.1).cos() * CAMERA_DRIFT_AMPLITUDE.1;
+        transform.set_position(Vector3f::new(x, y, CAMERA_POSITION_Z));
     }
     Ok(())
 }
@@ -133,52 +162,42 @@ impl PillGame for WebGame {
         engine.register_component::<TransformComponent>(active_scene)?;
         engine.register_component::<CameraComponent>(active_scene)?;
         engine.register_component::<MeshRenderingComponent>(active_scene)?;
-        engine.register_component::<TunnelPillComponent>(active_scene)?;
+        engine.register_component::<PillParticleComponent>(active_scene)?;
         engine.register_component::<HeroPillComponent>(active_scene)?;
 
-        // Assets are embedded in the binary on every target. Paths in
-        // include_bytes! are relative to this source file (src/game.rs →
-        // ../res/…). Zero runtime I/O, single-file deploy.
-        let pill_mesh_handle = engine.add_resource(Mesh::from_obj_bytes(
+        // Assets embedded in the binary (zero runtime I/O on any target).
+        let pill_mesh = engine.add_resource(Mesh::from_obj_bytes(
             "pill",
             include_bytes!("../res/models/pill.obj"),
         )?)?;
-        let pill_color_handle = engine.add_resource::<Texture>(Texture::from_bytes(
+        let color_tex = engine.add_resource::<Texture>(Texture::from_bytes(
             "pill_color",
             TextureType::Color,
             include_bytes!("../res/textures/pill_color.png"),
         ))?;
-        let pill_normal_handle = engine.add_resource::<Texture>(Texture::from_bytes(
+        let normal_tex = engine.add_resource::<Texture>(Texture::from_bytes(
             "pill_normal",
             TextureType::Normal,
             include_bytes!("../res/textures/pill_normal.png"),
         ))?;
 
-        // One material per palette tint; rings cycle through them.
-        let mut tunnel_materials = Vec::with_capacity(PALETTE.len());
-        for (i, (r, g, b)) in PALETTE.iter().enumerate() {
-            let mat = engine.add_resource(
-                Material::builder(&format!("tunnel_material_{i}"))
-                    .texture("color", pill_color_handle)?
-                    .texture("normal", pill_normal_handle)?
-                    .color_parameter("tint", Color::new(*r, *g, *b))?
-                    .build(),
-            )?;
-            tunnel_materials.push(mat);
-        }
+        let tunnel_materials: Vec<MaterialHandle> = PALETTE
+            .iter()
+            .enumerate()
+            .map(|(i, tint)| {
+                tinted_pill_material(
+                    engine,
+                    &format!("tunnel_material_{i}"),
+                    *tint,
+                    color_tex,
+                    normal_tex,
+                )
+            })
+            .collect::<Result<_>>()?;
+        let hero_material =
+            tinted_pill_material(engine, "hero_material", HERO_TINT, color_tex, normal_tex)?;
 
-        let hero_material = engine.add_resource(
-            Material::builder("hero_material")
-                .texture("color", pill_color_handle)?
-                .texture("normal", pill_normal_handle)?
-                .color_parameter(
-                    "tint",
-                    Color::new(HERO_TINT.0, HERO_TINT.1, HERO_TINT.2),
-                )?
-                .build(),
-        )?;
-
-        // Camera.
+        // Camera
         engine
             .build_entity(active_scene)
             .with_component(
@@ -190,16 +209,12 @@ impl PillGame for WebGame {
                 CameraComponent::builder()
                     .enabled(true)
                     .fov(CAMERA_FOV)
-                    .clear_color(Color::new(
-                        CLEAR_COLOR_R,
-                        CLEAR_COLOR_G,
-                        CLEAR_COLOR_B,
-                    ))
+                    .clear_color(Color::new(CLEAR_COLOR.0, CLEAR_COLOR.1, CLEAR_COLOR.2))
                     .build(),
             )
             .build();
 
-        // Hero pill — the composition's focal anchor.
+        // Hero pill
         engine
             .build_entity(active_scene)
             .with_component(
@@ -210,70 +225,45 @@ impl PillGame for WebGame {
             )
             .with_component(
                 MeshRenderingComponent::builder()
-                    .mesh(&pill_mesh_handle)
+                    .mesh(&pill_mesh)
                     .material(&hero_material)
                     .build(),
             )
             .with_component(HeroPillComponent {})
             .build();
 
-        // Tunnel rings. Outer loop: concentric layers; middle: rings along Z;
-        // inner: pills around the ring. Each layer shifts the palette by one
-        // so adjacent layers are chromatically distinct.
-        let ring_spacing = (TUNNEL_FAR_Z - TUNNEL_NEAR_Z) / PILL_RINGS as f32;
-        let angle_step = std::f32::consts::TAU / PILLS_PER_RING as f32;
+        // Emit PILL_COUNT particles from the donut (uniform in θ, radius, z).
+        let radius_span = EMITTER_RADIUS_MAX - EMITTER_RADIUS_MIN;
+        let tunnel_length = TUNNEL_FAR_Z - TUNNEL_NEAR_Z;
+        for i in 0..PILL_COUNT {
+            let theta = hash_f32(i, SALT_ANGLE) * std::f32::consts::TAU;
+            let radius = EMITTER_RADIUS_MIN + hash_f32(i, SALT_RADIUS) * radius_span;
+            let z = TUNNEL_NEAR_Z + hash_f32(i, SALT_Z) * tunnel_length;
+            let scale = PILL_SCALE * (1.0 + PILL_SCALE_JITTER * hash_signed(i, SALT_SCALE));
+            let spin_multiplier = 1.0 + PILL_SPIN_VARIANCE * hash_signed(i, SALT_SPIN);
+            let material = tunnel_materials[hash_usize(i, SALT_MATERIAL, tunnel_materials.len())];
 
-        for (layer_index, &layer_radius) in TUNNEL_LAYER_RADII.iter().enumerate() {
-            for ring_index in 0..PILL_RINGS {
-                let z = TUNNEL_NEAR_Z + ring_spacing * ring_index as f32;
-                let stagger = if ring_index % 2 == 0 {
-                    0.0
-                } else {
-                    angle_step * RING_ANGLE_STAGGER
-                };
-                let material_index =
-                    (ring_index + layer_index) % tunnel_materials.len();
-                let ring_material = tunnel_materials[material_index];
-
-                for pill_index in 0..PILLS_PER_RING {
-                    let angle = angle_step * pill_index as f32 + stagger;
-                    let x = angle.cos() * layer_radius;
-                    let y = angle.sin() * layer_radius;
-
-                    // Scale jitter: deterministic per-pill variance so
-                    // neighbors differ slightly, breaking the grid.
-                    let scale_jitter = 1.0
-                        + PILL_SCALE_JITTER
-                            * ((angle * 3.0).sin()
-                                + (ring_index as f32 * 1.3).cos()
-                                + (layer_index as f32 * 0.7).sin())
-                            * 0.5;
-                    let scale = PILL_SCALE * scale_jitter;
-
-                    engine
-                        .build_entity(active_scene)
-                        .with_component(
-                            TransformComponent::builder()
-                                .position(Vector3f::new(x, y, z))
-                                .scale(Vector3f::new(scale, scale, scale))
-                                .build(),
-                        )
-                        .with_component(
-                            MeshRenderingComponent::builder()
-                                .mesh(&pill_mesh_handle)
-                                .material(&ring_material)
-                                .build(),
-                        )
-                        .with_component(TunnelPillComponent { angle })
-                        .build();
-                }
-            }
+            engine
+                .build_entity(active_scene)
+                .with_component(
+                    TransformComponent::builder()
+                        .position(Vector3f::new(theta.cos() * radius, theta.sin() * radius, z))
+                        .scale(Vector3f::new(scale, scale, scale))
+                        .build(),
+                )
+                .with_component(
+                    MeshRenderingComponent::builder()
+                        .mesh(&pill_mesh)
+                        .material(&material)
+                        .build(),
+                )
+                .with_component(PillParticleComponent { spin_multiplier })
+                .build();
         }
 
-        engine.add_system("tunnel_pills", tunnel_pills_system)?;
+        engine.add_system("pill_particle", pill_particle_system)?;
         engine.add_system("hero_pill", hero_pill_system)?;
         engine.add_system("camera_drift", camera_drift_system)?;
-
         Ok(())
     }
 }
