@@ -26,10 +26,21 @@ const PILL_SCALE_JITTER: f32 = 0.25; // ± fraction per particle
 const PILL_SPIN: (f32, f32, f32) = (0.4, 0.8, 1.2);
 const PILL_SPIN_VARIANCE: f32 = 0.4;  // ± fraction per particle
 
-// Hero pill — large, slowly rotating centerpiece anchoring the composition.
+// Parallax: per-particle forward speed scales with 1/radius → inner pills
+// streak past, outer pills drift. Big depth cue for nearly free.
+const PILL_PARALLAX_REF_RADIUS: f32 = EMITTER_RADIUS_MIN;
+
+// Y wobble: each particle gets a per-particle phase; y oscillates as the pill
+// travels through z so the whole tunnel reads as "swimming", not rigid.
+const PILL_WOBBLE_AMPLITUDE: f32 = 0.45;
+const PILL_WOBBLE_Z_K: f32 = 0.22; // ≈ 2.9 waves across the tunnel length
+
+// Hero pill — large, slowly rotating, gently breathing centerpiece.
 const HERO_POSITION_Z: f32 = 12.0;
 const HERO_SCALE: f32 = 1.5;
 const HERO_SPIN: (f32, f32, f32) = (0.15, 0.25, 0.10);
+const HERO_BREATH_AMPLITUDE: f32 = 0.08; // ± fraction of scale
+const HERO_BREATH_SPEED: f32 = 0.7;
 
 // Brand-cohesive palette: 4 warm tints + 1 cool lavender accent.
 const PALETTE: &[(f32, f32, f32)] = &[
@@ -42,15 +53,16 @@ const PALETTE: &[(f32, f32, f32)] = &[
 const HERO_TINT: (f32, f32, f32) = (1.00, 0.55, 0.65);
 
 // --- Deterministic hash RNG --------------------------------------------------
-// Wang-style integer hash + salt table → six independent streams per particle.
+// Wang-style integer hash + seed table → independent streams per particle.
 // No `rand` dep, reproducible across runs.
 
-const SALT_ANGLE: u32 = 0x9e37_79b9;
-const SALT_RADIUS: u32 = 0x85eb_ca6b;
-const SALT_Z: u32 = 0xc2b2_ae35;
-const SALT_SCALE: u32 = 0x27d4_eb2d;
-const SALT_SPIN: u32 = 0x1656_67b1;
-const SALT_MATERIAL: u32 = 0x7ed5_5d16;
+const SEED_ANGLE: u32 = 0x9e37_79b9;
+const SEED_RADIUS: u32 = 0x85eb_ca6b;
+const SEED_Z: u32 = 0xc2b2_ae35;
+const SEED_SCALE: u32 = 0x27d4_eb2d;
+const SEED_SPIN: u32 = 0x1656_67b1;
+const SEED_MATERIAL: u32 = 0x7ed5_5d16;
+const SEED_WOBBLE: u32 = 0xd3a2_646c;
 
 fn hash_u32(mut n: u32) -> u32 {
     n = (n ^ 61) ^ (n >> 16);
@@ -60,15 +72,15 @@ fn hash_u32(mut n: u32) -> u32 {
     n ^= n >> 15;
     n
 }
-fn hash_f32(i: usize, salt: u32) -> f32 {
-    hash_u32((i as u32).wrapping_add(salt)) as f32 / u32::MAX as f32
+fn hash_f32(i: usize, seed: u32) -> f32 {
+    hash_u32((i as u32).wrapping_add(seed)) as f32 / u32::MAX as f32
 }
-fn hash_usize(i: usize, salt: u32, bound: usize) -> usize {
-    hash_u32((i as u32).wrapping_add(salt)) as usize % bound
+fn hash_usize(i: usize, seed: u32, bound: usize) -> usize {
+    hash_u32((i as u32).wrapping_add(seed)) as usize % bound
 }
 // Centered in [-1, 1).
-fn hash_signed(i: usize, salt: u32) -> f32 {
-    hash_f32(i, salt) * 2.0 - 1.0
+fn hash_signed(i: usize, seed: u32) -> f32 {
+    hash_f32(i, seed) * 2.0 - 1.0
 }
 
 // --- Helpers -----------------------------------------------------------------
@@ -100,7 +112,12 @@ fn tinted_pill_material(
 
 // --- Components --------------------------------------------------------------
 
-define_component!(PillParticleComponent { spin_multiplier: f32 });
+define_component!(PillParticleComponent {
+    spin_multiplier: f32,
+    forward_speed: f32,  // per-particle (parallax)
+    base_y: f32,         // sample point around which y wobbles
+    wobble_phase: f32,   // per-particle phase for the y wobble
+});
 define_component!(HeroPillComponent {});
 
 pub struct WebGame {}
@@ -114,11 +131,16 @@ fn pill_particle_system(engine: &mut Engine) -> Result<()> {
     for (_entity, transform, pill) in
         engine.iterate_two_components_mut::<TransformComponent, PillParticleComponent>()?
     {
-        let mut z = transform.position.z - PILL_FORWARD_SPEED * dt;
+        let mut z = transform.position.z - pill.forward_speed * dt;
         while z < TUNNEL_NEAR_Z {
             z += tunnel_length;
         }
-        transform.set_position(Vector3f::new(transform.position.x, transform.position.y, z));
+        let y_wobble = (z * PILL_WOBBLE_Z_K + pill.wobble_phase).sin() * PILL_WOBBLE_AMPLITUDE;
+        transform.set_position(Vector3f::new(
+            transform.position.x,
+            pill.base_y + y_wobble,
+            z,
+        ));
 
         let m = pill.spin_multiplier;
         apply_spin(
@@ -131,11 +153,14 @@ fn pill_particle_system(engine: &mut Engine) -> Result<()> {
 }
 
 fn hero_pill_system(engine: &mut Engine) -> Result<()> {
-    let dt = engine.get_global_component::<TimeComponent>()?.delta_time;
+    let tc = engine.get_global_component::<TimeComponent>()?;
+    let (time, dt) = (tc.time, tc.delta_time);
+    let s = HERO_SCALE * (1.0 + HERO_BREATH_AMPLITUDE * (time * HERO_BREATH_SPEED).sin());
     for (_entity, transform, _hero) in
         engine.iterate_two_components_mut::<TransformComponent, HeroPillComponent>()?
     {
         apply_spin(transform, HERO_SPIN, dt);
+        transform.set_scale(Vector3f::new(s, s, s));
     }
     Ok(())
 }
@@ -236,18 +261,22 @@ impl PillGame for WebGame {
         let radius_span = EMITTER_RADIUS_MAX - EMITTER_RADIUS_MIN;
         let tunnel_length = TUNNEL_FAR_Z - TUNNEL_NEAR_Z;
         for i in 0..PILL_COUNT {
-            let theta = hash_f32(i, SALT_ANGLE) * std::f32::consts::TAU;
-            let radius = EMITTER_RADIUS_MIN + hash_f32(i, SALT_RADIUS) * radius_span;
-            let z = TUNNEL_NEAR_Z + hash_f32(i, SALT_Z) * tunnel_length;
-            let scale = PILL_SCALE * (1.0 + PILL_SCALE_JITTER * hash_signed(i, SALT_SCALE));
-            let spin_multiplier = 1.0 + PILL_SPIN_VARIANCE * hash_signed(i, SALT_SPIN);
-            let material = tunnel_materials[hash_usize(i, SALT_MATERIAL, tunnel_materials.len())];
+            let theta = hash_f32(i, SEED_ANGLE) * std::f32::consts::TAU;
+            let radius = EMITTER_RADIUS_MIN + hash_f32(i, SEED_RADIUS) * radius_span;
+            let z = TUNNEL_NEAR_Z + hash_f32(i, SEED_Z) * tunnel_length;
+            let base_x = theta.cos() * radius;
+            let base_y = theta.sin() * radius;
+            let scale = PILL_SCALE * (1.0 + PILL_SCALE_JITTER * hash_signed(i, SEED_SCALE));
+            let spin_multiplier = 1.0 + PILL_SPIN_VARIANCE * hash_signed(i, SEED_SPIN);
+            let forward_speed = PILL_FORWARD_SPEED * PILL_PARALLAX_REF_RADIUS / radius;
+            let wobble_phase = hash_f32(i, SEED_WOBBLE) * std::f32::consts::TAU;
+            let material = tunnel_materials[hash_usize(i, SEED_MATERIAL, tunnel_materials.len())];
 
             engine
                 .build_entity(active_scene)
                 .with_component(
                     TransformComponent::builder()
-                        .position(Vector3f::new(theta.cos() * radius, theta.sin() * radius, z))
+                        .position(Vector3f::new(base_x, base_y, z))
                         .scale(Vector3f::new(scale, scale, scale))
                         .build(),
                 )
@@ -257,7 +286,12 @@ impl PillGame for WebGame {
                         .material(&material)
                         .build(),
                 )
-                .with_component(PillParticleComponent { spin_multiplier })
+                .with_component(PillParticleComponent {
+                    spin_multiplier,
+                    forward_speed,
+                    base_y,
+                    wobble_phase,
+                })
                 .build();
         }
 
