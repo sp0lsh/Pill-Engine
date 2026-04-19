@@ -4,12 +4,7 @@ build/
 .vscode/
 *.lock
 
-engine/Cargo.toml
-examples/*/Cargo.toml
 docs/*
 engine/pill_engine/docs/uml_out/*
-
-# repo-root web/ was legacy build-web.sh output destination
-/web/
 
 *.log
