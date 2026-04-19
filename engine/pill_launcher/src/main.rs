@@ -725,6 +725,17 @@ fn build_web_game_project(
     //  - [workspace] + resolver = "2" so cargo doesn't walk up into the game's
     //    parent workspace and matches engine/Cargo.toml's feature unification
     //    (wgpu backend selection is sensitive to resolver version).
+    //  - [profile.release] tuned for minimum wasm size (Tier 1 size opt). Cuts
+    //    final wasm by ~1–1.5 MB vs default release profile:
+    //      opt-level = "z"    size over speed
+    //      lto = "fat"        cross-crate inlining + aggressive DCE
+    //      codegen-units = 1  slower build, tighter output
+    //      panic = "abort"    drops unwinding tables (~50–150 KB)
+    //    NOTE: `strip` is deliberately NOT set here — the twiggy size report
+    //    analyzes the pre-wasm-opt artifact, and it needs the function-names
+    //    subsection to produce per-crate breakdowns. Stripping happens later
+    //    in wasm-opt (see [package.metadata.wasm-pack.profile.release] below)
+    //    so only the SHIPPED binary loses the names.
     {
         let mut f = fs::OpenOptions::new()
             .append(true)
@@ -734,6 +745,21 @@ fn build_web_game_project(
             .context("Failed to append pill_game dep to scratch Cargo.toml")?;
         writeln!(f, "\n[workspace]\nresolver = \"2\"")
             .context("Failed to append [workspace] to scratch Cargo.toml")?;
+        writeln!(
+            f,
+            "\n[profile.release]\nopt-level = \"z\"\nlto = \"fat\"\ncodegen-units = 1\npanic = \"abort\""
+        )
+        .context("Failed to append [profile.release] to scratch Cargo.toml")?;
+        // wasm-pack's bundled wasm-opt errors on rustc-emitted features
+        // (nontrapping-fptoint, bulk-memory, sign-ext) that get emitted when
+        // LTO+opt-level=z are enabled. Enable them explicitly.
+        // --strip-debug / --strip-producers drop symbols from the SHIPPED
+        // binary; the twiggy report still sees them on the pre-opt artifact.
+        writeln!(
+            f,
+            "\n[package.metadata.wasm-pack.profile.release]\nwasm-opt = [\"-Oz\", \"--strip-debug\", \"--strip-producers\", \"--enable-nontrapping-float-to-int\", \"--enable-bulk-memory\", \"--enable-sign-ext\", \"--enable-mutable-globals\", \"--enable-reference-types\"]"
+        )
+        .context("Failed to append wasm-pack metadata to scratch Cargo.toml")?;
     }
 
     let scratch_pkg_str = scratch_pkg_dir.to_string_lossy().to_string();
