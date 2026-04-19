@@ -1,5 +1,9 @@
 #![allow(non_snake_case, dead_code)]
 
+mod dev_server;
+mod size_report;
+mod wasm_build;
+
 use anyhow::*;
 use clap::{App, AppSettings, Arg};
 use config::Config;
@@ -12,14 +16,11 @@ use std::{
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{mpsc, Arc, Mutex},
-    thread,
-    time::{Duration, SystemTime},
 };
 
 // - Cargo commands
 
-enum Location {
+pub(crate) enum Location {
     EngineProjectRoot, // Main engine project directory (containing creates, examples, etc)
     EngineCrates,
     PillEngineCrate,
@@ -29,7 +30,7 @@ enum Location {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum CompileMode {
+pub(crate) enum CompileMode {
     Debug,
     Release,
     HotReload,
@@ -72,7 +73,7 @@ fn target_dir_for(mode: &CompileMode) -> &'static str {
 }
 
 // Returns absolute paths
-fn get_path(location: Location) -> PathBuf {
+pub(crate) fn get_path(location: Location) -> PathBuf {
     let main_engine_directory = env::current_exe()
         .unwrap()
         .parent()
@@ -98,7 +99,7 @@ fn get_path(location: Location) -> PathBuf {
     }
 }
 
-fn modify_file<A: FnMut(String) -> String>(
+pub(crate) fn modify_file<A: FnMut(String) -> String>(
     input_path: &PathBuf,
     output_path: &PathBuf,
     mut action: A,
@@ -617,603 +618,6 @@ fn build_game_project(
     Ok(())
 }
 
-// Builds the game for WASM + WebGPU, outputting to <game>/build/wasm/.
-//
-// Strategy: copy the wasm crate template (pill_launcher/res/templates/wasm/)
-// into a scratch dir inside the game directory, rewrite path-deps to absolute
-// paths (engine crates + the game at -p), then run wasm-pack. Keeps the engine
-// directory pristine across multi-game use.
-fn build_web_game_project(
-    game_project_directory_path: &Path,
-    compile_mode: &CompileMode,
-) -> Result<()> {
-    println!(
-        "Building WASM/WebGPU target for game project at {}...",
-        game_project_directory_path.display()
-    );
-
-    if *compile_mode == CompileMode::HotReload {
-        println!("Note: hot-reload is not meaningful for WASM; using --dev mode.");
-    }
-
-    let wasm_template_dir = get_path(Location::PillLauncherCrate)
-        .join("res")
-        .join("templates")
-        .join("wasm");
-
-    let build_wasm_dir = game_project_directory_path.join("build").join("wasm");
-    let scratch_dir = build_wasm_dir.join(".build");
-    let scratch_pill_web_dir = scratch_dir.join("pill_web");
-    let scratch_pkg_dir = scratch_dir.join("pkg");
-
-    fs::create_dir_all(&scratch_pill_web_dir).with_context(|| {
-        format!(
-            "Failed to create scratch dir {}",
-            scratch_pill_web_dir.display()
-        )
-    })?;
-
-    fs::copy(
-        wasm_template_dir.join("Cargo.toml"),
-        scratch_pill_web_dir.join("Cargo.toml"),
-    )
-    .context("Failed to copy pill_web Cargo.toml to scratch")?;
-
-    // Copy the engine workspace's Cargo.lock so the scratch build resolves to
-    // the same crate versions as an in-place build of engine/pill_web. Without
-    // this, cargo re-resolves and picks newer versions (wasm-bindgen in
-    // particular), which on this branch breaks WebGPU rendering.
-    let engine_lock = get_path(Location::EngineCrates).join("Cargo.lock");
-    if engine_lock.exists() {
-        fs::copy(&engine_lock, scratch_pill_web_dir.join("Cargo.lock"))
-            .context("Failed to copy engine Cargo.lock into scratch")?;
-    }
-
-    let scratch_src_dir = scratch_pill_web_dir.join("src");
-    if scratch_src_dir.exists() {
-        fs::remove_dir_all(&scratch_src_dir).context("Failed to clean scratch src/")?;
-    }
-    fs_extra::dir::copy(
-        wasm_template_dir.join("src"),
-        &scratch_pill_web_dir,
-        &CopyOptions::new().overwrite(true),
-    )
-    .context("Failed to copy pill_web src/ to scratch")?;
-
-    let engine_crates_dir = get_path(Location::EngineCrates);
-    let pill_engine_path = engine_crates_dir
-        .join("pill_engine")
-        .to_string_lossy()
-        .replace("\\", "/");
-    let pill_renderer_path = engine_crates_dir
-        .join("pill_renderer")
-        .to_string_lossy()
-        .replace("\\", "/");
-    let pill_core_path = engine_crates_dir
-        .join("pill_core")
-        .to_string_lossy()
-        .replace("\\", "/");
-    let pill_game_path = game_project_directory_path
-        .to_string_lossy()
-        .replace("\\", "/");
-
-    let scratch_manifest = scratch_pill_web_dir.join("Cargo.toml");
-    modify_file(
-        &scratch_manifest,
-        &scratch_manifest,
-        |line: String| -> String {
-            let trimmed = line.trim_start();
-            if trimmed.starts_with("pill_engine ") || trimmed.starts_with("pill_engine=") {
-                return format!(
-                    "pill_engine = {{ path = \"{}\", features = [\"game\", \"internal\"] }}",
-                    pill_engine_path
-                );
-            }
-            if trimmed.starts_with("pill_renderer ") || trimmed.starts_with("pill_renderer=") {
-                return format!("pill_renderer = {{ path = \"{}\" }}", pill_renderer_path);
-            }
-            if trimmed.starts_with("pill_core ") || trimmed.starts_with("pill_core=") {
-                return format!("pill_core = {{ path = \"{}\" }}", pill_core_path);
-            }
-            line
-        },
-    )?;
-
-    // Append:
-    //  - pill_game dep pointing at the -p game directory (not in the committed
-    //    Cargo.toml; injected here so pill_web is only buildable via launcher).
-    //  - [workspace] + resolver = "2" so cargo doesn't walk up into the game's
-    //    parent workspace and matches engine/Cargo.toml's feature unification
-    //    (wgpu backend selection is sensitive to resolver version).
-    //  - [profile.release] tuned for minimum wasm size (Tier 1 size opt). Cuts
-    //    final wasm by ~1–1.5 MB vs default release profile:
-    //      opt-level = "z"    size over speed
-    //      lto = "fat"        cross-crate inlining + aggressive DCE
-    //      codegen-units = 1  slower build, tighter output
-    //      panic = "abort"    drops unwinding tables (~50–150 KB)
-    //    NOTE: `strip` is deliberately NOT set here — the twiggy size report
-    //    analyzes the pre-wasm-opt artifact, and it needs the function-names
-    //    subsection to produce per-crate breakdowns. Stripping happens later
-    //    in wasm-opt (see [package.metadata.wasm-pack.profile.release] below)
-    //    so only the SHIPPED binary loses the names.
-    {
-        let mut f = fs::OpenOptions::new()
-            .append(true)
-            .open(&scratch_manifest)
-            .context("Failed to open scratch Cargo.toml for append")?;
-        writeln!(f, "\npill_game = {{ path = \"{}\" }}", pill_game_path)
-            .context("Failed to append pill_game dep to scratch Cargo.toml")?;
-        writeln!(f, "\n[workspace]\nresolver = \"2\"")
-            .context("Failed to append [workspace] to scratch Cargo.toml")?;
-        writeln!(
-            f,
-            "\n[profile.release]\nopt-level = \"z\"\nlto = \"fat\"\ncodegen-units = 1\npanic = \"abort\""
-        )
-        .context("Failed to append [profile.release] to scratch Cargo.toml")?;
-        // wasm-pack's bundled wasm-opt errors on rustc-emitted features
-        // (nontrapping-fptoint, bulk-memory, sign-ext) that get emitted when
-        // LTO+opt-level=z are enabled. Enable them explicitly.
-        // --strip-debug / --strip-producers drop symbols from the SHIPPED
-        // binary; the twiggy report still sees them on the pre-opt artifact.
-        writeln!(
-            f,
-            "\n[package.metadata.wasm-pack.profile.release]\nwasm-opt = [\"-Oz\", \"--strip-debug\", \"--strip-producers\", \"--enable-nontrapping-float-to-int\", \"--enable-bulk-memory\", \"--enable-sign-ext\", \"--enable-mutable-globals\", \"--enable-reference-types\"]"
-        )
-        .context("Failed to append wasm-pack metadata to scratch Cargo.toml")?;
-    }
-
-    let scratch_pkg_str = scratch_pkg_dir.to_string_lossy().to_string();
-    let mut args: Vec<String> = vec![
-        "build".into(),
-        "--target".into(),
-        "web".into(),
-        "--out-dir".into(),
-        scratch_pkg_str,
-    ];
-    match compile_mode {
-        CompileMode::Release => {}
-        CompileMode::Debug | CompileMode::HotReload => args.push("--dev".into()),
-    }
-
-    println!(
-        "Running wasm-pack in scratch crate {}...",
-        scratch_pill_web_dir.display()
-    );
-
-    // Prefer rustup's toolchain over Homebrew's rustc — Homebrew doesn't ship
-    // the wasm32-unknown-unknown target.
-    let mut cmd = Command::new("wasm-pack");
-    cmd.args(&args).current_dir(&scratch_pill_web_dir);
-    if let Some(home) = env::var_os("HOME") {
-        let cargo_bin = PathBuf::from(home).join(".cargo").join("bin");
-        let existing = env::var_os("PATH").unwrap_or_default();
-        let mut parts: Vec<PathBuf> = vec![cargo_bin];
-        parts.extend(env::split_paths(&existing).filter(|p| p != Path::new("/opt/homebrew/bin")));
-        if let std::result::Result::Ok(joined) = env::join_paths(parts) {
-            cmd.env("PATH", joined);
-        }
-    }
-    let status = cmd.status().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            Error::msg("wasm-pack not found on PATH. Install it with: cargo install wasm-pack")
-        } else {
-            Error::new(e).context("Failed to execute wasm-pack")
-        }
-    })?;
-
-    if !status.success() {
-        bail!("wasm-pack build failed (exit {:?})", status.code());
-    }
-
-    fs::create_dir_all(&build_wasm_dir)
-        .with_context(|| format!("Failed to create {}", build_wasm_dir.display()))?;
-
-    for file in ["pill_web.js", "pill_web_bg.wasm"] {
-        let src = scratch_pkg_dir.join(file);
-        let dst = build_wasm_dir.join(file);
-        fs::copy(&src, &dst)
-            .with_context(|| format!("Failed to copy {} to {}", src.display(), dst.display()))?;
-    }
-
-    // Copy the engine's web template dir (index.html, pill_logo.png, any future
-    // assets) into the build output. This is the default chrome.
-    let template_web_dir = get_path(Location::PillLauncherCrate)
-        .join("res")
-        .join("templates")
-        .join("web");
-    for entry in fs::read_dir(&template_web_dir)
-        .with_context(|| format!("Failed to read template dir {}", template_web_dir.display()))?
-    {
-        let entry = entry?;
-        // path().metadata() follows symlinks — pill_logo.png is a symlink into
-        // media/logo/ and must be treated as the file it points at.
-        if entry.path().metadata()?.is_file() {
-            let dst = build_wasm_dir.join(entry.file_name());
-            fs::copy(entry.path(), &dst).with_context(|| {
-                format!(
-                    "Failed to copy {} to {}",
-                    entry.path().display(),
-                    dst.display()
-                )
-            })?;
-        }
-    }
-
-    // Overlay any per-game customizations from <game>/web/ on top. Each file
-    // individually overrides the engine default (e.g. drop in a custom
-    // index.html, swap the logo, add a favicon).
-    let user_web_dir = game_project_directory_path.join("web");
-    if user_web_dir.is_dir() {
-        for entry in fs::read_dir(&user_web_dir)
-            .with_context(|| format!("Failed to read {}", user_web_dir.display()))?
-        {
-            let entry = entry?;
-            if entry.path().metadata()?.is_file() {
-                let dst = build_wasm_dir.join(entry.file_name());
-                fs::copy(entry.path(), &dst).with_context(|| {
-                    format!(
-                        "Failed to overlay {} onto {}",
-                        entry.path().display(),
-                        dst.display()
-                    )
-                })?;
-            }
-        }
-    }
-
-    // Size report — only meaningful on release builds (debug wasm is dominated
-    // by debuginfo symbols).
-    if *compile_mode == CompileMode::Release {
-        let preopt_wasm = scratch_pill_web_dir
-            .join("target")
-            .join("wasm32-unknown-unknown")
-            .join("release")
-            .join("pill_web.wasm");
-        print_wasm_size_report(&build_wasm_dir, &preopt_wasm);
-    }
-
-    println!();
-    println!("Done! Serve with:");
-    println!(
-        "  PillLauncher -a run -t wasm -p {}",
-        game_project_directory_path.display()
-    );
-    println!(
-        "  (or any static server pointed at {})",
-        build_wasm_dir.display()
-    );
-
-    Ok(())
-}
-
-// Prints a compact post-build size report: final (post-wasm-opt) vs pre-opt
-// sizes, per-crate breakdown, and top symbols. No-ops with a hint if `twiggy`
-// is not installed.
-fn print_wasm_size_report(build_wasm_dir: &Path, preopt_wasm: &Path) {
-    let preopt_size = match fs::metadata(preopt_wasm).map(|m| m.len()) {
-        core::result::Result::Ok(v) => v,
-        core::result::Result::Err(_) => return,
-    };
-    let final_wasm = build_wasm_dir.join("pill_web_bg.wasm");
-    let final_size = fs::metadata(&final_wasm).ok().map(|m| m.len());
-
-    println!();
-    match final_size {
-        Some(f) => println!(
-            "wasm size: final {} | pre-opt {}",
-            fmt_bytes(f),
-            fmt_bytes(preopt_size)
-        ),
-        None => println!("wasm size: pre-opt {}", fmt_bytes(preopt_size)),
-    }
-
-    let output = match Command::new("twiggy")
-        .args(["top", "-n", "15000"])
-        .arg(preopt_wasm)
-        .stderr(Stdio::null())
-        .output()
-    {
-        core::result::Result::Ok(o) => o,
-        core::result::Result::Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            println!("(install twiggy for per-crate breakdown: cargo install twiggy)");
-            return;
-        }
-        core::result::Result::Err(_) => return,
-    };
-    if !output.status.success() {
-        return;
-    }
-    let stdout = match String::from_utf8(output.stdout) {
-        core::result::Result::Ok(s) => s,
-        core::result::Result::Err(_) => return,
-    };
-
-    // Parse twiggy text output. Each data row:
-    //   "   <bytes> ┊ <pct>% ┊ <item name>"
-    let mut items: Vec<(u64, String)> = Vec::new();
-    for line in stdout.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty()
-            || trimmed.starts_with("Shallow")
-            || trimmed.starts_with('─')
-            || trimmed.starts_with("Σ")
-            || (trimmed.contains("and ") && trimmed.contains("more"))
-        {
-            continue;
-        }
-        let parts: Vec<&str> = trimmed.split('┊').collect();
-        if parts.len() < 3 {
-            continue;
-        }
-        let bytes: u64 = match parts[0].trim().parse() {
-            core::result::Result::Ok(v) => v,
-            core::result::Result::Err(_) => continue,
-        };
-        if bytes == 0 {
-            continue;
-        }
-        items.push((bytes, parts[2].trim().to_string()));
-    }
-
-    if items.is_empty() {
-        return;
-    }
-    // Percentages are against the actual binary size, not the sum of twiggy's
-    // shallow bytes (which double-counts — e.g. symbols referencing .rodata).
-    let total = preopt_size;
-
-    // Aggregate by crate (mirrors the awk heuristics in the old wasm-size.sh).
-    let mut by_crate: std::collections::HashMap<String, u64> =
-        std::collections::HashMap::new();
-    for (bytes, name) in &items {
-        *by_crate.entry(classify_crate(name)).or_insert(0) += *bytes;
-    }
-    let mut groups: Vec<(String, u64)> = by_crate.into_iter().collect();
-    groups.sort_by(|a, b| b.1.cmp(&a.1));
-
-    println!();
-    println!("Crate breakdown (% of pre-opt {}):", fmt_bytes(total));
-    println!("  {:<18} {:>10} {:>7}", "crate", "size", "%");
-    for (crate_name, bytes) in groups.iter().take(15) {
-        let pct = 100.0 * *bytes as f64 / total as f64;
-        println!(
-            "  {:<18} {:>10} {:>6.1}%",
-            crate_name,
-            fmt_bytes(*bytes),
-            pct
-        );
-    }
-
-    println!();
-    println!("Top 10 symbols:");
-    for (bytes, name) in items.iter().take(10) {
-        let pct = 100.0 * *bytes as f64 / total as f64;
-        let display_name = if name.chars().count() > 72 {
-            let truncated: String = name.chars().take(69).collect();
-            format!("{truncated}...")
-        } else {
-            name.clone()
-        };
-        println!(
-            "  {:>10} {:>5.1}%  {}",
-            fmt_bytes(*bytes),
-            pct,
-            display_name
-        );
-    }
-}
-
-fn fmt_bytes(n: u64) -> String {
-    const MB: f64 = 1024.0 * 1024.0;
-    const KB: f64 = 1024.0;
-    let f = n as f64;
-    if f >= MB {
-        format!("{:.2} MB", f / MB)
-    } else if f >= KB {
-        format!("{:.1} KB", f / KB)
-    } else {
-        format!("{n} B")
-    }
-}
-
-// Classify a twiggy item name into a coarse crate bucket. Heuristics ported
-// verbatim from wasm-size.sh's awk block — extract the leading identifier,
-// normalize known crate families into groups.
-fn classify_crate(name: &str) -> String {
-    if name.contains(".rodata") || name.contains("data segment") {
-        return "[rodata]".into();
-    }
-    if name.contains("function names") {
-        return "[debug:names]".into();
-    }
-    if name.contains("__wasm_bindgen") {
-        return "[wasm-bindgen]".into();
-    }
-    if name.contains("custom section") {
-        return "[custom]".into();
-    }
-    if name.starts_with("elem[")
-        || name.starts_with("type[")
-        || name.starts_with("import ")
-        || name.starts_with("table[")
-    {
-        return "[wasm-meta]".into();
-    }
-
-    // Peel leading `<` and any `&` / `&mut ` so `<&mut Foo as Bar>::baz` resolves to `Foo`.
-    let rest = name.strip_prefix('<').unwrap_or(name);
-    let rest = rest
-        .strip_prefix("&mut ")
-        .or_else(|| rest.strip_prefix('&'))
-        .unwrap_or(rest);
-    let ident: String = rest
-        .chars()
-        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-        .collect();
-
-    if ident.is_empty() {
-        return "[other]".into();
-    }
-    match ident.as_str() {
-        "core" | "alloc" | "std" | "compiler_builtins" | "rustc_demangle" | "dlmalloc"
-        | "str" | "bool" | "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64"
-        | "f32" | "f64" | "char" | "usize" | "isize" | "T" => "[rust-std]".into(),
-        "jpeg_decoder" | "png" | "tiff" | "gif" | "weezl" | "miniz_oxide" | "color_quant"
-        | "qoi" | "exr" => "image".into(),
-        "epaint" | "emath" | "egui_wgpu" | "egui_winit" => "egui".into(),
-        "codespan_reporting" | "codespan" | "pp_rs" | "spirv" => "naga".into(),
-        "wgpu_hal" | "wgpu_core" | "wgpu_types" => "wgpu".into(),
-        "js_sys" => "web_sys".into(),
-        _ => ident,
-    }
-}
-
-// Serves <game>/build/wasm/ on localhost:8080 with live reload.
-// Ensures the build is up to date first, then runs a tiny_http server that:
-//   - serves static files from build/wasm/
-//   - injects a long-poll client into HTML responses
-//   - watches build/wasm/ mtimes and triggers a browser reload on any change
-fn run_web_game_project(
-    game_project_directory_path: &Path,
-    compile_mode: &CompileMode,
-) -> Result<()> {
-    build_web_game_project(game_project_directory_path, compile_mode)?;
-
-    let build_wasm_dir = game_project_directory_path.join("build").join("wasm");
-    let addr = "127.0.0.1:8080";
-
-    // Broadcast set for long-poll subscribers. Each pending /__reload request
-    // parks a Sender here; when any file in build_wasm_dir changes, the watcher
-    // drains the vec and signals every subscriber.
-    let subscribers: Arc<Mutex<Vec<mpsc::Sender<()>>>> = Arc::new(Mutex::new(Vec::new()));
-
-    // File-change watcher thread — polls mtimes every 500ms.
-    {
-        let subscribers = Arc::clone(&subscribers);
-        let watch_dir = build_wasm_dir.clone();
-        let mut last = latest_mtime(&watch_dir);
-        thread::spawn(move || loop {
-            thread::sleep(Duration::from_millis(500));
-            let cur = latest_mtime(&watch_dir);
-            if cur > last && cur.is_some() {
-                last = cur;
-                let mut subs = subscribers.lock().unwrap();
-                for tx in subs.drain(..) {
-                    let _ = tx.send(());
-                }
-            }
-        });
-    }
-
-    let server = tiny_http::Server::http(addr).map_err(|e| Error::msg(e.to_string()))?;
-    println!();
-    println!("Serving {} at http://{}", build_wasm_dir.display(), addr);
-    println!("Live reload enabled — the page will refresh on wasm rebuilds.");
-    println!("Ctrl+C to stop.");
-
-    for request in server.incoming_requests() {
-        let subscribers = Arc::clone(&subscribers);
-        let build_wasm_dir = build_wasm_dir.clone();
-        thread::spawn(move || {
-            if let Err(e) = handle_http_request(request, &build_wasm_dir, subscribers) {
-                eprintln!("http request error: {:#}", e);
-            }
-        });
-    }
-
-    Ok(())
-}
-
-fn latest_mtime(dir: &Path) -> Option<SystemTime> {
-    fs::read_dir(dir).ok()?.filter_map(|e| e.ok()).filter_map(|e| {
-        let name = e.file_name();
-        let name_str = name.to_string_lossy();
-        // Skip dotfiles and .build scratch dir
-        if name_str.starts_with('.') {
-            return None;
-        }
-        let md = e.metadata().ok()?;
-        if !md.is_file() {
-            return None;
-        }
-        md.modified().ok()
-    }).max()
-}
-
-fn handle_http_request(
-    request: tiny_http::Request,
-    build_wasm_dir: &Path,
-    subscribers: Arc<Mutex<Vec<mpsc::Sender<()>>>>,
-) -> Result<()> {
-    let url_path = request.url().split('?').next().unwrap_or("/").to_string();
-
-    // Live-reload long-poll endpoint.
-    if url_path == "/__reload" {
-        let (tx, rx) = mpsc::channel();
-        subscribers.lock().unwrap().push(tx);
-        // Block up to 30s waiting for a file-change signal.
-        let signaled = rx.recv_timeout(Duration::from_secs(30)).is_ok();
-        let status = if signaled { 200 } else { 204 };
-        let resp = tiny_http::Response::from_string("").with_status_code(status);
-        request.respond(resp)?;
-        return Ok(());
-    }
-
-    // Map URL path to a file under build_wasm_dir.
-    let rel = url_path.trim_start_matches('/');
-    let rel = if rel.is_empty() { "index.html" } else { rel };
-    // Reject path traversal.
-    if rel.split('/').any(|seg| seg == "..") {
-        let resp = tiny_http::Response::from_string("bad path").with_status_code(400);
-        request.respond(resp)?;
-        return Ok(());
-    }
-    let path = build_wasm_dir.join(rel);
-    if !path.is_file() {
-        let resp = tiny_http::Response::from_string("not found").with_status_code(404);
-        request.respond(resp)?;
-        return Ok(());
-    }
-
-    let content_type = match path.extension().and_then(|s| s.to_str()) {
-        Some("html") => "text/html; charset=utf-8",
-        Some("js") | Some("mjs") => "text/javascript; charset=utf-8",
-        Some("wasm") => "application/wasm",
-        Some("png") => "image/png",
-        Some("svg") => "image/svg+xml",
-        Some("css") => "text/css; charset=utf-8",
-        Some("ico") => "image/x-icon",
-        Some("json") => "application/json; charset=utf-8",
-        _ => "application/octet-stream",
-    };
-    let ct_header = tiny_http::Header::from_bytes("Content-Type", content_type)
-        .map_err(|_| Error::msg("invalid content-type header"))?;
-
-    // Inject live-reload client into HTML responses.
-    if content_type.starts_with("text/html") {
-        let mut html = fs::read_to_string(&path)?;
-        let inject = concat!(
-            "<script>(async function reloadLoop(){for(;;){try{",
-            "const r=await fetch('/__reload?v='+Date.now(),{cache:'no-store'});",
-            "if(r.status===200){location.reload();return;}",
-            "}catch(_){await new Promise(r=>setTimeout(r,500));}}})();</script>"
-        );
-        if let Some(idx) = html.rfind("</body>") {
-            html.insert_str(idx, inject);
-        } else {
-            html.push_str(inject);
-        }
-        let resp = tiny_http::Response::from_string(html).with_header(ct_header);
-        request.respond(resp)?;
-        return Ok(());
-    }
-
-    let file = File::open(&path)?;
-    let resp = tiny_http::Response::from_file(file).with_header(ct_header);
-    request.respond(resp)?;
-    Ok(())
-}
-
 // Runs "cargo doc" command for engine
 fn generate_docs(output_directory_path: &PathBuf) -> Result<()> {
     // Set empty project as dependency
@@ -1527,7 +931,7 @@ fn run_app() -> Result<()> {
                     .context("Failed to run game project")?;
                 }
                 BuildTarget::Wasm => {
-                    run_web_game_project(&game_project_directory_path, &compile_mode)
+                    dev_server::run(&game_project_directory_path, &compile_mode)
                         .context("Failed to run game project for wasm")?;
                 }
             }
@@ -1555,7 +959,7 @@ fn run_app() -> Result<()> {
                             "Note: `-o/--output-path` is ignored with `-t wasm`; output is fixed at <game>/build/wasm/"
                         );
                     }
-                    build_web_game_project(&game_project_directory_path, &compile_mode)
+                    wasm_build::build(&game_project_directory_path, &compile_mode)
                         .context("Failed to build game project for wasm")?;
                 }
             }

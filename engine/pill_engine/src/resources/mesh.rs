@@ -11,7 +11,14 @@ use pill_core::{
 
 use anyhow::{Context, Error, Result};
 use std::path::{Path, PathBuf};
-use tobj::LoadOptions;
+
+fn obj_load_options() -> tobj::LoadOptions {
+    tobj::LoadOptions {
+        triangulate: true,
+        single_index: true,
+        ..Default::default()
+    }
+}
 
 pill_core::define_new_pill_slotmap_key! {
     pub struct MeshHandle;
@@ -60,6 +67,13 @@ impl Mesh {
 
     pub fn cube(name: &str, size: f32) -> Self {
         Self::from_data(name, MeshData::cube(size))
+    }
+
+    /// Build a mesh from raw OBJ bytes (e.g. `include_bytes!(...)`). Use on
+    /// targets without a filesystem (wasm), or to bundle assets into the
+    /// binary. Companion to [`Self::new`] which loads from a path.
+    pub fn from_obj_bytes(name: &str, bytes: &[u8]) -> Result<Self> {
+        Ok(Self::from_data(name, MeshData::from_obj_bytes(bytes, false)?))
     }
 }
 
@@ -152,27 +166,36 @@ pub struct MeshData {
 
 impl MeshData {
     pub fn new(path: &Path, flip_uv_y: bool) -> Result<Self> {
-        // Load model from path using tinyobjloader crate
-        let load_options = LoadOptions {
-            triangulate: true,
-            single_index: true,
-            ..Default::default()
-        };
+        let (models, _materials) = tobj::load_obj(path, &obj_load_options())?;
+        Self::from_tobj_models(models, &path.display().to_string(), flip_uv_y)
+    }
 
-        // Load data
-        let (models, _materials) = tobj::load_obj(path, &load_options)?;
+    /// Parse OBJ data from bytes (e.g. `include_bytes!(...)`). MTL references
+    /// inside the OBJ are ignored — materials have to be set up separately.
+    pub fn from_obj_bytes(bytes: &[u8], flip_uv_y: bool) -> Result<Self> {
+        let mut reader = std::io::Cursor::new(bytes);
+        let (models, _materials) = tobj::load_obj_buf(
+            &mut reader,
+            &obj_load_options(),
+            |_| Err(tobj::LoadError::OpenFileFailed),
+        )?;
+        Self::from_tobj_models(models, "<in-memory>", flip_uv_y)
+    }
 
+    fn from_tobj_models(
+        models: Vec<tobj::Model>,
+        source: &str,
+        flip_uv_y: bool,
+    ) -> Result<Self> {
         // Check data validity
         if models.len() > 1 {
             return Err(Error::new(EngineError::InvalidModelFileMultipleMeshes(
-                path.to_path_buf().into_os_string().into_string().unwrap(),
+                source.to_string(),
             )));
         }
 
         if models.is_empty() {
-            return Err(Error::new(EngineError::InvalidModelFile(
-                path.to_path_buf().into_os_string().into_string().unwrap(),
-            )));
+            return Err(Error::new(EngineError::InvalidModelFile(source.to_string())));
         }
 
         // Load vertex data from model
