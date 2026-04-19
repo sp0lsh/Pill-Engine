@@ -5,7 +5,11 @@ use pill_engine::{define_component, game::*};
 // Camera
 const CAMERA_POSITION_Z: f32 = 0.0;
 const CAMERA_FOV: f32 = 60.0;
-const CLEAR_COLOR: (f32, f32, f32) = (0.02, 0.02, 0.05);
+const CLEAR_COLOR: (f32, f32, f32) = (0.3, 0.12, 0.20);
+// exp(-density²·distance²). Half-blend at d=20 → visible haze pulls in close
+// and the back half of the tunnel vanishes into bg:
+//   d=10 (hero) → 16%, d=20 → 50%, d=40 → 94%, d=80 (far) → 100%.
+const FOG_DENSITY: f32 = 0.0416;
 
 // Subtle sine-wave drift on camera position — breathes life into an otherwise
 // fixed viewpoint without disorienting the viewer.
@@ -63,6 +67,9 @@ const SEED_SCALE: u32 = 0x27d4_eb2d;
 const SEED_SPIN: u32 = 0x1656_67b1;
 const SEED_MATERIAL: u32 = 0x7ed5_5d16;
 const SEED_WOBBLE: u32 = 0xd3a2_646c;
+const SEED_ROT_X: u32 = 0xa5a5_f00d;
+const SEED_ROT_Y: u32 = 0x5a5a_feed;
+const SEED_ROT_Z: u32 = 0x3c3c_b16b;
 
 fn hash_u32(mut n: u32) -> u32 {
     n = (n ^ 61) ^ (n >> 16);
@@ -235,6 +242,9 @@ impl PillGame for WebGame {
                     .enabled(true)
                     .fov(CAMERA_FOV)
                     .clear_color(Color::new(CLEAR_COLOR.0, CLEAR_COLOR.1, CLEAR_COLOR.2))
+                    .fog_density(FOG_DENSITY)
+                    // Fade distant pills toward the clear color so the tunnel wrap seam disappears.
+                    .fog_color(Color::new(CLEAR_COLOR.0, CLEAR_COLOR.1, CLEAR_COLOR.2))
                     .build(),
             )
             .build();
@@ -270,6 +280,11 @@ impl PillGame for WebGame {
             let spin_multiplier = 1.0 + PILL_SPIN_VARIANCE * hash_signed(i, SEED_SPIN);
             let forward_speed = PILL_FORWARD_SPEED * PILL_PARALLAX_REF_RADIUS / radius;
             let wobble_phase = hash_f32(i, SEED_WOBBLE) * std::f32::consts::TAU;
+            let rotation = Vector3f::new(
+                hash_f32(i, SEED_ROT_X) * std::f32::consts::TAU,
+                hash_f32(i, SEED_ROT_Y) * std::f32::consts::TAU,
+                hash_f32(i, SEED_ROT_Z) * std::f32::consts::TAU,
+            );
             let material = tunnel_materials[hash_usize(i, SEED_MATERIAL, tunnel_materials.len())];
 
             engine
@@ -277,6 +292,7 @@ impl PillGame for WebGame {
                 .with_component(
                     TransformComponent::builder()
                         .position(Vector3f::new(base_x, base_y, z))
+                        .rotation(rotation)
                         .scale(Vector3f::new(scale, scale, scale))
                         .build(),
                 )
