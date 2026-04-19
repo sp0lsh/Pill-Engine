@@ -114,19 +114,13 @@ impl MeshRenderingComponent {
         &mut self,
         resource_manager: &ResourceManager,
     ) -> Result<()> {
-        if self.mesh_handle.is_some() {
-            // Use default material if no material is set
-            let material_handle = match self.material_handle {
-                Some(v) => v,
-                None => DEFAULT_MATERIAL_HANDLE,
-            };
+        if let Some(mesh_handle) = self.mesh_handle {
+            let material_handle = self.material_handle.unwrap_or(DEFAULT_MATERIAL_HANDLE);
 
             // Compose render queue key and set it
-            if let Ok(render_queue_key) = compose_render_queue_key(
-                resource_manager,
-                &material_handle,
-                &self.mesh_handle.unwrap(),
-            ) {
+            if let Ok(render_queue_key) =
+                compose_render_queue_key(resource_manager, &material_handle, &mesh_handle)
+            {
                 self.render_queue_key = Some(render_queue_key);
             } else {
                 self.render_queue_key = None;
@@ -139,7 +133,7 @@ impl MeshRenderingComponent {
     }
 
     fn post_deferred_update_request(&mut self, request_variant: usize) {
-        if self.deferred_update_manager.is_some() {
+        if let Some(manager) = self.deferred_update_manager.as_mut() {
             let entity_handle = self.entity_handle.expect(
                 "Critical: Cannot post deferred update request. No EntityHandle set in Component",
             );
@@ -151,10 +145,7 @@ impl MeshRenderingComponent {
                 scene_handle,
                 request_variant,
             );
-            self.deferred_update_manager
-                .as_mut()
-                .expect("Critical: No DeferredUpdateManager")
-                .post_update_request(request);
+            manager.post_update_request(request);
         }
     }
 }
@@ -173,9 +164,9 @@ impl Component for MeshRenderingComponent {
             Some(deferred_update_component.borrow_deferred_update_manager());
 
         // Check if material handle is valid
-        if self.material_handle.is_some() {
+        if let Some(material_handle) = self.material_handle {
             engine
-                .get_resource::<Material>(&self.material_handle.unwrap())
+                .get_resource::<Material>(&material_handle)
                 .context(format!(
                     "Creating {} {} failed",
                     "Component".general_object_style(),
@@ -184,14 +175,12 @@ impl Component for MeshRenderingComponent {
         }
 
         // Check if mesh handle is valid
-        if self.mesh_handle.is_some() {
-            engine
-                .get_resource::<Mesh>(&self.mesh_handle.unwrap())
-                .context(format!(
-                    "Creating {} {} failed",
-                    "Component".general_object_style(),
-                    get_type_name::<Self>().specific_object_style()
-                ))?;
+        if let Some(mesh_handle) = self.mesh_handle {
+            engine.get_resource::<Mesh>(&mesh_handle).context(format!(
+                "Creating {} {} failed",
+                "Component".general_object_style(),
+                get_type_name::<Self>().specific_object_style()
+            ))?;
         }
 
         // Update mesh rendering queue
