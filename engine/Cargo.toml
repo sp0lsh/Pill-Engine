@@ -5,9 +5,10 @@ members = [
     "pill_engine",
     "pill_renderer",
     "pill_standalone",
-    "pill_web",
 ]
 
+# pill_web is not a workspace member — it lives as a template at
+# pill_launcher/res/templates/wasm/ and is instantiated per-game by the launcher.
 exclude = [
     "pill_launcher",
 ]

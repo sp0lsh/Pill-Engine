@@ -113,6 +113,7 @@ impl Engine {
             .config
             .get_int("MAX_MESHES")
             .unwrap_or(MAX_MESHES as i64) as usize;
+        #[cfg(not(target_arch = "wasm32"))]
         let max_sound_count = self
             .config
             .get_int("MAX_SOUNDS")

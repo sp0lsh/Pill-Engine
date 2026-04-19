@@ -60,16 +60,18 @@ cargo install wasm-pack
 
 ### Build
 ```bash
-./build-web.sh /path/to/your/game
+PillLauncher -a build -t wasm -p /path/to/your/game
 ```
 
 Example:
 ```bash
-./build-web.sh /Users/mk/dev/demo/pill_demo_upstream
-cd /Users/mk/dev/demo/pill_demo_upstream/web && python3 -m http.server 8080
+PillLauncher -a build -t wasm -p /Users/mk/dev/demo/pill_demo_upstream
+cd /Users/mk/dev/demo/pill_demo_upstream/build/wasm && python3 -m http.server 8080
 ```
 
-**Note:** Audio, networking, and gamepad input are disabled in the web build. See [engine/pill_web/](engine/pill_web/) for the WASM entry point.
+To customize the HTML shell for a specific game, commit a `<game>/web/index.html` — the launcher prefers it over the engine default at `engine/pill_launcher/res/templates/web/index.html`.
+
+**Note:** Audio, networking, and gamepad input are disabled in the web build. The WASM entry point lives at [engine/pill_launcher/res/templates/wasm/](engine/pill_launcher/res/templates/wasm/) — the launcher instantiates this template per game.
 
 Ref: https://rustwasm.github.io/docs/wasm-pack/
 

@@ -12,6 +12,9 @@ use std::{
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{mpsc, Arc, Mutex},
+    thread,
+    time::{Duration, SystemTime},
 };
 
 // - Cargo commands
@@ -30,6 +33,12 @@ enum CompileMode {
     Debug,
     Release,
     HotReload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BuildTarget {
+    Standalone,
+    Wasm,
 }
 
 // --- Platform helpers -------------------------------------------------------
@@ -608,6 +617,384 @@ fn build_game_project(
     Ok(())
 }
 
+// Builds the game for WASM + WebGPU, outputting to <game>/build/wasm/.
+//
+// Strategy: copy the wasm crate template (pill_launcher/res/templates/wasm/)
+// into a scratch dir inside the game directory, rewrite path-deps to absolute
+// paths (engine crates + the game at -p), then run wasm-pack. Keeps the engine
+// directory pristine across multi-game use.
+fn build_web_game_project(
+    game_project_directory_path: &Path,
+    compile_mode: &CompileMode,
+) -> Result<()> {
+    println!(
+        "Building WASM/WebGPU target for game project at {}...",
+        game_project_directory_path.display()
+    );
+
+    if *compile_mode == CompileMode::HotReload {
+        println!("Note: hot-reload is not meaningful for WASM; using --dev mode.");
+    }
+
+    let wasm_template_dir = get_path(Location::PillLauncherCrate)
+        .join("res")
+        .join("templates")
+        .join("wasm");
+
+    let build_wasm_dir = game_project_directory_path.join("build").join("wasm");
+    let scratch_dir = build_wasm_dir.join(".build");
+    let scratch_pill_web_dir = scratch_dir.join("pill_web");
+    let scratch_pkg_dir = scratch_dir.join("pkg");
+
+    fs::create_dir_all(&scratch_pill_web_dir).with_context(|| {
+        format!(
+            "Failed to create scratch dir {}",
+            scratch_pill_web_dir.display()
+        )
+    })?;
+
+    fs::copy(
+        wasm_template_dir.join("Cargo.toml"),
+        scratch_pill_web_dir.join("Cargo.toml"),
+    )
+    .context("Failed to copy pill_web Cargo.toml to scratch")?;
+
+    // Copy the engine workspace's Cargo.lock so the scratch build resolves to
+    // the same crate versions as an in-place build of engine/pill_web. Without
+    // this, cargo re-resolves and picks newer versions (wasm-bindgen in
+    // particular), which on this branch breaks WebGPU rendering.
+    let engine_lock = get_path(Location::EngineCrates).join("Cargo.lock");
+    if engine_lock.exists() {
+        fs::copy(&engine_lock, scratch_pill_web_dir.join("Cargo.lock"))
+            .context("Failed to copy engine Cargo.lock into scratch")?;
+    }
+
+    let scratch_src_dir = scratch_pill_web_dir.join("src");
+    if scratch_src_dir.exists() {
+        fs::remove_dir_all(&scratch_src_dir).context("Failed to clean scratch src/")?;
+    }
+    fs_extra::dir::copy(
+        wasm_template_dir.join("src"),
+        &scratch_pill_web_dir,
+        &CopyOptions::new().overwrite(true),
+    )
+    .context("Failed to copy pill_web src/ to scratch")?;
+
+    let engine_crates_dir = get_path(Location::EngineCrates);
+    let pill_engine_path = engine_crates_dir
+        .join("pill_engine")
+        .to_string_lossy()
+        .replace("\\", "/");
+    let pill_renderer_path = engine_crates_dir
+        .join("pill_renderer")
+        .to_string_lossy()
+        .replace("\\", "/");
+    let pill_core_path = engine_crates_dir
+        .join("pill_core")
+        .to_string_lossy()
+        .replace("\\", "/");
+    let pill_game_path = game_project_directory_path
+        .to_string_lossy()
+        .replace("\\", "/");
+
+    let scratch_manifest = scratch_pill_web_dir.join("Cargo.toml");
+    modify_file(
+        &scratch_manifest,
+        &scratch_manifest,
+        |line: String| -> String {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("pill_engine ") || trimmed.starts_with("pill_engine=") {
+                return format!(
+                    "pill_engine = {{ path = \"{}\", features = [\"game\", \"internal\"] }}",
+                    pill_engine_path
+                );
+            }
+            if trimmed.starts_with("pill_renderer ") || trimmed.starts_with("pill_renderer=") {
+                return format!("pill_renderer = {{ path = \"{}\" }}", pill_renderer_path);
+            }
+            if trimmed.starts_with("pill_core ") || trimmed.starts_with("pill_core=") {
+                return format!("pill_core = {{ path = \"{}\" }}", pill_core_path);
+            }
+            line
+        },
+    )?;
+
+    // Append:
+    //  - pill_game dep pointing at the -p game directory (not in the committed
+    //    Cargo.toml; injected here so pill_web is only buildable via launcher).
+    //  - [workspace] + resolver = "2" so cargo doesn't walk up into the game's
+    //    parent workspace and matches engine/Cargo.toml's feature unification
+    //    (wgpu backend selection is sensitive to resolver version).
+    {
+        let mut f = fs::OpenOptions::new()
+            .append(true)
+            .open(&scratch_manifest)
+            .context("Failed to open scratch Cargo.toml for append")?;
+        writeln!(f, "\npill_game = {{ path = \"{}\" }}", pill_game_path)
+            .context("Failed to append pill_game dep to scratch Cargo.toml")?;
+        writeln!(f, "\n[workspace]\nresolver = \"2\"")
+            .context("Failed to append [workspace] to scratch Cargo.toml")?;
+    }
+
+    let scratch_pkg_str = scratch_pkg_dir.to_string_lossy().to_string();
+    let mut args: Vec<String> = vec![
+        "build".into(),
+        "--target".into(),
+        "web".into(),
+        "--out-dir".into(),
+        scratch_pkg_str,
+    ];
+    match compile_mode {
+        CompileMode::Release => {}
+        CompileMode::Debug | CompileMode::HotReload => args.push("--dev".into()),
+    }
+
+    println!(
+        "Running wasm-pack in scratch crate {}...",
+        scratch_pill_web_dir.display()
+    );
+
+    // Prefer rustup's toolchain over Homebrew's rustc — Homebrew doesn't ship
+    // the wasm32-unknown-unknown target.
+    let mut cmd = Command::new("wasm-pack");
+    cmd.args(&args).current_dir(&scratch_pill_web_dir);
+    if let Some(home) = env::var_os("HOME") {
+        let cargo_bin = PathBuf::from(home).join(".cargo").join("bin");
+        let existing = env::var_os("PATH").unwrap_or_default();
+        let mut parts: Vec<PathBuf> = vec![cargo_bin];
+        parts.extend(env::split_paths(&existing).filter(|p| p != Path::new("/opt/homebrew/bin")));
+        if let std::result::Result::Ok(joined) = env::join_paths(parts) {
+            cmd.env("PATH", joined);
+        }
+    }
+    let status = cmd.status().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            Error::msg("wasm-pack not found on PATH. Install it with: cargo install wasm-pack")
+        } else {
+            Error::new(e).context("Failed to execute wasm-pack")
+        }
+    })?;
+
+    if !status.success() {
+        bail!("wasm-pack build failed (exit {:?})", status.code());
+    }
+
+    fs::create_dir_all(&build_wasm_dir)
+        .with_context(|| format!("Failed to create {}", build_wasm_dir.display()))?;
+
+    for file in ["pill_web.js", "pill_web_bg.wasm"] {
+        let src = scratch_pkg_dir.join(file);
+        let dst = build_wasm_dir.join(file);
+        fs::copy(&src, &dst)
+            .with_context(|| format!("Failed to copy {} to {}", src.display(), dst.display()))?;
+    }
+
+    // Copy the engine's web template dir (index.html, pill_logo.png, any future
+    // assets) into the build output. This is the default chrome.
+    let template_web_dir = get_path(Location::PillLauncherCrate)
+        .join("res")
+        .join("templates")
+        .join("web");
+    for entry in fs::read_dir(&template_web_dir)
+        .with_context(|| format!("Failed to read template dir {}", template_web_dir.display()))?
+    {
+        let entry = entry?;
+        // path().metadata() follows symlinks — pill_logo.png is a symlink into
+        // media/logo/ and must be treated as the file it points at.
+        if entry.path().metadata()?.is_file() {
+            let dst = build_wasm_dir.join(entry.file_name());
+            fs::copy(entry.path(), &dst).with_context(|| {
+                format!(
+                    "Failed to copy {} to {}",
+                    entry.path().display(),
+                    dst.display()
+                )
+            })?;
+        }
+    }
+
+    // Overlay any per-game customizations from <game>/web/ on top. Each file
+    // individually overrides the engine default (e.g. drop in a custom
+    // index.html, swap the logo, add a favicon).
+    let user_web_dir = game_project_directory_path.join("web");
+    if user_web_dir.is_dir() {
+        for entry in fs::read_dir(&user_web_dir)
+            .with_context(|| format!("Failed to read {}", user_web_dir.display()))?
+        {
+            let entry = entry?;
+            if entry.path().metadata()?.is_file() {
+                let dst = build_wasm_dir.join(entry.file_name());
+                fs::copy(entry.path(), &dst).with_context(|| {
+                    format!(
+                        "Failed to overlay {} onto {}",
+                        entry.path().display(),
+                        dst.display()
+                    )
+                })?;
+            }
+        }
+    }
+
+    println!();
+    println!("Done! Serve with:");
+    println!(
+        "  PillLauncher -a run -t wasm -p {}",
+        game_project_directory_path.display()
+    );
+    println!(
+        "  (or any static server pointed at {})",
+        build_wasm_dir.display()
+    );
+
+    Ok(())
+}
+
+// Serves <game>/build/wasm/ on localhost:8080 with live reload.
+// Ensures the build is up to date first, then runs a tiny_http server that:
+//   - serves static files from build/wasm/
+//   - injects a long-poll client into HTML responses
+//   - watches build/wasm/ mtimes and triggers a browser reload on any change
+fn run_web_game_project(
+    game_project_directory_path: &Path,
+    compile_mode: &CompileMode,
+) -> Result<()> {
+    build_web_game_project(game_project_directory_path, compile_mode)?;
+
+    let build_wasm_dir = game_project_directory_path.join("build").join("wasm");
+    let addr = "127.0.0.1:8080";
+
+    // Broadcast set for long-poll subscribers. Each pending /__reload request
+    // parks a Sender here; when any file in build_wasm_dir changes, the watcher
+    // drains the vec and signals every subscriber.
+    let subscribers: Arc<Mutex<Vec<mpsc::Sender<()>>>> = Arc::new(Mutex::new(Vec::new()));
+
+    // File-change watcher thread — polls mtimes every 500ms.
+    {
+        let subscribers = Arc::clone(&subscribers);
+        let watch_dir = build_wasm_dir.clone();
+        let mut last = latest_mtime(&watch_dir);
+        thread::spawn(move || loop {
+            thread::sleep(Duration::from_millis(500));
+            let cur = latest_mtime(&watch_dir);
+            if cur > last && cur.is_some() {
+                last = cur;
+                let mut subs = subscribers.lock().unwrap();
+                for tx in subs.drain(..) {
+                    let _ = tx.send(());
+                }
+            }
+        });
+    }
+
+    let server = tiny_http::Server::http(addr).map_err(|e| Error::msg(e.to_string()))?;
+    println!();
+    println!("Serving {} at http://{}", build_wasm_dir.display(), addr);
+    println!("Live reload enabled — the page will refresh on wasm rebuilds.");
+    println!("Ctrl+C to stop.");
+
+    for request in server.incoming_requests() {
+        let subscribers = Arc::clone(&subscribers);
+        let build_wasm_dir = build_wasm_dir.clone();
+        thread::spawn(move || {
+            if let Err(e) = handle_http_request(request, &build_wasm_dir, subscribers) {
+                eprintln!("http request error: {:#}", e);
+            }
+        });
+    }
+
+    Ok(())
+}
+
+fn latest_mtime(dir: &Path) -> Option<SystemTime> {
+    fs::read_dir(dir).ok()?.filter_map(|e| e.ok()).filter_map(|e| {
+        let name = e.file_name();
+        let name_str = name.to_string_lossy();
+        // Skip dotfiles and .build scratch dir
+        if name_str.starts_with('.') {
+            return None;
+        }
+        let md = e.metadata().ok()?;
+        if !md.is_file() {
+            return None;
+        }
+        md.modified().ok()
+    }).max()
+}
+
+fn handle_http_request(
+    request: tiny_http::Request,
+    build_wasm_dir: &Path,
+    subscribers: Arc<Mutex<Vec<mpsc::Sender<()>>>>,
+) -> Result<()> {
+    let url_path = request.url().split('?').next().unwrap_or("/").to_string();
+
+    // Live-reload long-poll endpoint.
+    if url_path == "/__reload" {
+        let (tx, rx) = mpsc::channel();
+        subscribers.lock().unwrap().push(tx);
+        // Block up to 30s waiting for a file-change signal.
+        let signaled = rx.recv_timeout(Duration::from_secs(30)).is_ok();
+        let status = if signaled { 200 } else { 204 };
+        let resp = tiny_http::Response::from_string("").with_status_code(status);
+        request.respond(resp)?;
+        return Ok(());
+    }
+
+    // Map URL path to a file under build_wasm_dir.
+    let rel = url_path.trim_start_matches('/');
+    let rel = if rel.is_empty() { "index.html" } else { rel };
+    // Reject path traversal.
+    if rel.split('/').any(|seg| seg == "..") {
+        let resp = tiny_http::Response::from_string("bad path").with_status_code(400);
+        request.respond(resp)?;
+        return Ok(());
+    }
+    let path = build_wasm_dir.join(rel);
+    if !path.is_file() {
+        let resp = tiny_http::Response::from_string("not found").with_status_code(404);
+        request.respond(resp)?;
+        return Ok(());
+    }
+
+    let content_type = match path.extension().and_then(|s| s.to_str()) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") | Some("mjs") => "text/javascript; charset=utf-8",
+        Some("wasm") => "application/wasm",
+        Some("png") => "image/png",
+        Some("svg") => "image/svg+xml",
+        Some("css") => "text/css; charset=utf-8",
+        Some("ico") => "image/x-icon",
+        Some("json") => "application/json; charset=utf-8",
+        _ => "application/octet-stream",
+    };
+    let ct_header = tiny_http::Header::from_bytes("Content-Type", content_type)
+        .map_err(|_| Error::msg("invalid content-type header"))?;
+
+    // Inject live-reload client into HTML responses.
+    if content_type.starts_with("text/html") {
+        let mut html = fs::read_to_string(&path)?;
+        let inject = concat!(
+            "<script>(async function reloadLoop(){for(;;){try{",
+            "const r=await fetch('/__reload?v='+Date.now(),{cache:'no-store'});",
+            "if(r.status===200){location.reload();return;}",
+            "}catch(_){await new Promise(r=>setTimeout(r,500));}}})();</script>"
+        );
+        if let Some(idx) = html.rfind("</body>") {
+            html.insert_str(idx, inject);
+        } else {
+            html.push_str(inject);
+        }
+        let resp = tiny_http::Response::from_string(html).with_header(ct_header);
+        request.respond(resp)?;
+        return Ok(());
+    }
+
+    let file = File::open(&path)?;
+    let resp = tiny_http::Response::from_file(file).with_header(ct_header);
+    request.respond(resp)?;
+    Ok(())
+}
+
 // Runs "cargo doc" command for engine
 fn generate_docs(output_directory_path: &PathBuf) -> Result<()> {
     // Set empty project as dependency
@@ -838,6 +1225,15 @@ fn run_app() -> Result<()> {
         .default_value("debug")
         .required(false);
 
+    let target_option = Arg::with_name("target")
+        .short("t")
+        .long("target")
+        .takes_value(true)
+        .possible_values(&["standalone", "wasm"])
+        .default_value("standalone")
+        .required(false)
+        .help("Build/run target: native standalone executable or WASM+WebGPU for the browser");
+
     let game_args = Arg::with_name("game-args")
         .help("Arguments passed through to cargo/game (use `--` to separate them)")
         .multiple(true)
@@ -851,6 +1247,7 @@ fn run_app() -> Result<()> {
         .arg(path_option)
         .arg(output_path_option)
         .arg(compile_mode_option)
+        .arg(target_option)
         .arg(game_args)
         .setting(AppSettings::TrailingVarArg);
 
@@ -876,6 +1273,11 @@ fn run_app() -> Result<()> {
         _ => CompileMode::Debug,
     };
 
+    let target: BuildTarget = match matches.value_of("target").unwrap_or("standalone") {
+        "wasm" => BuildTarget::Wasm,
+        _ => BuildTarget::Standalone,
+    };
+
     match action_argument {
         "create" => {
             let game_parent_directory_path = PathBuf::from(directory_path_argument.expect("Game project parent directory path has to be specified using --path flag. For example: --path <PROJECT_DIR>"))
@@ -891,31 +1293,53 @@ fn run_app() -> Result<()> {
                 .absolutize().context("Failed to absolutize game project directory path")?
                 .to_path_buf();
 
-            let mut output_directory_path = PathBuf::from(output_directory_path_argument.expect("Output directory path has to be specified using --output-path flag. For example: --output-path <OUTPUT_DIR>"));
-            output_directory_path =
-                get_game_build_path(&game_project_directory_path, &output_directory_path).unwrap();
-            run_game_project(
-                &game_project_directory_path,
-                &output_directory_path,
-                &compile_mode,
-                &passthrough_args,
-            )
-            .context("Failed to run game project")?;
+            match target {
+                BuildTarget::Standalone => {
+                    let mut output_directory_path = PathBuf::from(output_directory_path_argument.expect("Output directory path has to be specified using --output-path flag. For example: --output-path <OUTPUT_DIR>"));
+                    output_directory_path =
+                        get_game_build_path(&game_project_directory_path, &output_directory_path)
+                            .unwrap();
+                    run_game_project(
+                        &game_project_directory_path,
+                        &output_directory_path,
+                        &compile_mode,
+                        &passthrough_args,
+                    )
+                    .context("Failed to run game project")?;
+                }
+                BuildTarget::Wasm => {
+                    run_web_game_project(&game_project_directory_path, &compile_mode)
+                        .context("Failed to run game project for wasm")?;
+                }
+            }
         }
         "build" => {
             let game_project_directory_path = PathBuf::from(directory_path_argument.expect("Game project directory path has to be specified using --path flag. For example: --path <GAME_PROJECT_DIR>"))
                 .absolutize().context("Failed to absolutize game project directory path")?
                 .to_path_buf();
 
-            let mut output_directory_path = PathBuf::from(output_directory_path_argument.expect("Output directory path has to be specified using --output-path flag. For example: --output-path <OUTPUT_DIR>"));
-            output_directory_path =
-                get_game_build_path(&game_project_directory_path, &output_directory_path)?;
-            build_game_project(
-                &game_project_directory_path,
-                &output_directory_path,
-                &compile_mode,
-            )
-            .context("Failed to build game project")?;
+            match target {
+                BuildTarget::Standalone => {
+                    let mut output_directory_path = PathBuf::from(output_directory_path_argument.expect("Output directory path has to be specified using --output-path flag. For example: --output-path <OUTPUT_DIR>"));
+                    output_directory_path =
+                        get_game_build_path(&game_project_directory_path, &output_directory_path)?;
+                    build_game_project(
+                        &game_project_directory_path,
+                        &output_directory_path,
+                        &compile_mode,
+                    )
+                    .context("Failed to build game project")?;
+                }
+                BuildTarget::Wasm => {
+                    if matches.occurrences_of("output-path") > 0 {
+                        println!(
+                            "Note: `-o/--output-path` is ignored with `-t wasm`; output is fixed at <game>/build/wasm/"
+                        );
+                    }
+                    build_web_game_project(&game_project_directory_path, &compile_mode)
+                        .context("Failed to build game project for wasm")?;
+                }
+            }
         }
         "docs" => {
             let output_directory_path = PathBuf::from(output_directory_path_argument.expect("Output directory path has to be specified using --output-path flag. For example: --output-path <OUTPUT_DIR>"))

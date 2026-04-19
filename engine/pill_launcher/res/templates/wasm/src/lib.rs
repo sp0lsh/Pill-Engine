@@ -15,7 +15,13 @@ use pill_game::WebGame;
 #[wasm_bindgen(start)]
 pub fn wasm_main() {
     std::panic::set_hook(Box::new(console_error_panic_hook::hook));
-    console_log::init_with_level(log::Level::Info).expect("Failed to init logger");
+    console_log::init_with_level(log::Level::Debug).expect("Failed to init logger");
+
+    log::info!(
+        "pill_web boot: debug_assertions={}, arch={}",
+        cfg!(debug_assertions),
+        std::env::consts::ARCH
+    );
 
     wasm_bindgen_futures::spawn_local(run());
 }
@@ -72,7 +78,13 @@ async fn run() {
     );
 
     log::info!("Initializing engine...");
-    engine.initialize(Some(window_size)).expect("Failed to initialize engine");
+    match engine.initialize(Some(window_size)) {
+        Ok(()) => log::info!("engine.initialize() OK"),
+        Err(e) => {
+            log::error!("engine.initialize() FAILED: {:#}", e);
+            panic!("engine init failed: {:#}", e);
+        }
+    }
     log::info!("Engine ready, starting event loop");
 
     let mut last_time = web_sys::window()
@@ -111,7 +123,7 @@ async fn run() {
                         if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             engine.update(dt);
                         })) {
-                            log::error!("Update panic: {:?}", e);
+                            log::error!("engine.update() panicked: {:?}", e);
                         }
                     }
                     WindowEvent::KeyboardInput { event, .. } => {
