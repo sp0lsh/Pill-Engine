@@ -33,6 +33,7 @@ pub fn build(game_project_directory_path: &Path, compile_mode: &CompileMode) -> 
     let scratch_pkg_dir = build_wasm_dir.join(".build").join("pkg");
 
     prepare_scratch_crate(&wasm_template_dir, &scratch_pill_web_dir)?;
+    embed_game_config(game_project_directory_path, &scratch_pill_web_dir)?;
     rewrite_scratch_manifest(&scratch_pill_web_dir, game_project_directory_path)?;
     run_wasm_pack(compile_mode, &scratch_pill_web_dir, &scratch_pkg_dir)?;
     copy_build_outputs(
@@ -110,6 +111,29 @@ fn prepare_scratch_crate(wasm_template_dir: &Path, scratch_pill_web_dir: &Path) 
     )
     .context("Failed to copy pill_web src/ to scratch")?;
 
+    Ok(())
+}
+
+// Copy the game's res/config.ini into the scratch crate at a known location
+// so the template's lib.rs can include_str! it. Needed because wasm has no
+// filesystem — the engine can't read config.ini at runtime.
+fn embed_game_config(game_dir: &Path, scratch_pill_web_dir: &Path) -> Result<()> {
+    let src = game_dir.join("res").join("config.ini");
+    let dst = scratch_pill_web_dir.join("config.ini");
+    if src.is_file() {
+        fs::copy(&src, &dst).with_context(|| {
+            format!(
+                "Failed to embed game config {} → {}",
+                src.display(),
+                dst.display()
+            )
+        })?;
+    } else {
+        // Write an empty file so the template's include_str! compiles.
+        fs::write(&dst, "").with_context(|| {
+            format!("Failed to write empty scratch config.ini at {}", dst.display())
+        })?;
+    }
     Ok(())
 }
 

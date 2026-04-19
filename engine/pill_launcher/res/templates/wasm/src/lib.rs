@@ -59,7 +59,16 @@ async fn run() {
         window_size = PhysicalSize::new(1280, 720);
     }
 
+    // The game's config.ini is copied into this scratch dir by the launcher
+    // (wasm has no filesystem, so we can't read it at runtime — embed it).
     let mut config = config::Config::default();
+    const GAME_CONFIG_INI: &str = include_str!("../config.ini");
+    if let Err(e) = config.merge(config::File::from_str(
+        GAME_CONFIG_INI,
+        config::FileFormat::Ini,
+    )) {
+        log::warn!("Failed to parse embedded config.ini: {e}");
+    }
     let _ = config.set("WINDOW_WIDTH", window_size.width as i64);
     let _ = config.set("WINDOW_HEIGHT", window_size.height as i64);
 
