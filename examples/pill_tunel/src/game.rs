@@ -205,7 +205,7 @@ impl PillGame for WebGame {
         let color_tex = engine.add_resource::<Texture>(Texture::from_bytes(
             "pill_color",
             TextureType::Color,
-            include_bytes!("../res/textures/pill_color.png"),
+            include_bytes!("../res/textures/generated/pill.png"),
         ))?;
         let normal_tex = engine.add_resource::<Texture>(Texture::from_bytes(
             "pill_normal",
