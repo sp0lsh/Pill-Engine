@@ -74,6 +74,12 @@ pub struct ResourcePool<K, V> {
     _marker: PhantomData<K>,
 }
 
+impl<K, V> Default for ResourcePool<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<K, V> ResourcePool<K, V> {
     pub fn new() -> Self {
         Self {
