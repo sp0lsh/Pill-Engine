@@ -1,11 +1,14 @@
 use crate::{
     config::*,
-    resources::{Material, MaterialHandle, Mesh, MeshHandle, ResourceManager, Shader},
+    resources::{
+        Material, MaterialHandle, Mesh, MeshHandle, PBRMaterial, PBRMaterialHandle,
+        ResourceManager, Shader,
+    },
 };
 
 use pill_core::PillSlotMapKey;
 
-use anyhow::Result;
+use anyhow::{Error, Result};
 use core::fmt::{self, Debug};
 use lazy_static::lazy_static;
 use std::{
@@ -118,18 +121,46 @@ pub fn compose_render_queue_key(
     let mesh = resource_manager.get_resource::<Mesh>(mesh_handle)?;
 
     let render_queue_key: RenderQueueKey = ((RENDER_QUEUE_KEY_ORDER.max - material.rendering_order as RenderQueueKey) << RENDER_QUEUE_KEY_ORDER.mask_shift) | // Order has to be inverted for proper sorting
-
         // 1. Shader - defining rendering pipeline
         ((shader.renderer_resource_handle.unwrap().data().index as RenderQueueKey) << RENDER_QUEUE_KEY_SHADER_INDEX.mask_shift) |
         ((shader.renderer_resource_handle.unwrap().data().version.get() as RenderQueueKey) << RENDER_QUEUE_KEY_SHADER_VERSION.mask_shift) |
-
         // 2. Material - defining material properties, same rendering pipeline
         ((material.renderer_resource_handle.unwrap().data().index as RenderQueueKey) << RENDER_QUEUE_KEY_MATERIAL_INDEX.mask_shift) |
         ((material.renderer_resource_handle.unwrap().data().version.get() as RenderQueueKey) << RENDER_QUEUE_KEY_MATERIAL_VERSION.mask_shift) |
-
         // 3. Mesh - defining mesh properties, same material thus same rendering pipeline
-        ((mesh.renderer_resource_handle.unwrap().data().index as RenderQueueKey) << RENDER_QUEUE_KEY_MESH_INDEX.mask_shift ) |
+        ((mesh.renderer_resource_handle.unwrap().data().index as RenderQueueKey) << RENDER_QUEUE_KEY_MESH_INDEX.mask_shift) |
         ((mesh.renderer_resource_handle.unwrap().data().version.get() as RenderQueueKey) << RENDER_QUEUE_KEY_MESH_VERSION.mask_shift);
+
+    Ok(render_queue_key)
+}
+
+// PBR path: PBRMaterial always uses default lit shader
+pub fn compose_pbr_render_queue_key(
+    resource_manager: &ResourceManager,
+    material_handle: PBRMaterialHandle,
+    mesh_handle: &MeshHandle,
+) -> Result<RenderQueueKey> {
+    let material = resource_manager.get_resource::<PBRMaterial>(&material_handle)?;
+    let mesh = resource_manager.get_resource::<Mesh>(mesh_handle)?;
+
+    let render_queue_key: RenderQueueKey = ((DEFAULT_LIT_RENDERER_SHADER_HANDLE.data().index
+        as RenderQueueKey)
+        << RENDER_QUEUE_KEY_SHADER_INDEX.mask_shift)
+        | ((DEFAULT_LIT_RENDERER_SHADER_HANDLE.data().version.get() as RenderQueueKey)
+            << RENDER_QUEUE_KEY_SHADER_VERSION.mask_shift)
+        | ((material.renderer_resource_handle.unwrap().data().index as RenderQueueKey)
+            << RENDER_QUEUE_KEY_MATERIAL_INDEX.mask_shift)
+        | ((material
+            .renderer_resource_handle
+            .unwrap()
+            .data()
+            .version
+            .get() as RenderQueueKey)
+            << RENDER_QUEUE_KEY_MATERIAL_VERSION.mask_shift)
+        | ((mesh.renderer_resource_handle.unwrap().data().index as RenderQueueKey)
+            << RENDER_QUEUE_KEY_MESH_INDEX.mask_shift)
+        | ((mesh.renderer_resource_handle.unwrap().data().version.get() as RenderQueueKey)
+            << RENDER_QUEUE_KEY_MESH_VERSION.mask_shift);
 
     Ok(render_queue_key)
 }

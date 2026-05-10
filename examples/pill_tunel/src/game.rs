@@ -107,13 +107,12 @@ fn tinted_pill_material(
     tint: (f32, f32, f32),
     color_tex: TextureHandle,
     normal_tex: TextureHandle,
-) -> Result<MaterialHandle> {
+) -> Result<PBRMaterialHandle> {
     engine.add_resource(
-        Material::builder(name)
-            .texture("color", color_tex)?
-            .texture("normal", normal_tex)?
-            .color_parameter("tint", Color::new(tint.0, tint.1, tint.2))?
-            .build(),
+        PBRMaterial::new(name)
+            .albedo(Color::new(tint.0, tint.1, tint.2))
+            .albedo_texture(color_tex)
+            .normal_texture(normal_tex),
     )
 }
 
@@ -213,7 +212,7 @@ impl PillGame for WebGame {
             include_bytes!("../res/textures/pill_normal.png"),
         ))?;
 
-        let tunnel_materials: Vec<MaterialHandle> = PALETTE
+        let tunnel_materials: Vec<PBRMaterialHandle> = PALETTE
             .iter()
             .enumerate()
             .map(|(i, tint)| {
@@ -226,7 +225,7 @@ impl PillGame for WebGame {
                 )
             })
             .collect::<Result<_>>()?;
-        let hero_material =
+        let hero_material: PBRMaterialHandle =
             tinted_pill_material(engine, "hero_material", HERO_TINT, color_tex, normal_tex)?;
 
         // Camera
@@ -261,7 +260,7 @@ impl PillGame for WebGame {
             .with_component(
                 MeshRenderingComponent::builder()
                     .mesh(&pill_mesh)
-                    .material(&hero_material)
+                    .pbr_material(&hero_material)
                     .build(),
             )
             .with_component(HeroPillComponent {})
@@ -299,7 +298,7 @@ impl PillGame for WebGame {
                 .with_component(
                     MeshRenderingComponent::builder()
                         .mesh(&pill_mesh)
-                        .material(&material)
+                        .pbr_material(&material)
                         .build(),
                 )
                 .with_component(PillParticleComponent {

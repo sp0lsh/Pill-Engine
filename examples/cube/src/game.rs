@@ -30,9 +30,8 @@ impl PillGame for WebGame {
 
         let cube_mesh_handle = engine.add_resource(Mesh::cube("cube", 2.0))?;
         let material_handle = engine.add_resource(
-            Material::builder("cube_material")
-                .color_parameter("tint", Color::new(0.80, 0.80, 0.82))?
-                .build(),
+            PBRMaterial::new("cube_material")
+                .albedo(Color::new(0.80, 0.80, 0.82)),
         )?;
 
         engine
@@ -57,7 +56,7 @@ impl PillGame for WebGame {
             .with_component(
                 MeshRenderingComponent::builder()
                     .mesh(&cube_mesh_handle)
-                    .material(&material_handle)
+                    .pbr_material(&material_handle)
                     .build(),
             )
             .build();

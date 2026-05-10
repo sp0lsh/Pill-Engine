@@ -67,9 +67,9 @@ pub mod game {
         },
         engine::{Engine, KeyboardKey, MouseButton, PillGame},
         resources::{
-            Material, MaterialHandle, Mesh, MeshHandle, Resource, ResourceLoader, ResourceStorage,
-            Shader, ShaderParameterSlot, ShaderParameterType, ShaderTextureSlot, Texture,
-            TextureHandle, TextureType,
+            Material, MaterialHandle, Mesh, MeshHandle, PBRMaterial, PBRMaterialHandle, Resource,
+            ResourceLoader, ResourceStorage, Shader, ShaderParameterSlot, ShaderParameterType,
+            ShaderTextureSlot, Texture, TextureHandle, TextureType,
         },
     };
 
@@ -112,8 +112,8 @@ mod internal_mod {
         resources::{
             get_renderer_texture_handle_from_material_texture, Material, MaterialHandle,
             MaterialParameter, MaterialTexture, Mesh, MeshData, MeshHandle, MeshVertex,
-            ResourceLoader, ResourceManager, ShaderParameterSlot, ShaderParameterType,
-            ShaderTextureSlot, Texture, TextureHandle, TextureType,
+            PBRMaterial, PBRMaterialHandle, ResourceLoader, ResourceManager, ShaderParameterSlot,
+            ShaderParameterType, ShaderTextureSlot, Texture, TextureHandle, TextureType,
         },
     };
 }
@@ -138,8 +138,8 @@ mod internal_mod {
         resources::{
             get_renderer_texture_handle_from_material_texture, Material, MaterialHandle,
             MaterialParameter, MaterialTexture, Mesh, MeshData, MeshHandle, MeshVertex,
-            ResourceLoader, ResourceManager, ShaderParameterSlot, ShaderParameterType,
-            ShaderTextureSlot, Texture, TextureHandle, TextureType,
+            PBRMaterial, PBRMaterialHandle, ResourceLoader, ResourceManager, ShaderParameterSlot,
+            ShaderParameterType, ShaderTextureSlot, Texture, TextureHandle, TextureType,
         },
     };
 }

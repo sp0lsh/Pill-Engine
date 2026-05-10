@@ -27,8 +27,9 @@ struct MaterialParams_std140_0
 @binding(0) @group(2) var<uniform> material_0 : MaterialParams_std140_0;
 struct EngineParams_std140_0
 {
-    @align(16) fog_color_0 : vec3<f32>,
+    @align(4) delta_time_0 : f32,
     @align(4) fog_density_0 : f32,
+    @align(16) fog_color_0 : vec3<f32>,
 };
 
 @binding(0) @group(0) var<uniform> engine_0 : EngineParams_std140_0;

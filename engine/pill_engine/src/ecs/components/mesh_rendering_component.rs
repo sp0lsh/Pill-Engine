@@ -5,8 +5,10 @@ use crate::{
         DeferredUpdateManagerPointer, EntityHandle, SceneHandle,
     },
     engine::Engine,
-    graphics::{compose_render_queue_key, RenderQueueKey},
-    resources::{Material, MaterialHandle, Mesh, MeshHandle, ResourceManager},
+    graphics::{compose_pbr_render_queue_key, compose_render_queue_key, RenderQueueKey},
+    resources::{
+        Material, MaterialHandle, Mesh, MeshHandle, PBRMaterial, PBRMaterialHandle, ResourceManager,
+    },
 };
 
 use pill_core::{get_type_name, PillStyle, PillTypeMapKey};
@@ -16,6 +18,7 @@ use anyhow::{Context, Result};
 const DEFERRED_REQUEST_VARIANT_UPDATE_RENDER_QUEUE: usize = 0;
 const DEFERRED_REQUEST_VARIANT_SET_MATERIAL: usize = 1;
 const DEFERRED_REQUEST_VARIANT_SET_MESH: usize = 2;
+const DEFERRED_REQUEST_VARIANT_SET_PBR_MATERIAL: usize = 3;
 
 // --- Builder ---
 
@@ -40,6 +43,11 @@ impl MeshRenderingComponentBuilder {
         self
     }
 
+    pub fn pbr_material(mut self, material_handle: &PBRMaterialHandle) -> Self {
+        self.component.pbr_material_handle = Some(*material_handle);
+        self
+    }
+
     pub fn build(self) -> MeshRenderingComponent {
         self.component
     }
@@ -53,6 +61,8 @@ pub struct MeshRenderingComponent {
     pub mesh_handle: Option<MeshHandle>,
     #[readonly]
     pub material_handle: Option<MaterialHandle>,
+    #[readonly]
+    pub pbr_material_handle: Option<PBRMaterialHandle>,
     pub(crate) render_queue_key: Option<RenderQueueKey>,
 
     entity_handle: Option<EntityHandle>,
@@ -75,6 +85,7 @@ impl MeshRenderingComponent {
         Self {
             mesh_handle: None,
             material_handle: None,
+            pbr_material_handle: None,
             render_queue_key: None,
             entity_handle: None,
             scene_handle: None,
@@ -87,6 +98,11 @@ impl MeshRenderingComponent {
         self.post_deferred_update_request(DEFERRED_REQUEST_VARIANT_SET_MATERIAL);
     }
 
+    pub fn set_pbr_material(&mut self, material_handle: &PBRMaterialHandle) {
+        self.pbr_material_handle = Some(*material_handle);
+        self.post_deferred_update_request(DEFERRED_REQUEST_VARIANT_SET_PBR_MATERIAL);
+    }
+
     pub fn set_mesh(&mut self, mesh_handle: &MeshHandle) {
         self.mesh_handle = Some(*mesh_handle);
         self.post_deferred_update_request(DEFERRED_REQUEST_VARIANT_SET_MESH);
@@ -94,6 +110,7 @@ impl MeshRenderingComponent {
 
     pub fn remove_material(&mut self) {
         self.material_handle = None;
+        self.pbr_material_handle = None;
         self.post_deferred_update_request(DEFERRED_REQUEST_VARIANT_UPDATE_RENDER_QUEUE);
     }
 
@@ -114,17 +131,18 @@ impl MeshRenderingComponent {
         &mut self,
         resource_manager: &ResourceManager,
     ) -> Result<()> {
-        if let Some(handle) = &self.mesh_handle {
-            // Use default material if no material is set
-            let material_handle = match self.material_handle {
-                Some(v) => v,
-                None => DEFAULT_MATERIAL_HANDLE,
+        if let Some(mesh_handle) = &self.mesh_handle {
+            // PBR path takes priority; legacy Material path is the fallback
+            let result = if let Some(pbr_handle) = self.pbr_material_handle {
+                compose_pbr_render_queue_key(resource_manager, pbr_handle, mesh_handle)
+            } else {
+                // Use default material if no material is set
+                let material_handle = self.material_handle.unwrap_or(DEFAULT_MATERIAL_HANDLE);
+                compose_render_queue_key(resource_manager, &material_handle, mesh_handle)
             };
 
             // Compose render queue key and set it
-            if let Ok(render_queue_key) =
-                compose_render_queue_key(resource_manager, &material_handle, handle)
-            {
+            if let Ok(render_queue_key) = result {
                 self.render_queue_key = Some(render_queue_key);
             } else {
                 self.render_queue_key = None;
@@ -176,6 +194,15 @@ impl Component for MeshRenderingComponent {
             ))?;
         }
 
+        // Check if PBR material handle is valid
+        if let Some(handle) = &self.pbr_material_handle {
+            engine.get_resource::<PBRMaterial>(handle).context(format!(
+                "Creating {} {} failed",
+                "Component".general_object_style(),
+                get_type_name::<Self>().specific_object_style()
+            ))?;
+        }
+
         // Check if mesh handle is valid
         if let Some(handle) = &self.mesh_handle {
             engine.get_resource::<Mesh>(handle).context(format!(
@@ -208,6 +235,18 @@ impl Component for MeshRenderingComponent {
                         "Material".specific_object_style()
                     ))?;
 
+                // Update mesh rendering queue
+                self.update_render_queue_key(&engine.resource_manager)?;
+            }
+            DEFERRED_REQUEST_VARIANT_SET_PBR_MATERIAL => {
+                engine
+                    .get_resource::<PBRMaterial>(&self.pbr_material_handle.unwrap())
+                    .context(format!(
+                        "Setting {} {} failed",
+                        "Resource".general_object_style(),
+                        "PBRMaterial".specific_object_style()
+                    ))?;
+
                 self.update_render_queue_key(&engine.resource_manager)?;
             }
             DEFERRED_REQUEST_VARIANT_SET_MESH => {
@@ -220,10 +259,10 @@ impl Component for MeshRenderingComponent {
                         "Mesh".specific_object_style()
                     ))?;
 
+                // Update mesh rendering queue
                 self.update_render_queue_key(&engine.resource_manager)?;
             }
             DEFERRED_REQUEST_VARIANT_UPDATE_RENDER_QUEUE => {
-                // Update mesh rendering queue
                 self.update_render_queue_key(&engine.resource_manager)?;
             }
             _ => {

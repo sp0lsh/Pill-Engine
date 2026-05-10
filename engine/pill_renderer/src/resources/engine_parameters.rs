@@ -1,7 +1,7 @@
 use anyhow::Result;
 use wgpu::util::DeviceExt;
 
-// Layout must match the GLSL `engine` uniform block (std140):
+// Layout must match the HLSL `EngineParams` struct in include/common.hlsl (std140):
 //   float delta_time;      // offset 0
 //   float fog_density;     // offset 4
 //   // vec3 must align to 16 → 8 bytes of padding here

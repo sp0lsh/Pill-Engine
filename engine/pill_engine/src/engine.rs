@@ -121,6 +121,7 @@ impl Engine {
 
         self.register_resource_type::<Shader>(max_shader_count)?;
         self.register_resource_type::<Material>(max_material_count)?;
+        self.register_resource_type::<PBRMaterial>(max_material_count)?;
         self.register_resource_type::<Texture>(max_texture_count)?;
         self.register_resource_type::<Mesh>(max_mesh_count)?;
         #[cfg(not(target_arch = "wasm32"))]

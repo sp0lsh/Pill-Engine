@@ -24,6 +24,140 @@ const DEFERRED_REQUEST_VARIANT_PARAMETER: usize = 1;
 const DEFERRED_REQUEST_VARIANT_TEXTURE_START: usize = 2;
 const DEFERRED_REQUEST_VARIANT_TEXTURE_END: usize = 10;
 
+// --- PBRMaterial ---
+
+pill_core::define_new_pill_slotmap_key! {
+    pub struct PBRMaterialHandle;
+}
+
+#[readonly::make]
+pub struct PBRMaterial {
+    #[readonly]
+    pub name: String,
+    pub albedo: Color,
+    pub metallic: f32,
+    pub roughness: f32,
+    pub emissive: Color,
+    pub albedo_texture: Option<TextureHandle>,
+    pub normal_texture: Option<TextureHandle>,
+    pub metallic_roughness_texture: Option<TextureHandle>,
+    pub emissive_texture: Option<TextureHandle>,
+    pub(crate) renderer_resource_handle: Option<RendererMaterialHandle>,
+    handle: Option<PBRMaterialHandle>,
+}
+
+impl PBRMaterial {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            albedo: Color::new(1.0, 1.0, 1.0),
+            metallic: 0.0,
+            roughness: 0.5,
+            emissive: Color::new(0.0, 0.0, 0.0),
+            albedo_texture: None,
+            normal_texture: None,
+            metallic_roughness_texture: None,
+            emissive_texture: None,
+            renderer_resource_handle: None,
+            handle: None,
+        }
+    }
+
+    pub fn albedo(mut self, color: Color) -> Self {
+        self.albedo = color;
+        self
+    }
+
+    pub fn roughness(mut self, roughness: f32) -> Self {
+        self.roughness = roughness.clamp(0.0, 1.0);
+        self
+    }
+
+    pub fn albedo_texture(mut self, handle: TextureHandle) -> Self {
+        self.albedo_texture = Some(handle);
+        self
+    }
+
+    pub fn normal_texture(mut self, handle: TextureHandle) -> Self {
+        self.normal_texture = Some(handle);
+        self
+    }
+}
+
+impl PillTypeMapKey for PBRMaterial {
+    type Storage = ResourceStorage<PBRMaterial>;
+}
+
+impl Resource for PBRMaterial {
+    type Handle = PBRMaterialHandle;
+
+    fn get_name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn initialize(&mut self, engine: &mut Engine) -> Result<()> {
+        let mut textures: IndexMap<String, MaterialTexture> = IndexMap::new();
+        let mut parameters: HashMap<String, MaterialParameter> = HashMap::new();
+
+        parameters.insert(
+            DEFAULT_LIT_SHADER_TINT_PARAMETER_SLOT_NAME.to_string(),
+            MaterialParameter::Color(self.albedo),
+        );
+        parameters.insert(
+            DEFAULT_LIT_SHADER_SPECULARITY_PARAMETER_SLOT_NAME.to_string(),
+            MaterialParameter::Scalar(1.0 - self.roughness),
+        );
+
+        if let Some(texture_handle) = self.albedo_texture {
+            let renderer_handle = engine
+                .get_resource::<Texture>(&texture_handle)?
+                .renderer_resource_handle
+                .unwrap();
+            let mut mat_tex = MaterialTexture::new(texture_handle);
+            mat_tex.renderer_resource_handle = Some(renderer_handle);
+            textures.insert(
+                DEFAULT_LIT_SHADER_COLOR_TEXTURE_SLOT_NAME.to_string(),
+                mat_tex,
+            );
+        }
+
+        if let Some(texture_handle) = self.normal_texture {
+            let renderer_handle = engine
+                .get_resource::<Texture>(&texture_handle)?
+                .renderer_resource_handle
+                .unwrap();
+            let mut mat_tex = MaterialTexture::new(texture_handle);
+            mat_tex.renderer_resource_handle = Some(renderer_handle);
+            textures.insert(
+                DEFAULT_LIT_SHADER_NORMAL_TEXTURE_SLOT_NAME.to_string(),
+                mat_tex,
+            );
+        }
+
+        let renderer_shader_handle = get_default_lit_shader_handles().1;
+        let renderer_resource_handle = engine.renderer.create_material(
+            &self.name,
+            renderer_shader_handle,
+            &textures,
+            &parameters,
+        )?;
+        self.renderer_resource_handle = Some(renderer_resource_handle);
+
+        Ok(())
+    }
+
+    fn pass_handle<H: PillSlotMapKey>(&mut self, self_handle: H) {
+        self.handle = Some(PBRMaterialHandle::from(self_handle.data()));
+    }
+
+    fn destroy<H: PillSlotMapKey>(&mut self, engine: &mut Engine, _self_handle: H) -> Result<()> {
+        if let Some(v) = self.renderer_resource_handle {
+            engine.renderer.destroy_material(v)?;
+        }
+        Ok(())
+    }
+}
+
 // --- Material parameters ---
 
 #[derive(Debug)]

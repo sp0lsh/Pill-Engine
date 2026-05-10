@@ -1,6 +1,7 @@
 #![cfg_attr(debug_assertions, allow(dead_code, unused_variables))]
 
 mod components;
+mod egui_client;
 mod entity;
 mod scene;
 mod scene_manager;
@@ -29,6 +30,10 @@ pub use components::audio_listener_component::AudioListenerComponent;
 pub use components::audio_source_component::AudioSourceComponent;
 
 pub use components::egui_manager_component::EguiManagerComponent;
+
+pub use components::render_state_component::RenderStateComponent;
+
+pub use egui_client::EguiClient;
 
 pub use components::deferred_update_component::{
     DeferredUpdateComponent, DeferredUpdateComponentRequest, DeferredUpdateManagerPointer,

@@ -1,4 +1,5 @@
 mod engine_parameters;
+mod gpu_resources;
 mod renderer_camera;
 mod renderer_material;
 mod renderer_mesh;
@@ -7,6 +8,8 @@ mod renderer_shader;
 mod renderer_texture;
 
 // --- Use ---
+
+pub use gpu_resources::GpuResources;
 
 pub use renderer_shader::RendererShader;
 

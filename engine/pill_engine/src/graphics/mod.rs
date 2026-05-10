@@ -18,6 +18,6 @@ pub use self::dummy_renderer::DummyRenderer;
 pub use egui::EguiUI;
 
 pub use render_queue::{
-    compose_render_queue_key, decompose_render_queue_key, RenderQueueItem, RenderQueueKey,
-    RenderQueueKeyFields, RENDER_QUEUE_KEY_ORDER,
+    compose_pbr_render_queue_key, compose_render_queue_key, decompose_render_queue_key,
+    RenderQueueItem, RenderQueueKey, RenderQueueKeyFields, RENDER_QUEUE_KEY_ORDER,
 };
