@@ -13,7 +13,6 @@ glam = { version = "0.30.8", features = ["serde"] }
 anyhow = "1.0.45"
 thiserror = "1.0.30"
 colored = "2.0.0"
-boolinator = "2.4.0"
 log = "0.4"
 indexmap = "1.7.0"
 config = "0.11"

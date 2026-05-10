@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 pill_core = {path = "../pill_core"}
+glam = { version = "0.30.8", features = ["serde"] }
 
 # Data containers
 indexmap = "1.7.0"
@@ -23,7 +24,6 @@ tobj = "3.0"
 # Other
 readonly = "0.2"
 winit = "0.30.12"
-boolinator = "2.4.0"
 bytemuck = { version = "1.4", features = [ "derive" ] }
 lazy_static = "1.4.0"
 config = "0.11"

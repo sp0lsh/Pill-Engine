@@ -1,7 +1,6 @@
 use crate::{define_new_pill_slotmap_key, EngineError};
 
-use anyhow::{Context, Error, Result};
-use boolinator::Boolinator;
+use anyhow::{Error, Result};
 use std::{any::type_name, collections::HashMap, hash::Hash, path::Path};
 
 // --- Type to string utils ---
@@ -37,11 +36,11 @@ pub fn get_enum_variant_type_name<T: core::fmt::Debug>(a: &T) -> String {
 
 // Check if path to asset is correct (exists and has supported format)
 pub fn validate_asset_path(path: &Path, allowed_formats: &'static [&'static str]) -> Result<()> {
-    #[allow(unstable_name_collisions)]
-    path.exists()
-        .ok_or(Error::new(EngineError::InvalidAssetPath(
+    if !path.exists() {
+        return Err(Error::new(EngineError::InvalidAssetPath(
             path.display().to_string(),
-        )))?;
+        )));
+    }
 
     match path.extension() {
         Some(v) => match allowed_formats.contains(&v.to_str().unwrap()) {

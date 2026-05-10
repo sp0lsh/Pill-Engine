@@ -24,6 +24,7 @@ pub struct Timer {
     pub records: Vec<TimerRecord>,
     current_label: Option<String>,
     current_label_start: Option<Instant>,
+    counters: IndexMap<String, u64>,
 }
 
 impl Default for Timer {
@@ -39,6 +40,7 @@ impl Timer {
             records: Vec::new(),
             current_label: None,
             current_label_start: None,
+            counters: IndexMap::new(),
         }
     }
 
@@ -102,6 +104,18 @@ impl Timer {
 
     pub fn total_duration(&self) -> f32 {
         self.records.iter().map(|r| r.duration).sum()
+    }
+
+    pub fn set_counter(&mut self, label: impl Into<String>, value: u64) {
+        self.counters.insert(label.into(), value);
+    }
+
+    pub fn get_counter(&self, label: &str) -> Option<u64> {
+        self.counters.get(label).copied()
+    }
+
+    pub fn counters(&self) -> &IndexMap<String, u64> {
+        &self.counters
     }
 
     pub fn print(&self, indent: usize) {

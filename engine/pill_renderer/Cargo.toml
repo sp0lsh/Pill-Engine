@@ -23,7 +23,6 @@ log = "0.4"
 wgpu = "25.0.0"
 glam = { version = "0.30.8", features = ["serde", "bytemuck"] }
 winit = "0.30.12"
-cgmath = "0.18"
 bytemuck = { version = "1.4", features = [ "derive" ] }
 config = "0.11"
 
