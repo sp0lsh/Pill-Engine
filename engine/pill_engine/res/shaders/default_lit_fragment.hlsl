@@ -1,5 +1,5 @@
 // Default lit fragment shader. Edit here — `pill_assets` regenerates the .wgsl.
-// Diffuse + normal mapped, single point light, exp-squared depth fog.
+// Diffuse + normal mapped, two lights, exp-squared depth fog.
 
 #include "include/common.hlsl"
 
@@ -24,36 +24,41 @@ float4 fs_main(
     [[vk::location(4)]] float3 in_TBN_normal            : TEXCOORD4,
     [[vk::location(5)]] float3 in_world_position        : TEXCOORD5
 ) : SV_TARGET {
-    // Settings (single point light, hard-coded).
-    // Key light: high above, slight right — matches deep blue cinematic reference.
-    const float  ambient_light_strength = 0.30;
-    const float3 light_position         = float3(-4.0, 12.0, -10.0);
-    const float3 light_color            = float3(0.55, 0.62, 1.0);
+    // Key light: blue, diffuse-dominant, high above-front-left.
+    const float  ambient_strength  = 0.28;
+    const float3 key_dir           = float3(-4.0, 12.0, -10.0);
+    const float3 key_color         = float3(0.45, 0.55, 1.0);
+
+    // Spec light: white, tight highlight, from lower-right-front for a cross-axis streak.
+    const float3 spec_dir          = float3(6.0, -3.0, -8.0);
+    const float3 spec_color        = float3(1.0, 1.0, 1.0);
+    const float  spec_exponent     = 154.0;
 
     float4 object_color  = diffuse_texture.Sample(diffuse_sampler, in_vertex_texture_coords);
     float4 object_normal = normal_texture.Sample(normal_sampler, in_vertex_texture_coords);
 
     // TBN is tangent-to-world (vertex shader stores the transpose).
-    // Use it to rotate the normal-map normal into world space; lighting stays world-space throughout.
     float3x3 TBN_matrix     = float3x3(in_TBN_tangent, in_TBN_bitangent, in_TBN_normal);
     float3   normal_tangent = normalize(object_normal.rgb * 2.0 - 1.0);
     float3   normal         = normalize(mul(TBN_matrix, normal_tangent));
 
-    float3 ambient_light_factor = light_color * ambient_light_strength;
+    float3 view_direction = normalize(camera.camera_position - in_world_position);
 
-    // Directional light: treat light_position as a world-space direction vector.
-    float3 light_direction        = normalize(light_position);
-    float  diffuse_light_strength = max(dot(normal, light_direction), 0.0);
-    float3 diffuse_light_factor   = light_color * diffuse_light_strength;
+    // Key light — diffuse + soft specular.
+    float3 key_light_dir     = normalize(key_dir);
+    float  key_diffuse       = max(dot(normal, key_light_dir), 0.0);
+    float3 key_half          = normalize(view_direction + key_light_dir);
+    float  key_spec          = pow(max(dot(normal, key_half), 0.0), 24.0) * material.spec * 0.4;
+    float3 key_contribution  = key_color * (ambient_strength + key_diffuse * 1.2);
 
-    // Specular (Blinn-Phong). White highlight so it reads against the blue surface.
-    float3 view_direction          = normalize(camera.camera_position - in_world_position);
-    float3 half_direction          = normalize(view_direction + light_direction);
-    float  specular_light_strength = pow(max(dot(normal, half_direction), 0.0), 64) * material.spec * 4.0;
-    float3 specular_light_factor   = float3(1.0, 1.0, 1.0) * specular_light_strength;
+    // Spec light — specular only, crisp white streak.
+    float3 spec_light_dir    = normalize(spec_dir);
+    float3 spec_half         = normalize(view_direction + spec_light_dir);
+    float  spec_strength     = pow(max(dot(normal, spec_half), 0.0), spec_exponent) * material.spec * 3.0;
+    float3 spec_contribution = spec_color * spec_strength;
 
-    float3 final_color = (ambient_light_factor + diffuse_light_factor) * object_color.xyz * material.tint
-                       + specular_light_factor;
+    float3 final_color = key_contribution * object_color.xyz * material.tint
+                       + (key_color * key_spec + spec_contribution);
 
     // Exponential-squared depth fog. density = 0 → no fog, bit-identical output.
     float fog_dist   = length(camera.camera_position - in_world_position);

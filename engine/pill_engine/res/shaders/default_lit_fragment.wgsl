@@ -52,22 +52,25 @@ struct pixelInput_0
 @fragment
 fn fs_main( _S1 : pixelInput_0) -> pixelOutput_0
 {
-    const light_position_0 : vec3<f32> = vec3<f32>(-4.0f, 12.0f, -10.0f);
-    const light_color_0 : vec3<f32> = vec3<f32>(0.55000001192092896f, 0.62000000476837158f, 1.0f);
+    const key_dir_0 : vec3<f32> = vec3<f32>(-4.0f, 12.0f, -10.0f);
+    const key_color_0 : vec3<f32> = vec3<f32>(0.44999998807907104f, 0.55000001192092896f, 1.0f);
+    const spec_dir_0 : vec3<f32> = vec3<f32>(6.0f, -3.0f, -8.0f);
     var object_color_0 : vec4<f32> = (textureSample((diffuse_texture_0), (diffuse_sampler_0), (_S1.in_vertex_texture_coords_0)));
     var object_normal_0 : vec4<f32> = (textureSample((normal_texture_0), (normal_sampler_0), (_S1.in_vertex_texture_coords_0)));
     var TBN_matrix_0 : mat3x3<f32> = mat3x3<f32>(_S1.in_TBN_tangent_0, _S1.in_TBN_bitangent_0, _S1.in_TBN_normal_0);
     var normal_tangent_0 : vec3<f32> = normalize(object_normal_0.xyz * vec3<f32>(2.0f) - vec3<f32>(1.0f));
     var normal_0 : vec3<f32> = normalize((((normal_tangent_0) * (TBN_matrix_0))));
-    var ambient_light_factor_0 : vec3<f32> = light_color_0 * vec3<f32>(0.30000001192092896f);
-    var light_direction_0 : vec3<f32> = normalize(light_position_0);
-    var _S2 : f32 = max(dot(normal_0, light_direction_0), 0.0f);
-    var diffuse_light_factor_0 : vec3<f32> = light_color_0 * vec3<f32>(_S2);
     var view_direction_0 : vec3<f32> = normalize(camera_0.camera_position_0 - _S1.in_world_position_0);
-    var half_direction_0 : vec3<f32> = normalize(view_direction_0 + light_direction_0);
-    var specular_light_strength_0 : f32 = pow(max(dot(normal_0, half_direction_0), 0.0f), 64.0f) * material_0.spec_0 * 4.0f;
-    var _S3 : vec3<f32> = vec3<f32>(specular_light_strength_0);
-    var final_color_0 : vec3<f32> = (ambient_light_factor_0 + diffuse_light_factor_0) * object_color_0.xyz * material_0.tint_0 + _S3;
+    var key_light_dir_0 : vec3<f32> = normalize(key_dir_0);
+    var _S2 : f32 = max(dot(normal_0, key_light_dir_0), 0.0f);
+    var key_half_0 : vec3<f32> = normalize(view_direction_0 + key_light_dir_0);
+    var key_spec_0 : f32 = pow(max(dot(normal_0, key_half_0), 0.0f), 24.0f) * material_0.spec_0 * 0.40000000596046448f;
+    var key_contribution_0 : vec3<f32> = key_color_0 * vec3<f32>((0.2800000011920929f + _S2 * 1.20000004768371582f));
+    var spec_light_dir_0 : vec3<f32> = normalize(spec_dir_0);
+    var spec_half_0 : vec3<f32> = normalize(view_direction_0 + spec_light_dir_0);
+    var spec_strength_0 : f32 = pow(max(dot(normal_0, spec_half_0), 0.0f), 154.0f) * material_0.spec_0 * 3.0f;
+    var _S3 : vec3<f32> = vec3<f32>(spec_strength_0);
+    var final_color_0 : vec3<f32> = key_contribution_0 * object_color_0.xyz * material_0.tint_0 + (key_color_0 * vec3<f32>(key_spec_0) + _S3);
     var fog_dist_0 : f32 = length(camera_0.camera_position_0 - _S1.in_world_position_0);
     var fog_factor_0 : f32 = clamp(1.0f - exp(- engine_0.fog_density_0 * engine_0.fog_density_0 * fog_dist_0 * fog_dist_0), 0.0f, 1.0f);
     var final_color_1 : vec3<f32> = mix(final_color_0, engine_0.fog_color_0, vec3<f32>(fog_factor_0));
