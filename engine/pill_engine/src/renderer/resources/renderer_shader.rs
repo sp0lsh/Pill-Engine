@@ -1,6 +1,6 @@
-use pill_core::Result;
-use pill_core::{debug, LogContext, PillStyle};
-use pill_engine::internal::{ShaderParameterSlot, ShaderTextureSlot};
+use crate::graphics::RendererShaderHandle;
+use crate::resources::{Resource, ResourceStorage, ShaderParameterSlot, ShaderTextureSlot};
+use pill_core::{debug, LogContext, PillStyle, PillTypeMapKey, Result};
 use std::collections::HashMap;
 
 pub struct RendererShader {
@@ -34,7 +34,6 @@ impl RendererShader {
         pass_engine_parameters: bool,
         pass_camera_parameters: bool,
     ) -> Result<Self> {
-        // Print shader information
         {
             let mut shader_info = format!(
                 "Creating shader {}:\n - Settings:\n   - Pass engine parameters: {}\n   - Pass camera parameters: {}",
@@ -56,14 +55,9 @@ impl RendererShader {
                 ));
             }
 
-            // Log with context
             debug!(LogContext::Rendering => "{}", shader_info);
         }
 
-        debug!(LogContext::Rendering => "Shader modules created");
-
-        // Create shader modules from WGSL strings — wgpu consumes WGSL natively;
-        // no compile step at runtime, no naga linked into the binary.
         let vertex_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("master_vertex_shader"),
             source: wgpu::ShaderSource::Wgsl(vertex_wgsl.into()),
@@ -73,75 +67,60 @@ impl RendererShader {
             source: wgpu::ShaderSource::Wgsl(fragment_wgsl.into()),
         });
 
-        let parameters_bind_group_layout = {
-            if !parameter_slots.is_empty() {
-                let bind_group_layout_entry = wgpu::BindGroupLayoutEntry {
-                    binding: 0, // (set = 2, binding = 0)
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                };
-
-                Some(
-                    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                        label: Some(&format!("{}_parameters_bind_group_layout", name)),
-                        entries: &[bind_group_layout_entry],
-                    }),
-                )
-            } else {
-                None
-            }
-        };
-
-        debug!(LogContext::Rendering => "Parameters bind group layout created");
-
-        // Create bind group layout entries for textures - Bind group slot 1
-        let textures_bind_group_layout = {
-            if !texture_slots.is_empty() {
-                let mut entries = Vec::new();
-
-                for texture_slot in texture_slots.values() {
-                    // Texture binding
-                    entries.push(wgpu::BindGroupLayoutEntry {
-                        binding: texture_slot.texture_binding,
+        let parameters_bind_group_layout = if !parameter_slots.is_empty() {
+            Some(
+                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some(&format!("{}_parameters_bind_group_layout", name)),
+                    entries: &[wgpu::BindGroupLayoutEntry {
+                        binding: 0,
                         visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
                         },
                         count: None,
-                    });
-
-                    // Sampler binding
-                    entries.push(wgpu::BindGroupLayoutEntry {
-                        binding: texture_slot.sampler_binding,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    });
-                }
-
-                Some(
-                    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                        label: Some(&format!("{}_textures_bind_group_layout", name)),
-                        entries: &entries,
-                    }),
-                )
-            } else {
-                None
-            }
+                    }],
+                }),
+            )
+        } else {
+            None
         };
 
-        debug!(LogContext::Rendering => "Textures bind group layout created");
+        let textures_bind_group_layout = if !texture_slots.is_empty() {
+            let mut entries = Vec::new();
 
-        // Create pipeline layout
+            for texture_slot in texture_slots.values() {
+                entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: texture_slot.texture_binding,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                });
+
+                entries.push(wgpu::BindGroupLayoutEntry {
+                    binding: texture_slot.sampler_binding,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                });
+            }
+
+            Some(
+                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some(&format!("{}_textures_bind_group_layout", name)),
+                    entries: &entries,
+                }),
+            )
+        } else {
+            None
+        };
+
         let pipeline_layout = {
-            // Collect bind group layouts only if they exist
             let mut bind_group_layouts = Vec::new();
 
             if pass_engine_parameters {
@@ -164,7 +143,6 @@ impl RendererShader {
             })
         };
 
-        // Create color target states that specifies what what color outputs wgpu should set up
         let color_target_states = &[Some(wgpu::ColorTargetState {
             format: color_format,
             blend: Some(wgpu::BlendState {
@@ -180,7 +158,7 @@ impl RendererShader {
             vertex: wgpu::VertexState {
                 module: &vertex_shader,
                 entry_point: Some("vs_main"),
-                buffers: vertex_layouts, // Specifies structure of vertices that will be passed to the vertex shader
+                buffers: vertex_layouts,
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -190,25 +168,24 @@ impl RendererShader {
                 compilation_options: Default::default(),
             }),
             primitive: wgpu::PrimitiveState {
-                // Specifies how to interpret vertices when converting them into triangles
-                topology: wgpu::PrimitiveTopology::TriangleList, // Each three vertices will correspond to one triangle
+                topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw, // Specifies how to determine whether a given triangle is facing forward or not (FrontFace::Ccw means that a triangle is facing forward if the vertices are arranged in a counter clockwise direction)
-                cull_mode: Some(wgpu::Face::Back), // Triangles that are not considered facing forward are culled (not included in the render) as specified by CullMode::Back
-                polygon_mode: wgpu::PolygonMode::Fill, // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
-                conservative: false, // Requires Features::CONSERVATIVE_RASTERIZATION
-                unclipped_depth: true, // Requires Features::DEPTH_CLAMPING
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+                unclipped_depth: true,
             },
             depth_stencil: depth_format.map(|format| wgpu::DepthStencilState {
                 format,
                 depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less, // Specifies when to discard a new pixel. Using LESS means pixels will be drawn front to back
+                depth_compare: wgpu::CompareFunction::Less,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
             multisample: wgpu::MultisampleState {
-                count: 1, // Determines how many samples pipeline will use (Multisampling)
-                mask: !0, // Specifies which samples should be active
+                count: 1,
+                mask: !0,
                 alpha_to_coverage_enabled: false,
             },
             multiview: None,
@@ -217,7 +194,9 @@ impl RendererShader {
 
         let render_pipeline = device.create_render_pipeline(&render_pipeline_descriptor);
 
-        let pipeline = Self {
+        debug!(LogContext::Rendering => "Render pipeline created");
+
+        Ok(Self {
             name: name.to_string(),
             render_pipeline,
             parameter_slots: parameter_slots.to_vec(),
@@ -226,10 +205,18 @@ impl RendererShader {
             parameters_bind_group_layout,
             pass_engine_parameters,
             pass_camera_parameters,
-        };
+        })
+    }
+}
 
-        debug!(LogContext::Rendering => "Render pipeline created");
+impl PillTypeMapKey for RendererShader {
+    type Storage = ResourceStorage<RendererShader>;
+}
 
-        Ok(pipeline)
+impl Resource for RendererShader {
+    type Handle = RendererShaderHandle;
+
+    fn get_name(&self) -> String {
+        self.name.clone()
     }
 }

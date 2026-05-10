@@ -1,4 +1,4 @@
-use pill_engine::internal::{CameraComponent, TransformComponent};
+use crate::ecs::{CameraComponent, TransformComponent};
 
 use pill_core::Result;
 use pill_core::{Matrix3f, Matrix4f, Vector3f, Vector4f};
@@ -6,19 +6,17 @@ use wgpu::util::DeviceExt;
 
 #[rustfmt::skip]
 pub const OPENGL_TO_WGPU_MATRIX: Matrix4f = Matrix4f::from_cols_array(&[
-    1.0, 0.0, 0.0, 0.0, // column 1
-    0.0, 1.0, 0.0, 0.0, // column 2
-    0.0, 0.0, 0.5, 0.5, // column 3
-    0.0, 0.0, 0.0, 1.0, // column 4
+    1.0, 0.0, 0.0, 0.0,
+    0.0, 1.0, 0.0, 0.0,
+    0.0, 0.0, 0.5, 0.5,
+    0.0, 0.0, 0.0, 1.0,
 ]);
-
-// --- Camera Uniform ---
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraParametersData {
-    pub position: Vector4f,               // Camera position
-    pub view_projection_matrix: Matrix4f, // Perspective manipulation
+    pub position: Vector4f,
+    pub view_projection_matrix: Matrix4f,
 }
 
 impl Default for CameraParametersData {
@@ -40,7 +38,6 @@ impl CameraParametersData {
         camera_component: &CameraComponent,
         transform_component: &TransformComponent,
     ) {
-        // Update position
         self.position = Vector4f::new(
             transform_component.position.x,
             transform_component.position.y,
@@ -48,7 +45,6 @@ impl CameraParametersData {
             0.0,
         );
 
-        // Update view-projection
         self.view_projection_matrix =
             CameraParametersData::calculate_projection_matrix(camera_component)
                 * CameraParametersData::calculate_view_matrix(transform_component);
@@ -75,8 +71,6 @@ impl CameraParametersData {
     }
 }
 
-// --- Camera ---
-
 #[derive(Debug)]
 pub struct RendererCamera {
     pub parameters_data: CameraParametersData,
@@ -102,20 +96,18 @@ impl RendererCamera {
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &camera_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
-                binding: 0, // (set = X, binding = 0)
+                binding: 0,
                 resource: parameters_uniform_buffer.as_entire_binding(),
             }],
             label: Some("camera_parameters_bind_group"),
         });
 
-        let camera = Self {
+        Ok(Self {
             parameters_data,
             parameters_uniform_buffer,
             bind_group_layout: camera_bind_group_layout,
             bind_group,
-        };
-
-        Ok(camera)
+        })
     }
 
     pub fn update(

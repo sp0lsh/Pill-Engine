@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 pill_core = {path = "../pill_core"}
+glam = { version = "0.30.8", features = ["serde", "bytemuck"] }
 
 # Errors
 thiserror = "1.0.30"
@@ -18,11 +19,12 @@ tobj = { version = "3.0", optional = true }
 # Other
 readonly = "0.2"
 winit = "0.30.12"
-boolinator = "2.4.0"
 bytemuck = { version = "1.4", features = [ "derive" ] }
 lazy_static = "1.4.0"
 dyn-clone = "1.0.4"
-egui = { version = "0.32.1", optional = true }
+egui = "0.32.1"
+egui-wgpu = { version = "0.32.1", features = ["winit"] }
+wgpu = "25.0.0"
 serde = { version = "1.0", features = ["derive"] }
 bincode = "1.0"
 once_cell = "1.21.3"
@@ -35,6 +37,11 @@ web-time = "1.1"
 png = "0.17"
 rodio = { version = "0.20", features = ["wav", "mp3"] }
 gilrs = "0.11.0"
+pollster = "0.2"
+egui-winit = { version = "0.32.1", features = ["clipboard"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+egui-winit = { version = "0.32.1", default-features = false }
 
 [build-dependencies]
 fs_extra = "1.2"
@@ -45,6 +52,6 @@ game = []
 internal = []
 headless = []
 networking = []
-debug_ui = ["dep:egui"]
+debug_ui = []
 obj_loading = ["dep:tobj"]
 all = ["game", "internal", "networking"]

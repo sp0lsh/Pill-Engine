@@ -1,16 +1,12 @@
-use pill_engine::internal::{MeshData, MeshVertex};
+use crate::graphics::RendererMeshHandle;
+use crate::resources::{MeshData, MeshVertex, Resource, ResourceStorage};
 
-use pill_core::Result;
+use pill_core::{PillTypeMapKey, Result};
 use wgpu::util::DeviceExt;
 
-// --- Vertex ---
-
 pub trait Vertex {
-    // Defines how a data is layed out in memory (To specify how RenderPipeline needs to map the buffer in the shader)
     fn data_layout_descriptor<'a>() -> wgpu::VertexBufferLayout<'a>;
 }
-
-// --- Mesh ---
 
 pub struct RendererMesh {
     pub name: String,
@@ -33,14 +29,24 @@ impl RendererMesh {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let renderer_mesh = Self {
+        Ok(Self {
             name: name.to_string(),
             vertex_buffer,
             index_buffer,
             index_count: mesh_data.indices.len() as u32,
-        };
+        })
+    }
+}
 
-        Ok(renderer_mesh)
+impl PillTypeMapKey for RendererMesh {
+    type Storage = ResourceStorage<RendererMesh>;
+}
+
+impl Resource for RendererMesh {
+    type Handle = RendererMeshHandle;
+
+    fn get_name(&self) -> String {
+        self.name.clone()
     }
 }
 
@@ -52,35 +58,26 @@ impl Vertex for RendererMesh {
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &[
                 wgpu::VertexAttribute {
-                    // Vertex position
                     offset: 0,
                     shader_location: 0,
                     format: wgpu::VertexFormat::Float32x3,
                 },
                 wgpu::VertexAttribute {
-                    // Vertex texture coordinates
-                    // slangc maps TEXCOORD0 → @location(4), not 1
                     offset: mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                     shader_location: 4,
                     format: wgpu::VertexFormat::Float32x2,
                 },
                 wgpu::VertexAttribute {
-                    // Vertex normal
-                    // slangc maps NORMAL → @location(5)
                     offset: mem::size_of::<[f32; 5]>() as wgpu::BufferAddress,
                     shader_location: 5,
                     format: wgpu::VertexFormat::Float32x3,
                 },
                 wgpu::VertexAttribute {
-                    // Vertex tangent
-                    // slangc maps TANGENT → @location(6)
                     offset: mem::size_of::<[f32; 8]>() as wgpu::BufferAddress,
                     shader_location: 6,
                     format: wgpu::VertexFormat::Float32x3,
                 },
                 wgpu::VertexAttribute {
-                    // Vertex bitangent
-                    // slangc maps BINORMAL → @location(7)
                     offset: mem::size_of::<[f32; 11]>() as wgpu::BufferAddress,
                     shader_location: 7,
                     format: wgpu::VertexFormat::Float32x3,

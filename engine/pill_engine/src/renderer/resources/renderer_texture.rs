@@ -1,14 +1,10 @@
-use pill_engine::internal::TextureType;
+use crate::graphics::RendererTextureHandle;
+use crate::resources::{Resource, ResourceStorage, TextureType};
 
-use pill_core::Result;
-
-// --- Texture ---
-
-pill_core::define_new_pill_slotmap_key! {
-    pub struct RendererTextureHandle;
-}
+use pill_core::{PillTypeMapKey, Result};
 
 pub struct RendererTexture {
+    pub name: String,
     pub texture: wgpu::Texture,
     pub texture_view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,
@@ -20,28 +16,26 @@ impl RendererTexture {
     pub fn new_texture(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        name: Option<&str>,
+        name: &str,
         rgba: &[u8],
         width: u32,
         height: u32,
         texture_type: TextureType,
     ) -> Result<Self> {
-        // Get size
+
         let size = wgpu::Extent3d {
             width,
             height,
             depth_or_array_layers: 1,
         };
 
-        // Specify texture format
         let format = match texture_type {
             TextureType::Color => wgpu::TextureFormat::Rgba8UnormSrgb,
             TextureType::Normal => wgpu::TextureFormat::Rgba8Unorm,
         };
 
-        // Create texture
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: name,
+            label: Some(name),
             size,
             mip_level_count: 1,
             sample_count: 1,
@@ -68,10 +62,8 @@ impl RendererTexture {
             size,
         );
 
-        // Create texture view
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Create sampler
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
@@ -79,12 +71,13 @@ impl RendererTexture {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::FilterMode::Nearest,
-            lod_min_clamp: 0.0,   // Fix: Must be 0.0 or greater
-            lod_max_clamp: 100.0, // You can set this based on your texture's mipmap levels
+            lod_min_clamp: 0.0,
+            lod_max_clamp: 100.0,
             ..Default::default()
         });
 
         Ok(Self {
+            name: name.to_string(),
             texture,
             texture_view,
             sampler,
@@ -96,15 +89,12 @@ impl RendererTexture {
         surface_configuration: &wgpu::SurfaceConfiguration,
         label: &str,
     ) -> Result<Self> {
-        // Get size
         let size = wgpu::Extent3d {
-            // Depth texture needs to be the same size as window
             width: surface_configuration.width,
             height: surface_configuration.height,
             depth_or_array_layers: 1,
         };
 
-        // Create texture
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(label),
             size,
@@ -112,14 +102,12 @@ impl RendererTexture {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: Self::DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, // Rendering to this texture so RENDER_ATTACHMENT flag is needed
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
 
-        // Create texture view
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Create sampler
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
@@ -134,9 +122,66 @@ impl RendererTexture {
         });
 
         Ok(Self {
+            name: label.to_string(),
             texture,
             texture_view,
             sampler,
         })
+    }
+
+    pub fn new_render_target(
+        device: &wgpu::Device,
+        label: &str,
+        width: u32,
+        height: u32,
+        format: wgpu::TextureFormat,
+    ) -> Result<Self> {
+        let size = wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        };
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+
+        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        Ok(Self {
+            name: label.to_string(),
+            texture,
+            texture_view,
+            sampler,
+        })
+    }
+}
+
+impl PillTypeMapKey for RendererTexture {
+    type Storage = ResourceStorage<RendererTexture>;
+}
+
+impl Resource for RendererTexture {
+    type Handle = RendererTextureHandle;
+
+    fn get_name(&self) -> String {
+        self.name.clone()
     }
 }

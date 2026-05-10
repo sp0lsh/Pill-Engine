@@ -1,7 +1,7 @@
 use crate::{
     ecs::MeshRenderingComponent,
     engine::Engine,
-    graphics::RendererMeshHandle,
+    renderer::resources::RendererMesh,
     resources::{Resource, ResourceStorage},
 };
 
@@ -31,7 +31,6 @@ pub struct Mesh {
     pub name: String,
     #[readonly]
     pub path: PathBuf,
-    pub(crate) renderer_resource_handle: Option<RendererMeshHandle>,
     mesh_data: Option<MeshData>,
 
     // When exporting from Blender, V coordinate is flipped, so we need to flip it back
@@ -45,7 +44,6 @@ impl Mesh {
         Self {
             name: name.to_string(),
             path,
-            renderer_resource_handle: None,
             mesh_data: None,
             flip_uv_y: false,
         }
@@ -60,7 +58,6 @@ impl Mesh {
         Self {
             name: name.to_string(),
             path: PathBuf::new(),
-            renderer_resource_handle: None,
             mesh_data: Some(mesh_data),
             flip_uv_y: false,
         }
@@ -170,21 +167,26 @@ impl Resource for Mesh {
             }
         }
 
-        // Create new renderer mesh resource
-        let renderer_resource_handle = engine
-            .renderer
-            .create_mesh(&self.name, self.mesh_data.as_ref().unwrap())
-            .context(error_message.clone())?;
-        self.renderer_resource_handle = Some(renderer_resource_handle);
+        #[cfg(not(feature = "headless"))]
+        {
+            let renderer_mesh = RendererMesh::new(
+                engine.renderer.get_device(),
+                &self.name,
+                self.mesh_data.as_ref().unwrap(),
+            )
+            .context(error_message)?;
+            engine.resource_manager.add_resource(renderer_mesh)?;
+        }
 
         Ok(())
     }
 
     fn destroy<H: PillSlotMapKey>(&mut self, engine: &mut Engine, self_handle: H) -> Result<()> {
-        // Destroy renderer resource
-        if let Some(v) = self.renderer_resource_handle {
-            engine.renderer.destroy_mesh(v).unwrap();
-        }
+        // Destroy renderer counterpart
+        #[cfg(not(feature = "headless"))]
+        engine
+            .resource_manager
+            .remove_resource_by_name::<RendererMesh>(&self.name)?;
 
         // Find mesh rendering components that use this mesh and update them
         for (_scene_handle, scene) in engine.scene_manager.scenes.iter_mut() {

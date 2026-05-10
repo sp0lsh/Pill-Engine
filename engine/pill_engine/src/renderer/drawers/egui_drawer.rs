@@ -63,7 +63,6 @@ impl EguiDrawer {
         encoder: &mut wgpu::CommandEncoder,
         window_surface_view: &wgpu::TextureView,
         screen_descriptor: egui_wgpu::ScreenDescriptor,
-        // run_ui: impl FnOnce(&egui::Context),
         mut run_ui: Box<dyn FnMut(&egui::Context)>,
         timer: &mut Timer,
     ) -> Result<()> {
@@ -72,9 +71,6 @@ impl EguiDrawer {
         let window = &self.window;
         let raw_input = self.state.take_egui_input(window);
 
-        // let full_output = self.context.run(raw_input, |ctx| {
-        //     (&mut run_ui)(ctx);
-        // });
         let full_output = self.context.run(raw_input, |_| {
             run_ui(&self.context);
         });
@@ -107,7 +103,6 @@ impl EguiDrawer {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
-                //depth_slice: None,
             })],
             depth_stencil_attachment: None,
             label: Some("egui main render pass"),
@@ -122,8 +117,6 @@ impl EguiDrawer {
 
         self.renderer
             .render(&mut *render_pass, &tris, &screen_descriptor);
-
-        // let _ = drop(render_pass);
 
         for texture_id in &full_output.textures_delta.free {
             self.renderer.free_texture(texture_id)

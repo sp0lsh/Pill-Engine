@@ -1,8 +1,8 @@
 use crate::{
     config::RENDERING_SYSTEM,
     ecs::{
-        CameraAspectRatio, CameraComponent, EntityHandle, MeshRenderingComponent,
-        TransformComponent,
+        CameraAspectRatio, CameraComponent, EntityHandle,
+        MeshRenderingComponent, RenderStateComponent, TransformComponent,
     },
     engine::Engine,
     graphics::RenderQueueItem,
@@ -16,6 +16,24 @@ use web_time::Instant;
 pub fn rendering_system(engine: &mut Engine) -> Result<()> {
     let mut timer = Timer::new();
     timer.begin_context("rendering_system update");
+
+    // First-frame bootstrap: install default pass chain
+    let boot_done = engine
+        .get_global_component::<RenderStateComponent>()?
+        .boot_done;
+
+    if !boot_done {
+        let egui_client = engine
+            .get_global_component::<RenderStateComponent>()?
+            .egui_client
+            .clone();
+        engine.renderer.init_default_passes(egui_client)?;
+        engine
+            .get_global_component_mut::<RenderStateComponent>()?
+            .boot_done = true;
+        return Ok(());
+    }
+
     timer.record("Get active camera");
 
     let active_scene_handle = engine.scene_manager.get_active_scene_handle()?;
@@ -24,14 +42,10 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
     {
         let active_scene = engine.scene_manager.get_active_scene_mut()?;
 
-        // - Find active camera and update its aspect ratio if needed
-
-        // Find first enabled camera and use it as active
         for (entity_handle, camera_component) in
             active_scene.get_one_component_iterator_mut::<CameraComponent>()?
         {
             if camera_component.enabled {
-                // Update active camera aspect ratio if it is set to automatic
                 if let CameraAspectRatio::Automatic(_) = camera_component.aspect {
                     let aspect_ratio =
                         engine.window_size.width as f32 / engine.window_size.height as f32;
@@ -44,29 +58,23 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
     }
 
     let active_camera_entity_handle = active_camera_entity_handle_result
-        .ok_or_else(|| -> pill_core::PillError { EngineError::NoActiveCamera.into() })?;
+        .ok_or_else(|| -> pill_core::PillError { pill_core::PillError::from(EngineError::NoActiveCamera) })?;
 
-    // - Prepare rendering data
     timer.record("Clear render queue");
 
-    // Clear the render queue
     engine.render_queue.clear();
-    engine.render_queue.reserve(200000); // Reserve space for 1000 items
+    engine.render_queue.reserve(200000);
 
     timer.record("Prepare render queue");
 
     let mut _matrix_calculation_duration: f32 = 0.0;
     let mut add_to_render_queue_duration: f32 = 0.0;
 
-    // Iterate mesh rendering components
     for (entity_handle, _transform_component, mesh_rendering_component) in engine
         .scene_manager
         .get_two_component_iterator_mut::<TransformComponent, MeshRenderingComponent>(
         active_scene_handle,
     )? {
-        // Update transform matrices if required
-
-        // Add valid mesh rendering components to render queue
         let add_to_render_queue_start_time = Instant::now();
         if let Some(render_queue_key) = mesh_rendering_component.render_queue_key {
             let render_queue_item = RenderQueueItem {
@@ -93,16 +101,23 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
 
     timer.record("Sort render queue");
 
-    // Sort render queue
     engine.render_queue.sort();
 
     timer.record("Get component storages");
 
+    // Build egui UI and push to egui_client
     #[cfg(feature = "debug_ui")]
-    let egui_ui = crate::ecs::EguiManagerComponent::get_ui(engine);
+    {
+        use crate::ecs::EguiManagerComponent;
+        let egui_ui = EguiManagerComponent::get_ui(engine);
+        let egui_client = engine
+            .get_global_component::<RenderStateComponent>()?
+            .egui_client
+            .clone();
+        egui_client.set_ui(egui_ui);
+    }
 
     let active_scene = engine.scene_manager.get_active_scene_mut()?;
-    // Get storages
     let camera_component_storage = active_scene
         .get_component_storage::<CameraComponent>()
         .context(format!(
@@ -124,17 +139,6 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
     // Render
     let delta_time = engine.frame_delta_time;
 
-    #[cfg(feature = "debug_ui")]
-    let render_result = engine.renderer.render(
-        active_camera_entity_handle,
-        &engine.render_queue,
-        camera_component_storage,
-        transform_component_storage,
-        egui_ui,
-        delta_time,
-        &mut timer,
-    );
-    #[cfg(not(feature = "debug_ui"))]
     let render_result = engine.renderer.render(
         active_camera_entity_handle,
         &engine.render_queue,
@@ -142,10 +146,11 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
         transform_component_storage,
         delta_time,
         &mut timer,
+        &engine.resource_manager,
     );
     match render_result {
         Ok(_) => {
-            timer.end_context()?; // End "Render" context
+            timer.end_context()?;
             engine.system_manager.update_system_timer(
                 RENDERING_SYSTEM.name,
                 RENDERING_SYSTEM.update_phase,
@@ -156,8 +161,7 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
         Err(e) => {
             match e.downcast_ref::<RendererError>() {
                 Some(RendererError::SurfaceLost) => {
-                    // Recreate lost surface
-                    timer.end_context()?; // End "Render" context
+                    timer.end_context()?;
                     engine.system_manager.update_system_timer(
                         RENDERING_SYSTEM.name,
                         RENDERING_SYSTEM.update_phase,

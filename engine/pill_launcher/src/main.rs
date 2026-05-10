@@ -461,7 +461,8 @@ fn render_puml_for_crate(crate_dir: &Path) -> Result<()> {
 
     // Prefer "plantuml" CLI tool if available
     if !have_cli {
-        bail!("Please install plantuml!");
+        println!("plantuml not found, skipping diagram rendering");
+        return Ok(());
     }
 
     for puml in &inputs {

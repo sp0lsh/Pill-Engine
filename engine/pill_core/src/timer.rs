@@ -22,6 +22,7 @@ pub struct Timer {
     pub records: Vec<TimerRecord>,
     current_label: Option<String>,
     current_label_start: Option<Instant>,
+    counters: Vec<(String, u64)>,
 }
 
 impl Default for Timer {
@@ -37,6 +38,7 @@ impl Timer {
             records: Vec::new(),
             current_label: None,
             current_label_start: None,
+            counters: Vec::new(),
         }
     }
 
@@ -100,6 +102,23 @@ impl Timer {
 
     pub fn total_duration(&self) -> f32 {
         self.records.iter().map(|r| r.duration).sum()
+    }
+
+    pub fn set_counter(&mut self, label: impl Into<String>, value: u64) {
+        let label = label.into();
+        if let Some(entry) = self.counters.iter_mut().find(|(k, _)| k == &label) {
+            entry.1 = value;
+        } else {
+            self.counters.push((label, value));
+        }
+    }
+
+    pub fn get_counter(&self, label: &str) -> Option<u64> {
+        self.counters.iter().find(|(k, _)| k == label).map(|(_, v)| *v)
+    }
+
+    pub fn counters(&self) -> &Vec<(String, u64)> {
+        &self.counters
     }
 
     pub fn print(&self, indent: usize) {
