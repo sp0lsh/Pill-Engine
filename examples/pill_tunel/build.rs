@@ -9,17 +9,62 @@ use pill_assets::{Pipeline, Rule};
 fn main() {
     let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("res");
 
+    let rules = [
+        TextureRule {
+            name: "pill_albedo",
+            output: "pill_color.png",
+            resolution: 1024,
+            fill: image::Rgba([128, 128, 128, 255]),
+            pixel: |obj, axis, split| {
+                let base = if obj[axis] < split {
+                    [0.55f32, 0.06, 0.08] // crimson
+                } else {
+                    [0.10f32, 0.10, 0.72] // cobalt
+                };
+                let amp = if obj[axis] < split { 0.06 } else { 0.02 };
+                let v = fbm([obj[0] * 3.0, obj[1] * 3.0, obj[2] * 3.0], 4) * amp;
+                image::Rgba([
+                    ((base[0] + v).clamp(0.0, 1.0) * 255.0) as u8,
+                    ((base[1] + v).clamp(0.0, 1.0) * 255.0) as u8,
+                    ((base[2] + v).clamp(0.0, 1.0) * 255.0) as u8,
+                    255,
+                ])
+            },
+        },
+        TextureRule {
+            name: "pill_normal_fbm",
+            output: "pill_normal.png",
+            resolution: 1024,
+            fill: image::Rgba([128, 128, 255, 255]),
+            pixel: |obj, axis, split| {
+                if obj[axis] >= split {
+                    return image::Rgba([128, 128, 255, 255]);
+                }
+                // FBM gradient in object space as tangent-space approximation
+                let p = [obj[0] * 6.0, obj[1] * 6.0, obj[2] * 6.0];
+                let amp = 0.035f32;
+                let [gx, gy, _] = fbm_grad(p, 3);
+                let nx = (-gx * amp).clamp(-1.0, 1.0);
+                let ny = (-gy * amp).clamp(-1.0, 1.0);
+                let nz = (1.0 - nx * nx - ny * ny).sqrt().max(0.0);
+                image::Rgba([
+                    ((nx * 0.5 + 0.5) * 255.0) as u8,
+                    ((ny * 0.5 + 0.5) * 255.0) as u8,
+                    ((nz * 0.5 + 0.5) * 255.0) as u8,
+                    255,
+                ])
+            },
+        },
+    ];
+
     // Track outputs so a missing file forces a re-run
-    for out in ["textures/generated/pill_color.png", "textures/generated/pill_normal.png"] {
-        println!("cargo:rerun-if-changed={}", root.join(out).display());
+    for r in &rules {
+        println!("cargo:rerun-if-changed={}", root.join("textures/generated").join(r.output).display());
     }
 
     let pipeline = Pipeline {
         root,
-        rules: vec![
-            Box::new(PillAlbedo { resolution: 1024 }),
-            Box::new(PillNormalFBM { resolution: 1024 }),
-        ],
+        rules: rules.into_iter().map(|r| Box::new(r) as Box<dyn Rule>).collect(),
     };
     let stats = pipeline.run().expect("game asset pipeline failed");
     println!("cargo:rerun-if-changed=build.rs");
@@ -30,103 +75,37 @@ fn main() {
 
 // ── Rules ─────────────────────────────────────────────────────────────────────
 
-/// Two-tone albedo: red half / blue half split on the long axis, FBM variation.
-struct PillAlbedo {
+struct TextureRule {
+    name:       &'static str,
+    output:     &'static str, // filename under textures/generated/
     resolution: u32,
+    fill:       image::Rgba<u8>,
+    pixel:      fn([f32; 3], usize, f32) -> image::Rgba<u8>,
 }
 
-impl Rule for PillAlbedo {
-    fn name(&self) -> &'static str { "pill_albedo" }
+impl Rule for TextureRule {
+    fn name(&self)       -> &'static str { self.name }
     fn input_glob(&self) -> &'static str { "models/pill.obj" }
 
     fn output_for(&self, input: &Path) -> PathBuf {
         input.parent().unwrap().parent().unwrap()
-            .join("textures/generated/pill_color.png")
+            .join("textures/generated")
+            .join(self.output)
     }
 
     fn build(&self, input: &Path, output: &Path) -> Result<()> {
         let models = load_models(input)?;
         let (axis, split) = long_axis_and_split(&models);
-
-        let gray = image::Rgba([128u8, 128, 128, 255]);
-        let mut img = image::RgbaImage::from_pixel(self.resolution, self.resolution, gray);
-
+        let mut img = image::RgbaImage::from_pixel(self.resolution, self.resolution, self.fill);
         for model in &models {
             let mesh = &model.mesh;
             if mesh.texcoords.is_empty() {
                 bail!("{input:?}: model '{}' has no UV coordinates", model.name);
             }
             for_each_tri(mesh, |uv, pos| {
-                rasterize_triangle(&mut img, self.resolution, uv, pos, |obj| {
-                    let base = if obj[axis] < split {
-                        [0.55f32, 0.06, 0.08]  // crimson
-                    } else {
-                        [0.10f32, 0.10, 0.72]  // cobalt
-                    };
-                    let amp = if obj[axis] < split { 0.06 } else { 0.02 };
-                    let v = fbm([obj[0] * 3.0, obj[1] * 3.0, obj[2] * 3.0], 4) * amp;
-                    let r = ((base[0] + v).clamp(0.0, 1.0) * 255.0) as u8;
-                    let g = ((base[1] + v).clamp(0.0, 1.0) * 255.0) as u8;
-                    let b = ((base[2] + v).clamp(0.0, 1.0) * 255.0) as u8;
-                    image::Rgba([r, g, b, 255])
-                });
+                rasterize_triangle(&mut img, uv, pos, |obj| (self.pixel)(obj, axis, split));
             });
         }
-
-        img.save(output).with_context(|| format!("failed to save {output:?}"))?;
-        Ok(())
-    }
-}
-
-/// FBM micro-bump on red half, flat on blue half.
-struct PillNormalFBM {
-    resolution: u32,
-}
-
-impl Rule for PillNormalFBM {
-    fn name(&self) -> &'static str { "pill_normal_fbm" }
-    fn input_glob(&self) -> &'static str { "models/pill.obj" }
-
-    fn output_for(&self, input: &Path) -> PathBuf {
-        input.parent().unwrap().parent().unwrap()
-            .join("textures/generated/pill_normal.png")
-    }
-
-    fn build(&self, input: &Path, output: &Path) -> Result<()> {
-        let models = load_models(input)?;
-        let (axis, split) = long_axis_and_split(&models);
-
-        let flat = image::Rgba([128u8, 128, 255, 255]);
-        let mut img = image::RgbaImage::from_pixel(self.resolution, self.resolution, flat);
-
-        for model in &models {
-            let mesh = &model.mesh;
-            if mesh.texcoords.is_empty() {
-                bail!("{input:?}: model '{}' has no UV coordinates", model.name);
-            }
-            for_each_tri(mesh, |uv, pos| {
-                rasterize_triangle(&mut img, self.resolution, uv, pos, |obj| {
-                    if obj[axis] >= split {
-                        return image::Rgba([128, 128, 255, 255]);
-                    }
-                    // FBM gradient in object space as tangent-space approximation
-                    let p = [obj[0] * 6.0, obj[1] * 6.0, obj[2] * 6.0];
-                    let amp = 0.035f32;
-                    let [gx, gy, gz] = fbm_grad(p, 3);
-                    let nx = (-gx * amp).clamp(-1.0, 1.0);
-                    let ny = (-gy * amp).clamp(-1.0, 1.0);
-                    let nz = (1.0 - nx * nx - ny * ny).sqrt().max(0.0);
-                    let _ = gz; // z-gradient not needed for 2.5D approximation
-                    image::Rgba([
-                        ((nx * 0.5 + 0.5) * 255.0) as u8,
-                        ((ny * 0.5 + 0.5) * 255.0) as u8,
-                        ((nz * 0.5 + 0.5) * 255.0) as u8,
-                        255,
-                    ])
-                });
-            });
-        }
-
         img.save(output).with_context(|| format!("failed to save {output:?}"))?;
         Ok(())
     }
@@ -190,14 +169,15 @@ fn for_each_tri(mesh: &tobj::Mesh, mut f: impl FnMut([[f32; 2]; 3], [[f32; 3]; 3
 
 fn rasterize_triangle<F>(
     img: &mut image::RgbaImage,
-    res: u32,
     uv: [[f32; 2]; 3],
     pos: [[f32; 3]; 3],
     pixel_fn: F,
 ) where
     F: Fn([f32; 3]) -> image::Rgba<u8>,
 {
+    let res = img.width();
     let rf = res as f32;
+    // V flipped: UV origin is bottom-left, image origin is top-left
     let to_px = |u: [f32; 2]| -> [f32; 2] { [u[0] * rf, (1.0 - u[1]) * rf] };
     let p = [to_px(uv[0]), to_px(uv[1]), to_px(uv[2])];
 
