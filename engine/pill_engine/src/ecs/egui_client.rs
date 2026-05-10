@@ -1,8 +1,10 @@
 use std::sync::{Arc, Mutex};
 
+type UiFn = Box<dyn Fn(&egui::Context) + Send>;
+
 pub struct EguiClient {
     events: Mutex<Vec<winit::event::WindowEvent>>,
-    ui: Mutex<Option<Box<dyn Fn(&egui::Context) + Send>>>,
+    ui: Mutex<Option<UiFn>>,
 }
 
 impl EguiClient {
@@ -25,7 +27,7 @@ impl EguiClient {
         *self.ui.lock().unwrap() = Some(Box::new(f));
     }
 
-    pub fn take_ui(&self) -> Option<Box<dyn Fn(&egui::Context) + Send>> {
+    pub fn take_ui(&self) -> Option<UiFn> {
         self.ui.lock().unwrap().take()
     }
 }
