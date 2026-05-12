@@ -9,7 +9,7 @@ use crate::{
     resources::{MeshData, ShaderParameterSlot, ShaderTextureSlot, TextureType},
 };
 
-use pill_core::Result;
+use anyhow::Result;
 use pill_core::Timer;
 use std::{collections::HashMap, sync::Arc};
 use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};

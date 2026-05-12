@@ -4,7 +4,9 @@ use crate::{
     internal::NUM_SUPPORTED_GAMEPADS,
 };
 
-use pill_core::{PillError, PillTypeMapKey, Result, Vector2f};
+use pill_core::{PillTypeMapKey, Vector2f};
+
+use anyhow::{Error, Result};
 use std::collections::{HashMap, VecDeque};
 use winit::event::{ElementState, MouseScrollDelta};
 
@@ -121,15 +123,15 @@ pub enum PlayerId {
 }
 
 impl TryFrom<u8> for PlayerId {
-    type Error = PillError;
+    type Error = Error;
 
-    fn try_from(value: u8) -> std::result::Result<Self, Self::Error> {
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             0 => Ok(PlayerId::Player1),
             1 => Ok(PlayerId::Player2),
             2 => Ok(PlayerId::Player3),
             3 => Ok(PlayerId::Player4),
-            _ => Err(format!("Invalid PlayerId value: {value}").into()),
+            _ => Err(anyhow::anyhow!("Invalid PlayerId value: {}", value)),
         }
     }
 }

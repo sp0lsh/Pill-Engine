@@ -7,6 +7,9 @@ edition = "2021"
 pill_core = {path = "../pill_core"}
 pill_engine = {path = "../pill_engine", features = ["internal"]}
 
+# Errors
+anyhow = "1.0"
+
 # Logging
 log = { version = "0.4", features = ["release_max_level_off"] }
 

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use pill_core::Result;
+use anyhow::{Context, Result};
 
 #[derive(Default, Clone)]
 pub struct EngineConfig {
@@ -33,24 +33,23 @@ impl EngineConfig {
     }
 
     pub fn get_int(&self, key: &str) -> Result<i64> {
-        use pill_core::PillError;
-        self.values
+        let s = self
+            .values
             .get(&key.to_uppercase())
-            .ok_or_else(|| -> PillError { format!("{key} not found in config").into() })?
-            .parse::<i64>()
-            .map_err(|e| -> PillError { format!("Config key {key} is not a valid integer: {e}").into() })
+            .with_context(|| format!("{key} not found in config"))?;
+        s.parse::<i64>()
+            .with_context(|| format!("Config key {key} is not a valid integer: {s}"))
     }
 
     pub fn get_bool(&self, key: &str) -> Result<bool> {
-        use pill_core::PillError;
         let v = self
             .values
             .get(&key.to_uppercase())
-            .ok_or_else(|| -> PillError { format!("{key} not found in config").into() })?;
+            .with_context(|| format!("{key} not found in config"))?;
         match v.to_lowercase().as_str() {
             "true" | "1" | "yes" => Ok(true),
             "false" | "0" | "no" => Ok(false),
-            _ => Err(format!("Config key {key} is not a valid bool: {v}").into()),
+            _ => Err(anyhow::anyhow!("Config key {key} is not a valid bool: {v}")),
         }
     }
 }

@@ -9,7 +9,7 @@ use crate::{
 
 use pill_core::Timer;
 
-use pill_core::Result;
+use anyhow::Result;
 use std::{collections::HashMap, sync::Arc};
 
 // --- Renderer resource handles ---

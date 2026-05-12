@@ -13,7 +13,7 @@ use crate::{
 use egui::Ui;
 use pill_core::{PillTypeMapKey, Timer, TimerRecord};
 
-use pill_core::{ErrorContext, Result};
+use anyhow::{Context, Result};
 
 pub struct EguiManagerComponent {
     collapsing_state: HashMap<String, bool>,

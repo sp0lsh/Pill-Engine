@@ -5,7 +5,7 @@ use crate::{
 
 use pill_core::PillSlotMapKey;
 
-use pill_core::Result;
+use anyhow::Result;
 use core::fmt::{self, Debug};
 use lazy_static::lazy_static;
 use std::{

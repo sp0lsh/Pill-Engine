@@ -8,7 +8,7 @@ use pill_core::{
     PillTypeMap,
 };
 
-use pill_core::Result;
+use anyhow::{Error, Result};
 use std::{any::TypeId, collections::HashMap};
 
 pub const NEW_COMPONENT_BIT: u16 = 0b0000_0000_0000_0001;
@@ -59,14 +59,14 @@ impl Scene {
     where
         T: Component<Storage = ComponentStorage<T>>,
     {
-        let error: pill_core::PillError = EngineError::ComponentNotRegistered(
+        let error = Error::new(EngineError::ComponentNotRegistered(
             get_type_name::<T>(),
             self.name.clone(),
-        ).into();
+        ));
         let entity = self
             .entities
             .get(entity_handle)
-            .ok_or_else(|| -> pill_core::PillError { EngineError::InvalidEntityHandle.into() })?;
+            .ok_or(Error::new(EngineError::InvalidEntityHandle))?;
         let component_bitmask = self
             .component_bitmasks
             .get(&TypeId::of::<T>())
@@ -102,10 +102,10 @@ impl Scene {
     {
         self.components
             .get::<T>()
-            .ok_or(EngineError::ComponentNotRegistered(
+            .ok_or(Error::new(EngineError::ComponentNotRegistered(
                 get_type_name::<T>(),
                 self.name.clone(),
-            ).into())
+            )))
     }
 
     pub fn get_component_storage_mut<T>(&mut self) -> Result<&mut ComponentStorage<T>>
@@ -114,10 +114,10 @@ impl Scene {
     {
         self.components
             .get_mut::<T>()
-            .ok_or(EngineError::ComponentNotRegistered(
+            .ok_or(Error::new(EngineError::ComponentNotRegistered(
                 get_type_name::<T>(),
                 self.name.clone(),
-            ).into())
+            )))
     }
 
     // --- Bitmasks ---
@@ -144,10 +144,10 @@ impl Scene {
     {
         match self.component_bitmasks.get(&TypeId::of::<T>()) {
             Some(v) => Ok(*v),
-            None => Err(EngineError::ComponentNotRegistered(
+            None => Err(Error::new(EngineError::ComponentNotRegistered(
                 get_type_name::<T>(),
                 self.name.clone(),
-            ).into()),
+            ))),
         }
     }
 

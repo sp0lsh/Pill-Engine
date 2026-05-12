@@ -1,5 +1,6 @@
-use crate::{define_new_pill_slotmap_key, EngineError, Result};
+use crate::{define_new_pill_slotmap_key, EngineError};
 
+use anyhow::{Context, Error, Result};
 use boolinator::Boolinator;
 use std::{any::type_name, collections::HashMap, hash::Hash, path::Path};
 
@@ -36,20 +37,24 @@ pub fn get_enum_variant_type_name<T: core::fmt::Debug>(a: &T) -> String {
 
 // Check if path to asset is correct (exists and has supported format)
 pub fn validate_asset_path(path: &Path, allowed_formats: &'static [&'static str]) -> Result<()> {
-    if !path.exists() {
-        return Err(EngineError::InvalidAssetPath(path.display().to_string()).into());
-    }
+    #[allow(unstable_name_collisions)]
+    path.exists()
+        .ok_or(Error::new(EngineError::InvalidAssetPath(
+            path.display().to_string(),
+        )))?;
 
     match path.extension() {
         Some(v) => match allowed_formats.contains(&v.to_str().unwrap()) {
+            //} v.eq(allowed_format) {
             true => Ok(()),
-            false => Err(EngineError::InvalidAssetFormat(
+            false => Err(Error::new(EngineError::InvalidAssetFormat(
                 allowed_formats,
                 v.to_str().unwrap().to_string(),
-            )
-            .into()),
+            ))),
         },
-        None => Err(EngineError::InvalidAssetPath(path.display().to_string()).into()),
+        None => Err(Error::new(EngineError::InvalidAssetPath(
+            path.display().to_string(),
+        ))),
     }
 }
 
@@ -66,18 +71,19 @@ macro_rules! define_component_handle {
 
 #[inline]
 pub fn get_game_error_message(result: Result<()>) -> Option<String> {
-    result.err().map(|e| {
-        use std::error::Error;
-        let mut message = format!("Game error: {e}\n");
-        let mut source = e.source();
-        let mut i = 0usize;
-        while let Some(s) = source {
-            message.push_str(&format!("  {i}: {s}\n"));
-            i += 1;
-            source = s.source();
+    if result.is_err() {
+        let mut message = String::new();
+        for (i, error) in result.err().unwrap().chain().enumerate() {
+            let message_part = match i == 0 {
+                true => format!("Game error: {} \n", error),
+                false => format!("  {}: {} \n", i - 1, error),
+            };
+            message.push_str(message_part.as_str());
         }
-        message
-    })
+        Some(message)
+    } else {
+        None
+    }
 }
 
 #[macro_export]

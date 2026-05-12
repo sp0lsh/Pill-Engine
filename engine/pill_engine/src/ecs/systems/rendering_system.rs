@@ -10,7 +10,7 @@ use crate::{
 
 use pill_core::{warn, EngineError, LogContext, PillSlotMapKey, PillStyle, RendererError, Timer};
 
-use pill_core::{ErrorContext, Result};
+use anyhow::{Context, Error, Result};
 use web_time::Instant;
 
 pub fn rendering_system(engine: &mut Engine) -> Result<()> {
@@ -44,7 +44,7 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
     }
 
     let active_camera_entity_handle =
-        active_camera_entity_handle_result.ok_or_else(|| -> pill_core::PillError { EngineError::NoActiveCamera.into() })?;
+        active_camera_entity_handle_result.ok_or(Error::new(EngineError::NoActiveCamera))?;
 
     // - Prepare rendering data
     timer.record("Clear render queue");

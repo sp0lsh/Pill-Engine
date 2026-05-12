@@ -8,7 +8,7 @@ use pill_engine::internal::{
 };
 
 use crate::resources::RendererResourceStorage;
-use pill_core::Result;
+use anyhow::{Error, Result};
 use std::collections::HashMap;
 
 // --- Material ---
@@ -36,7 +36,7 @@ impl RendererMaterial {
         let shader = rendering_resource_storage
             .shaders
             .get(shader_handle)
-            .ok_or_else(|| -> pill_core::PillError { RendererError::RendererResourceNotFound.into() })?;
+            .ok_or(Error::new(RendererError::RendererResourceNotFound))?;
 
         let parameter_slots = &shader.parameter_slots;
         let texture_slots = &shader.texture_slots;
@@ -159,19 +159,19 @@ impl RendererMaterial {
         let material = rendering_resource_storage
             .materials
             .get(material_renderer_handle)
-            .ok_or_else(|| -> pill_core::PillError { RendererError::RendererResourceNotFound.into() })?;
+            .ok_or(Error::new(RendererError::RendererResourceNotFound))?;
         let shader_handle = material.shader_handle;
         let shader = rendering_resource_storage
             .shaders
             .get(shader_handle)
-            .ok_or_else(|| -> pill_core::PillError { RendererError::RendererResourceNotFound.into() })?;
+            .ok_or(Error::new(RendererError::RendererResourceNotFound))?;
 
         let parameter_slots = &shader.parameter_slots;
 
         let material = rendering_resource_storage
             .materials
             .get_mut(material_renderer_handle)
-            .ok_or_else(|| -> pill_core::PillError { RendererError::RendererResourceNotFound.into() })?;
+            .ok_or(Error::new(RendererError::RendererResourceNotFound))?;
 
         // Update uniform buffer if it exists
         if let Some(ref buffer) = material.parameters_uniform_buffer {

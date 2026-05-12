@@ -1,6 +1,6 @@
 use pill_engine::internal::TextureType;
 
-use pill_core::Result;
+use anyhow::Result;
 
 // --- Texture ---
 

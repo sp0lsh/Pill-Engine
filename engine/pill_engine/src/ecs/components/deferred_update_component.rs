@@ -11,7 +11,7 @@ use crate::{
 
 use pill_core::{get_type_name, PillSlotMapKey, PillStyle, PillTypeMapKey};
 
-use pill_core::{ErrorContext, Result};
+use anyhow::{Context, Result};
 use std::{
     collections::VecDeque,
     marker::PhantomData,

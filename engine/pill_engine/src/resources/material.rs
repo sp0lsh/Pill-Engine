@@ -14,7 +14,7 @@ use pill_core::{
     PillStyle, PillTypeMapKey,
 };
 
-use pill_core::{ErrorContext, Result};
+use anyhow::{Context, Error, Result};
 use std::collections::HashMap;
 
 const DEFERRED_REQUEST_VARIANT_RENDERING_ORDER: usize = 0;
@@ -221,7 +221,7 @@ impl Material {
                 self.post_deferred_update_request(DEFERRED_REQUEST_VARIANT_RENDERING_ORDER);
             }
         } else {
-            return Err(error.into());
+            return Err(Error::new(error));
         }
 
         Ok(())
@@ -236,7 +236,7 @@ impl Material {
         let parameter = self.parameters.get(parameter_name).context(error.clone())?;
         match parameter {
             MaterialParameter::Scalar(value) => Ok(*value),
-            _ => Err(error.into()),
+            _ => Err(Error::new(error)),
         }
     }
 
@@ -249,7 +249,7 @@ impl Material {
         let parameter = self.parameters.get(parameter_name).context(error.clone())?;
         match parameter {
             MaterialParameter::Bool(value) => Ok(*value),
-            _ => Err(error.into()),
+            _ => Err(Error::new(error)),
         }
     }
 
@@ -262,7 +262,7 @@ impl Material {
         let parameter = self.parameters.get(parameter_name).context(error.clone())?;
         match parameter {
             MaterialParameter::Color(value) => Ok(*value),
-            _ => Err(error.into()),
+            _ => Err(Error::new(error)),
         }
     }
 
@@ -287,7 +287,7 @@ impl Material {
                 }
                 Ok(())
             }
-            _ => Err(error.into()),
+            _ => Err(Error::new(error)),
         }
     }
 
@@ -312,7 +312,7 @@ impl Material {
                 }
                 Ok(())
             }
-            _ => Err(error.into()),
+            _ => Err(Error::new(error)),
         }
     }
 
@@ -343,7 +343,7 @@ impl Material {
                 }
                 Ok(())
             }
-            _ => Err(error.into()),
+            _ => Err(Error::new(error)),
         }
     }
 
@@ -369,11 +369,11 @@ impl Material {
 
         // Check if slots are of the same type
         if !enum_variant_eq(&texture.texture_type, &shader_texture_slot.texture_type) {
-            return Err(EngineError::WrongTextureType(
+            return Err(Error::new(EngineError::WrongTextureType(
                 get_enum_variant_type_name(&texture.texture_type),
                 texture_slot_name.to_string(),
                 get_enum_variant_type_name(&shader_texture_slot.texture_type),
-            ).into());
+            )));
         }
 
         Ok(())

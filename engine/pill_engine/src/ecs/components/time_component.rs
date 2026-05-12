@@ -2,7 +2,7 @@ use crate::ecs::components::{GlobalComponent, GlobalComponentStorage};
 
 use pill_core::PillTypeMapKey;
 
-use pill_core::Result;
+use anyhow::Result;
 
 #[readonly::make]
 pub struct TimeComponent {

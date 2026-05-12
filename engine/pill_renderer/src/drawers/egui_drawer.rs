@@ -1,4 +1,4 @@
-use pill_core::Result;
+use anyhow::Result;
 use pill_core::Timer;
 use std::sync::Arc;
 use winit::event::WindowEvent;

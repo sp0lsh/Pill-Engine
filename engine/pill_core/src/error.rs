@@ -1,5 +1,6 @@
 use crate::style::PillStyle;
 
+use anyhow::{Context, Error, Result};
 use thiserror::Error;
 
 // --- Core error ---

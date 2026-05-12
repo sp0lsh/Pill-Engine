@@ -9,7 +9,7 @@ use pill_core::{
     get_type_name, EngineError, PillSlotMapKey, PillStyle, PillTypeMapKey, Vector2f, Vector3f,
 };
 
-use pill_core::{ErrorContext, Result};
+use anyhow::{Context, Error, Result};
 use std::path::{Path, PathBuf};
 
 #[cfg(feature = "obj_loading")]
@@ -93,19 +93,18 @@ impl PillTypeMapKey for Mesh {
 
 fn load_rmesh(bytes: &[u8]) -> Result<MeshData> {
     if bytes.len() < 16 || &bytes[0..4] != b"RMSH" {
-        return Err("not a valid .rmesh file (bad magic or truncated header)".into());
+        anyhow::bail!("not a valid .rmesh file (bad magic or truncated header)");
     }
     let vertex_count = u32::from_le_bytes(bytes[8..12].try_into().unwrap()) as usize;
     let index_count = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
     let vertex_size = std::mem::size_of::<MeshVertex>();
     let expected = 16 + vertex_count * vertex_size + index_count * 4;
     if bytes.len() < expected {
-        return Err(format!(
+        anyhow::bail!(
             ".rmesh truncated: expected {} bytes, got {}",
             expected,
             bytes.len()
-        )
-        .into());
+        );
     }
     let vb = &bytes[16..16 + vertex_count * vertex_size];
     let ib = &bytes[16 + vertex_count * vertex_size..expected];
@@ -142,9 +141,8 @@ impl Resource for Mesh {
             let rmesh_path = base.with_extension("rmesh");
 
             if rmesh_path.exists() {
-                let bytes = std::fs::read(&rmesh_path).map_err(|e| -> pill_core::PillError {
-                    format!("Failed to read mesh {rmesh_path:?}: {e}").into()
-                })?;
+                let bytes = std::fs::read(&rmesh_path)
+                    .with_context(|| format!("Failed to read mesh {rmesh_path:?}"))?;
                 self.mesh_data = Some(load_rmesh(&bytes).context(error_message.clone())?);
             } else {
                 #[cfg(feature = "obj_loading")]
@@ -160,11 +158,10 @@ impl Resource for Mesh {
                     self.mesh_data = Some(mesh_data);
                 }
                 #[cfg(not(feature = "obj_loading"))]
-                return Err(format!(
+                anyhow::bail!(
                     "No preprocessed .rmesh found for {:?}; run `pill_launcher -a assets`",
                     base
-                )
-                .into());
+                );
             }
         }
 
@@ -230,6 +227,7 @@ impl MeshData {
     }
 
     /// Parse OBJ bytes into mesh data; MTL references are ignored.
+    #[cfg(feature = "obj_loading")]
     pub fn from_obj_bytes(bytes: &[u8], flip_uv_y: bool) -> Result<Self> {
         let mut reader = std::io::Cursor::new(bytes);
         let (models, _materials) = tobj::load_obj_buf(&mut reader, &obj_load_options(), |_| {
@@ -242,11 +240,13 @@ impl MeshData {
     fn from_tobj_models(models: Vec<tobj::Model>, source: &str, flip_uv_y: bool) -> Result<Self> {
         // Check data validity
         if models.len() > 1 {
-            return Err(EngineError::InvalidModelFileMultipleMeshes(source.to_string()).into());
+            return Err(Error::new(EngineError::InvalidModelFileMultipleMeshes(
+                source.to_string(),
+            )));
         }
 
         if models.is_empty() {
-            return Err(EngineError::InvalidModelFile(source.to_string()).into());
+            return Err(Error::new(EngineError::InvalidModelFile(source.to_string())));
         }
 
         // Load vertex data from model

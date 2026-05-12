@@ -4,7 +4,9 @@ use crate::{
     resources::{Material, Resource, ResourceLoader, ResourceStorage},
 };
 
-use pill_core::{get_type_name, ErrorContext, PillSlotMapKey, PillStyle, PillTypeMapKey, Result};
+use pill_core::{get_type_name, PillSlotMapKey, PillStyle, PillTypeMapKey};
+
+use anyhow::{Context, Result};
 pill_core::define_new_pill_slotmap_key! {
     pub struct TextureHandle;
 }
@@ -48,7 +50,7 @@ impl Texture {
 
 fn decode_rtex(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
     if bytes.len() < 16 || &bytes[0..4] != b"RTEX" {
-        return Err("not a valid .rtex file (bad magic or truncated header)".into());
+        anyhow::bail!("not a valid .rtex file (bad magic or truncated header)");
     }
     let width = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
     let height = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
@@ -60,11 +62,11 @@ fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
     let decoder = png::Decoder::new(bytes);
     let mut reader = decoder
         .read_info()
-        .map_err(|e| -> pill_core::PillError { e.to_string().into() })?;
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let mut buf = vec![0u8; reader.output_buffer_size()];
     let info = reader
         .next_frame(&mut buf)
-        .map_err(|e| -> pill_core::PillError { e.to_string().into() })?;
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let width = info.width;
     let height = info.height;
     let raw = &buf[..info.buffer_size()];
@@ -77,9 +79,7 @@ fn decode_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
             .flat_map(|p| [p[0], p[0], p[0], p[1]])
             .collect(),
         _ => {
-            let e: pill_core::PillError =
-                format!("unsupported PNG color type: {:?}", info.color_type).into();
-            return Err(e);
+            anyhow::bail!("unsupported PNG color type: {:?}", info.color_type);
         }
     };
     Ok((rgba, width, height))
@@ -109,19 +109,16 @@ impl Resource for Texture {
                 let base = engine.game_resources_directory_path.join(path);
                 let rtex_path = base.with_extension("rtex");
                 if rtex_path.exists() {
-                    let bytes = std::fs::read(&rtex_path).map_err(|e| -> pill_core::PillError {
-                        format!("Failed to read texture {rtex_path:?}: {e}").into()
-                    })?;
+                    let bytes = std::fs::read(&rtex_path)
+                        .with_context(|| format!("Failed to read texture {rtex_path:?}"))?;
                     decode_rtex(&bytes)?
                 } else {
                     #[cfg(not(target_arch = "wasm32"))]
                     {
                         // Check if path to asset is correct
                         pill_core::validate_asset_path(&base, &["png", "rtex"])?;
-                        let bytes =
-                            std::fs::read(&base).map_err(|e| -> pill_core::PillError {
-                                format!("Failed to read texture {base:?}: {e}").into()
-                            })?;
+                        let bytes = std::fs::read(&base)
+                            .with_context(|| format!("Failed to read texture {base:?}"))?;
                         if base.extension().map(|e| e == "rtex").unwrap_or(false) {
                             decode_rtex(&bytes)?
                         } else {
@@ -130,11 +127,10 @@ impl Resource for Texture {
                     }
                     #[cfg(target_arch = "wasm32")]
                     {
-                        return Err(format!(
+                        anyhow::bail!(
                             "No preprocessed .rtex found for {:?}; run `pill_launcher -a assets`",
                             base
-                        )
-                        .into());
+                        );
                     }
                 }
             }
@@ -148,9 +144,7 @@ impl Resource for Texture {
                     }
                     #[cfg(target_arch = "wasm32")]
                     {
-                        return Err(
-                            "Texture::from_bytes on wasm requires pre-converted RTEX format".into(),
-                        );
+                        anyhow::bail!("Texture::from_bytes on wasm requires pre-converted RTEX format");
                     }
                 }
             }

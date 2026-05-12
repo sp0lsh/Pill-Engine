@@ -21,7 +21,7 @@ use pill_core::{debug, info, LogContext, PillSlotMapKey, PillStyle, RendererErro
 
 use std::{collections::HashMap, sync::Arc};
 
-use pill_core::{ErrorContext, Result};
+use anyhow::{Context, Error, Result};
 
 pub struct Renderer {
     pub state: State,
@@ -550,7 +550,7 @@ impl State {
         delta_time: f32,
         timer: &mut Timer,
     ) -> Result<()> {
-        self.render_inner(active_camera_entity_handle, render_queue, camera_component_storage, transform_component_storage, Some(egui_ui), timer)
+        self.render_inner(active_camera_entity_handle, render_queue, camera_component_storage, transform_component_storage, Some(egui_ui), delta_time, timer)
     }
 
     #[cfg(not(feature = "debug_ui"))]
@@ -562,7 +562,7 @@ impl State {
         transform_component_storage: &ComponentStorage<TransformComponent>,
         timer: &mut Timer,
     ) -> Result<()> {
-        self.render_inner(active_camera_entity_handle, render_queue, camera_component_storage, transform_component_storage, timer)
+        self.render_inner(active_camera_entity_handle, render_queue, camera_component_storage, transform_component_storage, 0.0, timer)
     }
 
     fn render_inner(
@@ -572,6 +572,7 @@ impl State {
         camera_component_storage: &ComponentStorage<CameraComponent>,
         transform_component_storage: &ComponentStorage<TransformComponent>,
         #[cfg(feature = "debug_ui")] egui_ui: Option<Box<dyn FnMut(&egui::Context)>>,
+        delta_time: f32,
         timer: &mut Timer,
     ) -> Result<()> {
         debug!(LogContext::Frame => "Starting frame render");
@@ -625,7 +626,7 @@ impl State {
             .get_mut(get_renderer_resource_handle_from_camera_component(
                 active_camera_component,
             ))
-            .ok_or_else(|| -> pill_core::PillError { RendererError::RendererResourceNotFound.into() })?;
+            .ok_or(Error::new(RendererError::RendererResourceNotFound))?;
         let camera_transform_storage = transform_component_storage
             .data
             .get(active_camera_entity_handle.data().index as usize)

@@ -1,4 +1,4 @@
-use pill_core::Result;
+use anyhow::Result;
 use pill_core::{debug, LogContext, PillStyle};
 use pill_engine::internal::{ShaderParameterSlot, ShaderTextureSlot};
 use std::collections::HashMap;

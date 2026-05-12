@@ -5,7 +5,7 @@ use pill_core::{
     PillSlotMapKey, PillStyle, PillTypeMap, Timer, Vector2f,
 };
 
-use pill_core::{ErrorContext, Result};
+use anyhow::{Context, Error, Result};
 use std::{any::TypeId, collections::VecDeque};
 use winit::{dpi::PhysicalPosition, event::KeyEvent};
 
@@ -751,9 +751,9 @@ impl Engine {
         let target_scene = self.scene_manager.get_scene(scene_handle)?;
 
         if target_scene.entity_has_component::<T>(entity_handle)? {
-            return Err(EngineError::ComponentAlreadyExists(
+            return Err(Error::new(EngineError::ComponentAlreadyExists(
                 get_type_name::<T>(),
-            ).into());
+            )));
         }
 
         // Initialize component
@@ -813,9 +813,9 @@ impl Engine {
     {
         // Check if component of this type is not already added
         if self.global_components.contains_key::<T>() {
-            return Err(EngineError::GlobalComponentAlreadyExists(
+            return Err(Error::new(EngineError::GlobalComponentAlreadyExists(
                 get_type_name::<T>(),
-            ).into());
+            )));
         }
 
         // Initialize component
@@ -837,7 +837,9 @@ impl Engine {
         let component = self
             .global_components
             .get::<T>()
-            .ok_or_else(|| -> pill_core::PillError { EngineError::GlobalComponentNotFound(get_type_name::<T>()).into() })?
+            .ok_or(Error::new(EngineError::GlobalComponentNotFound(
+                get_type_name::<T>(),
+            )))?
             .data
             .as_ref()
             .unwrap();
@@ -854,7 +856,9 @@ impl Engine {
         let component = self
             .global_components
             .get_mut::<T>()
-            .ok_or_else(|| -> pill_core::PillError { EngineError::GlobalComponentNotFound(get_type_name::<T>()).into() })?
+            .ok_or(Error::new(EngineError::GlobalComponentNotFound(
+                get_type_name::<T>(),
+            )))?
             .data
             .as_mut()
             .unwrap();
@@ -869,9 +873,9 @@ impl Engine {
     {
         // Check if the type of the component is the same as of the ones, which cannot be removed
         if ENGINE_GLOBAL_COMPONENTS.contains(&TypeId::of::<T>()) {
-            return Err(EngineError::GlobalComponentCannotBeRemoved(
+            return Err(Error::new(EngineError::GlobalComponentCannotBeRemoved(
                 get_type_name::<T>(),
-            ).into());
+            )));
         }
 
         // Remove and destroy component
@@ -1095,9 +1099,9 @@ impl Engine {
         // Check if resource has proper name
         let resource_name = resource.get_name();
         if enforce_name_check && resource_name.starts_with(DEFAULT_RESOURCE_PREFIX) {
-            return Err(EngineError::WrongResourceName(
+            return Err(Error::new(EngineError::WrongResourceName(
                 resource_name.clone(),
-            ).into());
+            )));
         }
 
         // Initialize resource
@@ -1178,8 +1182,10 @@ impl Engine {
             .context(error_message.to_string())?
             .get_name();
         if resource_name.starts_with(DEFAULT_RESOURCE_PREFIX) {
-            let e: pill_core::PillError = EngineError::RemoveDefaultResource(resource_name.clone()).into();
-            return Err(e).context(error_message.to_string());
+            return Err(Error::new(EngineError::RemoveDefaultResource(
+                resource_name.clone(),
+            )))
+            .context(error_message.to_string());
         }
 
         // Remove and destroy resource
@@ -1211,8 +1217,10 @@ impl Engine {
 
         // Check if resource is not default
         if name.starts_with(DEFAULT_RESOURCE_PREFIX) {
-            let e: pill_core::PillError = EngineError::RemoveDefaultResource(name.to_string()).into();
-            return Err(e).context(error_message.to_string());
+            return Err(Error::new(EngineError::RemoveDefaultResource(
+                name.to_string(),
+            )))
+            .context(error_message.to_string());
         }
 
         // Remove resource

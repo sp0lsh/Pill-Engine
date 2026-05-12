@@ -7,6 +7,7 @@ edition = "2021"
 pill_core = {path = "../pill_core"}
 
 # Errors
+anyhow = "1.0.45"
 thiserror = "1.0.30"
 
 # Loggers
@@ -37,6 +38,7 @@ rodio = { version = "0.20", features = ["wav", "mp3"] }
 gilrs = "0.11.0"
 
 [build-dependencies]
+anyhow = "1.0"
 fs_extra = "1.2"
 pill_assets = { path = "../pill_assets" }
 
