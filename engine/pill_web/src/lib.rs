@@ -16,7 +16,7 @@ use winit::{
 };
 
 use pill_engine::internal::*;
-use pill_renderer::Renderer;
+use pill_engine::renderer::Renderer;
 
 /// Boots the game on a WebGPU canvas. Call from a `#[wasm_bindgen(start)]`
 /// shim in the per-game crate, after constructing the game's `PillGame` impl.

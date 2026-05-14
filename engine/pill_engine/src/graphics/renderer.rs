@@ -1,6 +1,6 @@
 #![allow(clippy::too_many_arguments)]
 use crate::{
-    ecs::{CameraComponent, ComponentStorage, EntityHandle, TransformComponent},
+    ecs::{CameraComponent, ComponentStorage, EguiClient, EntityHandle, TransformComponent},
     graphics::RenderQueueItem,
     internal::{MaterialParameter, MaterialTexture, MeshData},
     resources::{ShaderParameterSlot, ShaderTextureSlot, TextureType},
@@ -32,6 +32,68 @@ pill_core::define_new_pill_slotmap_key! {
 
 pill_core::define_new_pill_slotmap_key! {
     pub struct RendererShaderHandle;
+}
+
+// --- Pass API types ---
+
+pub struct WorldQuery<'a> {
+    pub active_camera: EntityHandle,
+    pub render_queue: &'a [RenderQueueItem],
+    pub camera_components: &'a ComponentStorage<CameraComponent>,
+    pub transform_components: &'a ComponentStorage<TransformComponent>,
+    pub delta_time: f32,
+}
+
+#[derive(Clone, Copy)]
+pub struct BufferDesc<'a> {
+    pub label: Option<&'a str>,
+    pub byte_size: u64,
+    pub usage: wgpu::BufferUsages,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ShaderDesc<'a> {
+    pub source: &'a str,
+    pub entry_func: &'a str,
+}
+
+#[derive(Clone, Debug)]
+pub struct PipelineV2Desc<'a> {
+    pub label: Option<&'a str>,
+    pub vs: ShaderDesc<'a>,
+    pub ps: ShaderDesc<'a>,
+    pub vertex_buffers: &'a [wgpu::VertexBufferLayout<'a>],
+    pub bind_groups: Vec<Vec<wgpu::BindGroupLayoutEntry>>,
+    pub targets: &'a [Option<wgpu::ColorTargetState>],
+    pub depth_stencil: Option<wgpu::DepthStencilState>,
+    pub multisample: wgpu::MultisampleState,
+}
+
+pub struct RendererTargetDesc {
+    pub name: String,
+    pub format: wgpu::TextureFormat,
+    pub width: u32,
+    pub height: u32,
+}
+
+pub struct PipelineV2 {
+    pub pipeline: wgpu::RenderPipeline,
+    pub bind_group_layouts: Vec<wgpu::BindGroupLayout>,
+}
+
+// --- Pass trait ---
+
+pub trait Pass {
+    fn get_label(&self) -> &str;
+    fn init(&mut self, renderer: &mut dyn PillRenderer) -> Result<()>;
+    fn draw(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        renderer: &mut dyn PillRenderer,
+        frame: &wgpu::SurfaceTexture,
+        view: &wgpu::TextureView,
+        world: &WorldQuery<'_>,
+    ) -> Result<()>;
 }
 
 // --- Renderer trait definition ---
@@ -91,7 +153,8 @@ pub trait PillRenderer {
 
     fn destroy_shader(&mut self, renderer_shader_handle: RendererShaderHandle) -> Result<()>;
 
-    fn destroy_material(&mut self, renderer_material_handle: RendererMaterialHandle) -> Result<()>;
+    fn destroy_material(&mut self, renderer_material_handle: RendererMaterialHandle)
+        -> Result<()>;
 
     fn destroy_texture(&mut self, renderer_texture_handle: RendererTextureHandle) -> Result<()>;
 
@@ -111,9 +174,40 @@ pub trait PillRenderer {
         render_queue: &[RenderQueueItem],
         camera_component_storage: &ComponentStorage<CameraComponent>,
         transform_component_storage: &ComponentStorage<TransformComponent>,
-        egui_ui: Box<dyn FnMut(&egui::Context)>,
         delta_time: f32,
         timer: &mut Timer,
+    ) -> Result<()>;
+
+    // --- Pass API ---
+
+    fn set_passes(&mut self, passes: Vec<Box<dyn Pass>>) -> Result<()>;
+
+    fn init_default_passes(&mut self, egui_client: Arc<EguiClient>) -> Result<()>;
+
+    fn get_device(&self) -> &wgpu::Device;
+
+    fn get_queue(&self) -> &wgpu::Queue;
+
+    fn get_surface_format(&self) -> wgpu::TextureFormat;
+
+    fn create_buffer(&mut self, desc: BufferDesc) -> Result<wgpu::Buffer>;
+
+    fn create_pipeline_v2(&mut self, desc: PipelineV2Desc) -> Result<PipelineV2>;
+
+    fn create_render_target(&mut self, desc: RendererTargetDesc) -> Result<RendererTextureHandle>;
+
+    fn create_depth_texture(&mut self, label: &str) -> Result<RendererTextureHandle>;
+
+    fn get_render_target_view(
+        &self,
+        handle: RendererTextureHandle,
+    ) -> Option<&wgpu::TextureView>;
+
+    fn record_scene_pass(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        world: &WorldQuery<'_>,
     ) -> Result<()>;
 }
 

@@ -6,6 +6,7 @@ mod config;
 mod ecs;
 mod engine;
 mod graphics;
+pub mod renderer;
 mod resources;
 
 // --- Macros ---
@@ -98,16 +99,17 @@ mod internal_mod {
             get_renderer_resource_handle_from_camera_component, networking_system_client,
             networking_system_server, update_transform_matrices, AudioListenerComponent,
             AudioManagerComponent, AudioSourceComponent, CameraAspectRatio, CameraComponent,
-            ComponentStorage, EguiManagerComponent, EntityHandle, EntityUpdate, InputComponent,
-            MeshRenderingComponent, NetworkEntityAction, NetworkEntityState,
+            ComponentStorage, EguiClient, EguiManagerComponent, EntityHandle, EntityUpdate,
+            InputComponent, MeshRenderingComponent, NetworkEntityAction, NetworkEntityState,
             NetworkManagerComponent, NetworkSide, NetworkStateComponent, NetworkUpdatePayload,
-            Scene, TimeComponent, TransformComponent,
+            RenderStateComponent, Scene, TimeComponent, TransformComponent,
         },
         engine::{Engine, PillGame},
         graphics::{
-            decompose_render_queue_key, PillRenderer, RenderQueueItem, RenderQueueKey,
-            RenderQueueKeyFields, RendererCameraHandle, RendererMaterialHandle, RendererMeshHandle,
-            RendererShaderHandle, RendererTextureHandle, RENDER_QUEUE_KEY_ORDER,
+            decompose_render_queue_key, BufferDesc, Pass, PillRenderer, PipelineV2, PipelineV2Desc,
+            RenderQueueItem, RenderQueueKey, RenderQueueKeyFields, RendererCameraHandle,
+            RendererMaterialHandle, RendererMeshHandle, RendererShaderHandle, RendererTargetDesc,
+            RendererTextureHandle, ShaderDesc, WorldQuery, RENDER_QUEUE_KEY_ORDER,
         },
         resources::{
             get_renderer_texture_handle_from_material_texture, Material, MaterialHandle,
@@ -125,15 +127,16 @@ mod internal_mod {
         ecs::{
             get_model_matrix, get_normal_matrix,
             get_renderer_resource_handle_from_camera_component, update_transform_matrices,
-            CameraAspectRatio, CameraComponent, ComponentStorage, EguiManagerComponent,
-            EntityHandle, InputComponent, MeshRenderingComponent, Scene, TimeComponent,
-            TransformComponent,
+            CameraAspectRatio, CameraComponent, ComponentStorage, EguiClient, EguiManagerComponent,
+            EntityHandle, InputComponent, MeshRenderingComponent, RenderStateComponent, Scene,
+            TimeComponent, TransformComponent,
         },
         engine::{Engine, PillGame},
         graphics::{
-            decompose_render_queue_key, PillRenderer, RenderQueueItem, RenderQueueKey,
-            RenderQueueKeyFields, RendererCameraHandle, RendererMaterialHandle, RendererMeshHandle,
-            RendererShaderHandle, RendererTextureHandle, RENDER_QUEUE_KEY_ORDER,
+            decompose_render_queue_key, BufferDesc, Pass, PillRenderer, PipelineV2, PipelineV2Desc,
+            RenderQueueItem, RenderQueueKey, RenderQueueKeyFields, RendererCameraHandle,
+            RendererMaterialHandle, RendererMeshHandle, RendererShaderHandle, RendererTargetDesc,
+            RendererTextureHandle, ShaderDesc, WorldQuery, RENDER_QUEUE_KEY_ORDER,
         },
         resources::{
             get_renderer_texture_handle_from_material_texture, Material, MaterialHandle,

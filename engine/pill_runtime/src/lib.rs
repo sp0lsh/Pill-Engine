@@ -11,7 +11,7 @@ use config::Config;
 use libloading::{Library, Symbol};
 use pill_abi::*;
 use pill_engine::internal::*;
-use pill_renderer::Renderer;
+use pill_engine::renderer::Renderer;
 use winit::{
     dpi::{PhysicalPosition, PhysicalSize},
     window::Window,

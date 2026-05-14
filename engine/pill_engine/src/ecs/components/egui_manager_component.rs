@@ -30,7 +30,7 @@ impl EguiManagerComponent {
         }
     }
 
-    pub fn get_ui(engine: &mut Engine) -> Box<dyn FnMut(&egui::Context)> {
+    pub fn get_ui(engine: &mut Engine) -> Box<dyn Fn(&egui::Context) + Send> {
         let entity_count = engine
             .scene_manager
             .get_active_scene()
@@ -73,7 +73,7 @@ impl EguiManagerComponent {
             .sum::<f32>();
         let frame_delta_time = engine.frame_delta_time;
 
-        let ui = Box::new(move |ui: &egui::Context| {
+        let ui: Box<dyn Fn(&egui::Context) + Send> = Box::new(move |ui: &egui::Context| {
             egui::Window::new("Pill Engine")
                 .default_open(false)
                 .resizable(true)

@@ -1,8 +1,9 @@
 use crate::{
-    ecs::{CameraComponent, ComponentStorage, EntityHandle, TransformComponent},
+    ecs::{CameraComponent, ComponentStorage, EguiClient, EntityHandle, TransformComponent},
     graphics::{
-        PillRenderer, RenderQueueItem, RendererCameraHandle, RendererMaterialHandle,
-        RendererMeshHandle, RendererShaderHandle, RendererTextureHandle,
+        BufferDesc, Pass, PillRenderer, PipelineV2, PipelineV2Desc, RendererTargetDesc,
+        RenderQueueItem, RendererCameraHandle, RendererMaterialHandle, RendererMeshHandle,
+        RendererShaderHandle, RendererTextureHandle, WorldQuery,
     },
     internal::{MaterialParameter, MaterialTexture},
     resources::{MeshData, ShaderParameterSlot, ShaderTextureSlot, TextureType},
@@ -109,9 +110,7 @@ impl PillRenderer for DummyRenderer {
 
     // --- Other ---
 
-    fn resize(&mut self, _new_window_size: PhysicalSize<u32>) {
-        // no-op for dummy
-    }
+    fn resize(&mut self, _new_window_size: PhysicalSize<u32>) {}
 
     fn pass_input_to_egui(&mut self, _event: &WindowEvent) -> Result<()> {
         Ok(())
@@ -123,9 +122,65 @@ impl PillRenderer for DummyRenderer {
         _render_queue: &[RenderQueueItem],
         _camera_component_storage: &ComponentStorage<CameraComponent>,
         _transform_component_storage: &ComponentStorage<TransformComponent>,
-        _egui_ui: Box<dyn FnMut(&egui::Context)>,
         _delta_time: f32,
         _timer: &mut Timer,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    // --- Pass API ---
+
+    fn set_passes(&mut self, _passes: Vec<Box<dyn Pass>>) -> Result<()> {
+        Ok(())
+    }
+
+    fn init_default_passes(&mut self, _egui_client: Arc<EguiClient>) -> Result<()> {
+        Ok(())
+    }
+
+    fn get_device(&self) -> &wgpu::Device {
+        unimplemented!("DummyRenderer has no wgpu Device")
+    }
+
+    fn get_queue(&self) -> &wgpu::Queue {
+        unimplemented!("DummyRenderer has no wgpu Queue")
+    }
+
+    fn get_surface_format(&self) -> wgpu::TextureFormat {
+        wgpu::TextureFormat::Rgba8UnormSrgb
+    }
+
+    fn create_buffer(&mut self, _desc: BufferDesc) -> Result<wgpu::Buffer> {
+        unimplemented!("DummyRenderer has no wgpu Device")
+    }
+
+    fn create_pipeline_v2(&mut self, _desc: PipelineV2Desc) -> Result<PipelineV2> {
+        unimplemented!("DummyRenderer has no wgpu Device")
+    }
+
+    fn create_render_target(
+        &mut self,
+        _desc: RendererTargetDesc,
+    ) -> Result<RendererTextureHandle> {
+        Ok(RendererTextureHandle::default())
+    }
+
+    fn create_depth_texture(&mut self, _label: &str) -> Result<RendererTextureHandle> {
+        Ok(RendererTextureHandle::default())
+    }
+
+    fn get_render_target_view(
+        &self,
+        _handle: RendererTextureHandle,
+    ) -> Option<&wgpu::TextureView> {
+        None
+    }
+
+    fn record_scene_pass(
+        &mut self,
+        _encoder: &mut wgpu::CommandEncoder,
+        _view: &wgpu::TextureView,
+        _world: &WorldQuery<'_>,
     ) -> Result<()> {
         Ok(())
     }
