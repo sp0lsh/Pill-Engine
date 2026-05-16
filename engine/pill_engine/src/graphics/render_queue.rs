@@ -1,5 +1,6 @@
 use crate::{
     config::*,
+    renderer::resources::{RendererMaterial, RendererMesh, RendererShader},
     resources::{
         Material, MaterialHandle, Mesh, MeshHandle, PBRMaterial, PBRMaterialHandle,
         ResourceManager, Shader,
@@ -22,7 +23,7 @@ use std::{
 
 pub struct RenderQueue {
     pub items: Vec<RenderQueueItem>,
-    pub context_change_indices: Vec<u32>, // Indices of items after which context changes (e.g. material or mesh change)
+    pub context_change_indices: Vec<u32>,
 }
 
 // --- Render queue item
@@ -92,10 +93,9 @@ where
         + Not<Output = T>,
 {
     pub fn new(mask_range: core::ops::Range<T>) -> Self {
-        // Compile-time evaluable function
         let one: T = T::from(1_u8);
         let two: T = T::from(2_u8);
-        let mask_range_length = mask_range.end - mask_range.start + one; //if mask_range.start == zero { mask_range.end + one } else { mask_range.end - mask_range.start };
+        let mask_range_length = mask_range.end - mask_range.start + one;
         let mask_size: T = T::from(std::mem::size_of::<T>() as u8 * 8);
         let mask_shift: T = mask_size - mask_range.end - one;
         let mask: T = pill_core::create_bitmask_from_range::<T>(&mask_range);
@@ -116,22 +116,32 @@ pub fn compose_render_queue_key(
     material_handle: &MaterialHandle,
     mesh_handle: &MeshHandle,
 ) -> Result<RenderQueueKey> {
-    let material = resource_manager.get_resource::<Material>(material_handle)?;
-    let shader = resource_manager.get_resource::<Shader>(&material.shader_handle)?;
-    let mesh = resource_manager.get_resource::<Mesh>(mesh_handle)?;
+    #[cfg(feature = "headless")]
+    return Ok(0);
 
-    let render_queue_key: RenderQueueKey = ((RENDER_QUEUE_KEY_ORDER.max - material.rendering_order as RenderQueueKey) << RENDER_QUEUE_KEY_ORDER.mask_shift) | // Order has to be inverted for proper sorting
-        // 1. Shader - defining rendering pipeline
-        ((shader.renderer_resource_handle.unwrap().data().index as RenderQueueKey) << RENDER_QUEUE_KEY_SHADER_INDEX.mask_shift) |
-        ((shader.renderer_resource_handle.unwrap().data().version.get() as RenderQueueKey) << RENDER_QUEUE_KEY_SHADER_VERSION.mask_shift) |
-        // 2. Material - defining material properties, same rendering pipeline
-        ((material.renderer_resource_handle.unwrap().data().index as RenderQueueKey) << RENDER_QUEUE_KEY_MATERIAL_INDEX.mask_shift) |
-        ((material.renderer_resource_handle.unwrap().data().version.get() as RenderQueueKey) << RENDER_QUEUE_KEY_MATERIAL_VERSION.mask_shift) |
-        // 3. Mesh - defining mesh properties, same material thus same rendering pipeline
-        ((mesh.renderer_resource_handle.unwrap().data().index as RenderQueueKey) << RENDER_QUEUE_KEY_MESH_INDEX.mask_shift) |
-        ((mesh.renderer_resource_handle.unwrap().data().version.get() as RenderQueueKey) << RENDER_QUEUE_KEY_MESH_VERSION.mask_shift);
+    #[cfg(not(feature = "headless"))]
+    {
+        let material = resource_manager.get_resource::<Material>(material_handle)?;
+        let shader = resource_manager.get_resource::<Shader>(&material.shader_handle)?;
+        let mesh = resource_manager.get_resource::<Mesh>(mesh_handle)?;
 
-    Ok(render_queue_key)
+        let renderer_shader_handle =
+            resource_manager.get_resource_handle::<RendererShader>(&shader.name)?;
+        let renderer_material_handle =
+            resource_manager.get_resource_handle::<RendererMaterial>(&material.name)?;
+        let renderer_mesh_handle =
+            resource_manager.get_resource_handle::<RendererMesh>(&mesh.name)?;
+
+        let render_queue_key: RenderQueueKey = ((RENDER_QUEUE_KEY_ORDER.max - material.rendering_order as RenderQueueKey) << RENDER_QUEUE_KEY_ORDER.mask_shift)
+            | ((renderer_shader_handle.data().index as RenderQueueKey) << RENDER_QUEUE_KEY_SHADER_INDEX.mask_shift)
+            | ((renderer_shader_handle.data().version.get() as RenderQueueKey) << RENDER_QUEUE_KEY_SHADER_VERSION.mask_shift)
+            | ((renderer_material_handle.data().index as RenderQueueKey) << RENDER_QUEUE_KEY_MATERIAL_INDEX.mask_shift)
+            | ((renderer_material_handle.data().version.get() as RenderQueueKey) << RENDER_QUEUE_KEY_MATERIAL_VERSION.mask_shift)
+            | ((renderer_mesh_handle.data().index as RenderQueueKey) << RENDER_QUEUE_KEY_MESH_INDEX.mask_shift)
+            | ((renderer_mesh_handle.data().version.get() as RenderQueueKey) << RENDER_QUEUE_KEY_MESH_VERSION.mask_shift);
+
+        Ok(render_queue_key)
+    }
 }
 
 // PBR path: PBRMaterial always uses default lit shader
@@ -140,29 +150,31 @@ pub fn compose_pbr_render_queue_key(
     material_handle: PBRMaterialHandle,
     mesh_handle: &MeshHandle,
 ) -> Result<RenderQueueKey> {
-    let material = resource_manager.get_resource::<PBRMaterial>(&material_handle)?;
-    let mesh = resource_manager.get_resource::<Mesh>(mesh_handle)?;
+    #[cfg(feature = "headless")]
+    return Ok(0);
 
-    let render_queue_key: RenderQueueKey = ((DEFAULT_LIT_RENDERER_SHADER_HANDLE.data().index
-        as RenderQueueKey)
-        << RENDER_QUEUE_KEY_SHADER_INDEX.mask_shift)
-        | ((DEFAULT_LIT_RENDERER_SHADER_HANDLE.data().version.get() as RenderQueueKey)
-            << RENDER_QUEUE_KEY_SHADER_VERSION.mask_shift)
-        | ((material.renderer_resource_handle.unwrap().data().index as RenderQueueKey)
-            << RENDER_QUEUE_KEY_MATERIAL_INDEX.mask_shift)
-        | ((material
-            .renderer_resource_handle
-            .unwrap()
-            .data()
-            .version
-            .get() as RenderQueueKey)
-            << RENDER_QUEUE_KEY_MATERIAL_VERSION.mask_shift)
-        | ((mesh.renderer_resource_handle.unwrap().data().index as RenderQueueKey)
-            << RENDER_QUEUE_KEY_MESH_INDEX.mask_shift)
-        | ((mesh.renderer_resource_handle.unwrap().data().version.get() as RenderQueueKey)
-            << RENDER_QUEUE_KEY_MESH_VERSION.mask_shift);
+    #[cfg(not(feature = "headless"))]
+    {
+        let material = resource_manager.get_resource::<PBRMaterial>(&material_handle)?;
+        let mesh = resource_manager.get_resource::<Mesh>(mesh_handle)?;
 
-    Ok(render_queue_key)
+        let renderer_shader_handle =
+            resource_manager.get_resource_handle::<RendererShader>(DEFAULT_LIT_SHADER_NAME)?;
+        let renderer_material_handle =
+            resource_manager.get_resource_handle::<RendererMaterial>(&material.name)?;
+        let renderer_mesh_handle =
+            resource_manager.get_resource_handle::<RendererMesh>(&mesh.name)?;
+
+        let render_queue_key: RenderQueueKey =
+            ((renderer_shader_handle.data().index as RenderQueueKey) << RENDER_QUEUE_KEY_SHADER_INDEX.mask_shift)
+            | ((renderer_shader_handle.data().version.get() as RenderQueueKey) << RENDER_QUEUE_KEY_SHADER_VERSION.mask_shift)
+            | ((renderer_material_handle.data().index as RenderQueueKey) << RENDER_QUEUE_KEY_MATERIAL_INDEX.mask_shift)
+            | ((renderer_material_handle.data().version.get() as RenderQueueKey) << RENDER_QUEUE_KEY_MATERIAL_VERSION.mask_shift)
+            | ((renderer_mesh_handle.data().index as RenderQueueKey) << RENDER_QUEUE_KEY_MESH_INDEX.mask_shift)
+            | ((renderer_mesh_handle.data().version.get() as RenderQueueKey) << RENDER_QUEUE_KEY_MESH_VERSION.mask_shift);
+
+        Ok(render_queue_key)
+    }
 }
 
 pub struct RenderQueueKeyFields {
@@ -177,7 +189,6 @@ pub struct RenderQueueKeyFields {
 
 // Decomposes pill engine render queue key into separate fields
 pub fn decompose_render_queue_key(render_queue_key: RenderQueueKey) -> RenderQueueKeyFields {
-    // [TODO] What if render queue key is not valid
     let order: u8 = ((render_queue_key & RENDER_QUEUE_KEY_ORDER.mask as RenderQueueKey)
         >> RENDER_QUEUE_KEY_ORDER.mask_shift as RenderQueueKey) as u8;
     let shader_index: u8 = ((render_queue_key & RENDER_QUEUE_KEY_SHADER_INDEX.mask)
@@ -228,7 +239,7 @@ fn get_render_queue_key_item_range(render_queue_item_index: u8) -> Range<RenderQ
     start..(end - 1)
 }
 
-lazy_static! { // This will be initialized in runtime instead of compile-time (this is the cost of not using const function, const functions do not allow for generic variables bound by traits different than Sized)
+lazy_static! {
     pub static ref RENDER_QUEUE_KEY_ORDER: RenderQueueField<RenderQueueKey> = RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(RENDER_QUEUE_KEY_RENDERING_ORDER_IDX));
     pub static ref RENDER_QUEUE_KEY_SHADER_INDEX: RenderQueueField<RenderQueueKey> = RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(RENDER_QUEUE_KEY_SHADER_INDEX_IDX));
     pub static ref RENDER_QUEUE_KEY_SHADER_VERSION: RenderQueueField<RenderQueueKey> = RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(RENDER_QUEUE_KEY_SHADER_VERSION_IDX));

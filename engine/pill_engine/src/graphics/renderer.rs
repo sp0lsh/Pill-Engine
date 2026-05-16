@@ -2,8 +2,9 @@
 use crate::{
     ecs::{CameraComponent, ComponentStorage, EguiClient, EntityHandle, TransformComponent},
     graphics::RenderQueueItem,
-    internal::{MaterialParameter, MaterialTexture, MeshData},
-    resources::{ShaderParameterSlot, ShaderTextureSlot, TextureType},
+    resources::{
+        ResourceManager, ShaderParameterSlot, ShaderTextureSlot, TextureType,
+    },
 };
 
 use indexmap::IndexMap;
@@ -42,6 +43,7 @@ pub struct WorldQuery<'a> {
     pub camera_components: &'a ComponentStorage<CameraComponent>,
     pub transform_components: &'a ComponentStorage<TransformComponent>,
     pub delta_time: f32,
+    pub resources: &'a ResourceManager,
 }
 
 #[derive(Clone, Copy)]
@@ -105,7 +107,7 @@ pub trait PillRenderer {
 
     // --- Create ---
 
-    fn create_shader(
+    fn create_shader_struct(
         &mut self,
         name: &str,
         vertex_wgsl: &str,
@@ -114,51 +116,11 @@ pub trait PillRenderer {
         parameter_slots: &IndexMap<String, ShaderParameterSlot>,
         pass_engine_parameters: bool,
         pass_camera_parameters: bool,
-    ) -> Result<RendererShaderHandle>;
-
-    fn create_material(
-        &mut self,
-        name: &str,
-        renderer_shader_handle: RendererShaderHandle,
-        textures: &IndexMap<String, MaterialTexture>,
-        parameters: &HashMap<String, MaterialParameter>,
-    ) -> Result<RendererMaterialHandle>;
-
-    fn create_texture(
-        &mut self,
-        name: &str,
-        image_data: &image::DynamicImage,
-        texture_type: TextureType,
-    ) -> Result<RendererTextureHandle>;
-
-    fn create_mesh(&mut self, name: &str, mesh_data: &MeshData) -> Result<RendererMeshHandle>;
+    ) -> Result<crate::renderer::resources::RendererShader>;
 
     fn create_camera(&mut self) -> Result<RendererCameraHandle>;
 
-    // --- Update ---
-
-    fn update_material_textures(
-        &mut self,
-        renderer_material_handle: RendererMaterialHandle,
-        textures: &IndexMap<String, MaterialTexture>,
-    ) -> Result<()>;
-
-    fn update_material_parameters(
-        &mut self,
-        renderer_material_handle: RendererMaterialHandle,
-        parameters: &HashMap<String, MaterialParameter>,
-    ) -> Result<()>;
-
     // --- Destroy ---
-
-    fn destroy_shader(&mut self, renderer_shader_handle: RendererShaderHandle) -> Result<()>;
-
-    fn destroy_material(&mut self, renderer_material_handle: RendererMaterialHandle)
-        -> Result<()>;
-
-    fn destroy_texture(&mut self, renderer_texture_handle: RendererTextureHandle) -> Result<()>;
-
-    fn destroy_mesh(&mut self, renderer_mesh_handle: RendererMeshHandle) -> Result<()>;
 
     fn destroy_camera(&mut self, renderer_camera_handle: RendererCameraHandle) -> Result<()>;
 
@@ -176,6 +138,7 @@ pub trait PillRenderer {
         transform_component_storage: &ComponentStorage<TransformComponent>,
         delta_time: f32,
         timer: &mut Timer,
+        resource_manager: &ResourceManager,
     ) -> Result<()>;
 
     // --- Pass API ---

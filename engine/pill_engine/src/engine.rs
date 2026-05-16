@@ -1,4 +1,4 @@
-use crate::{config::*, ecs::*, graphics::*, resources::*};
+use crate::{config::*, ecs::*, graphics::*, renderer::resources::{RendererMaterial, RendererMesh, RendererShader, RendererTexture}, resources::*};
 
 use pill_core::{
     debug, error, get_game_error_message, get_type_name, info, EngineError, LogContext,
@@ -118,6 +118,14 @@ impl Engine {
             .config
             .get_int("MAX_SOUNDS")
             .unwrap_or(MAX_SOUNDS as i64) as usize;
+
+        #[cfg(not(feature = "headless"))]
+        {
+            self.register_resource_type::<RendererShader>(max_shader_count)?;
+            self.register_resource_type::<RendererMaterial>(max_material_count)?;
+            self.register_resource_type::<RendererTexture>(max_texture_count)?;
+            self.register_resource_type::<RendererMesh>(max_mesh_count)?;
+        }
 
         self.register_resource_type::<Shader>(max_shader_count)?;
         self.register_resource_type::<Material>(max_material_count)?;

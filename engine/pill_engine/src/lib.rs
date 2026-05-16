@@ -112,10 +112,10 @@ mod internal_mod {
             RendererTextureHandle, ShaderDesc, WorldQuery, RENDER_QUEUE_KEY_ORDER,
         },
         resources::{
-            get_renderer_texture_handle_from_material_texture, Material, MaterialHandle,
-            MaterialParameter, MaterialTexture, Mesh, MeshData, MeshHandle, MeshVertex,
-            PBRMaterial, PBRMaterialHandle, ResourceLoader, ResourceManager, ShaderParameterSlot,
-            ShaderParameterType, ShaderTextureSlot, Texture, TextureHandle, TextureType,
+            Material, MaterialHandle, MaterialParameter, MaterialTexture, Mesh, MeshData,
+            MeshHandle, MeshVertex, PBRMaterial, PBRMaterialHandle, ResourceLoader, ResourceManager,
+            ShaderParameterSlot, ShaderParameterType, ShaderTextureSlot, Texture, TextureHandle,
+            TextureType,
         },
     };
 }
@@ -139,10 +139,10 @@ mod internal_mod {
             RendererTextureHandle, ShaderDesc, WorldQuery, RENDER_QUEUE_KEY_ORDER,
         },
         resources::{
-            get_renderer_texture_handle_from_material_texture, Material, MaterialHandle,
-            MaterialParameter, MaterialTexture, Mesh, MeshData, MeshHandle, MeshVertex,
-            PBRMaterial, PBRMaterialHandle, ResourceLoader, ResourceManager, ShaderParameterSlot,
-            ShaderParameterType, ShaderTextureSlot, Texture, TextureHandle, TextureType,
+            Material, MaterialHandle, MaterialParameter, MaterialTexture, Mesh, MeshData,
+            MeshHandle, MeshVertex, PBRMaterial, PBRMaterialHandle, ResourceLoader, ResourceManager,
+            ShaderParameterSlot, ShaderParameterType, ShaderTextureSlot, Texture, TextureHandle,
+            TextureType,
         },
     };
 }

@@ -3,27 +3,25 @@ use crate::{
     ecs::EguiClient,
     graphics::{
         BufferDesc, Pass, PassEgui, PassScene, PillRenderer, PipelineV2, PipelineV2Desc,
-        RendererCameraHandle, RendererMaterialHandle, RendererMeshHandle, RendererShaderHandle,
-        RendererTargetDesc, RendererTextureHandle, WorldQuery,
+        RendererCameraHandle, RendererTargetDesc, RendererTextureHandle, WorldQuery,
     },
     internal::{
         get_renderer_resource_handle_from_camera_component, CameraComponent, ComponentStorage,
-        EntityHandle, MaterialParameter, MaterialTexture, MeshData, RenderQueueItem,
-        ShaderParameterSlot, ShaderTextureSlot, TextureType, TransformComponent,
+        EntityHandle, RenderQueueItem, TransformComponent,
     },
     renderer::{
         config::MAX_INSTANCE_PER_DRAWCALL_COUNT,
         drawers::mesh_drawer::MeshDrawer,
         instance::Instance,
         resources::{
-            RendererCamera, RendererMaterial, RendererMesh, RendererResourceStorage,
-            RendererShader, RendererTexture, Vertex,
+            EngineParameters, RendererCamera, RendererMesh, RendererShader, RendererTexture, Vertex,
         },
     },
+    resources::ResourceManager,
 };
 
 use indexmap::IndexMap;
-use pill_core::{debug, info, LogContext, PillSlotMapKey, PillStyle, RendererError, Timer};
+use pill_core::{debug, info, LogContext, PillSlotMap, PillSlotMapKey, PillStyle, RendererError, Timer};
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Context, Error, Result};
@@ -58,17 +56,17 @@ impl PillRenderer for Renderer {
 
     // --- Create ---
 
-    fn create_shader(
+    fn create_shader_struct(
         &mut self,
         name: &str,
         vertex_wgsl: &str,
         fragment_wgsl: &str,
-        texture_slots: &HashMap<String, ShaderTextureSlot>,
-        parameter_slots: &IndexMap<String, ShaderParameterSlot>,
+        texture_slots: &HashMap<String, crate::resources::ShaderTextureSlot>,
+        parameter_slots: &IndexMap<String, crate::resources::ShaderParameterSlot>,
         pass_engine_parameters: bool,
         pass_camera_parameters: bool,
-    ) -> Result<RendererShaderHandle> {
-        let shader = RendererShader::new(
+    ) -> Result<RendererShader> {
+        RendererShader::new(
             name,
             &self.state.device,
             self.state.color_format,
@@ -81,68 +79,11 @@ impl PillRenderer for Renderer {
             fragment_wgsl,
             parameter_slots,
             texture_slots,
-            &self
-                .state
-                .renderer_resource_storage
-                .engine_parameters
-                .bind_group_layout,
+            &self.state.engine_parameters.bind_group_layout,
             &self.state.camera_bind_group_layout,
             pass_engine_parameters,
             pass_camera_parameters,
-        )?;
-        let handle = self.state.renderer_resource_storage.shaders.insert(shader);
-        Ok(handle)
-    }
-
-    fn create_material(
-        &mut self,
-        name: &str,
-        renderer_shader_handle: RendererShaderHandle,
-        textures: &IndexMap<String, MaterialTexture>,
-        parameters: &HashMap<String, MaterialParameter>,
-    ) -> Result<RendererMaterialHandle> {
-        let material = RendererMaterial::new(
-            &self.state.device,
-            &self.state.queue,
-            &self.state.renderer_resource_storage,
-            name,
-            renderer_shader_handle,
-            textures,
-            parameters,
-        )?;
-        let handle = self
-            .state
-            .renderer_resource_storage
-            .materials
-            .insert(material);
-        Ok(handle)
-    }
-
-    fn create_texture(
-        &mut self,
-        name: &str,
-        image_data: &image::DynamicImage,
-        texture_type: TextureType,
-    ) -> Result<RendererTextureHandle> {
-        let texture = RendererTexture::new_texture(
-            &self.state.device,
-            &self.state.queue,
-            Some(name),
-            image_data,
-            texture_type,
-        )?;
-        let handle = self
-            .state
-            .renderer_resource_storage
-            .textures
-            .insert(texture);
-        Ok(handle)
-    }
-
-    fn create_mesh(&mut self, name: &str, mesh_data: &MeshData) -> Result<RendererMeshHandle> {
-        let mesh = RendererMesh::new(&self.state.device, name, mesh_data)?;
-        let handle = self.state.renderer_resource_storage.meshes.insert(mesh);
-        Ok(handle)
+        )
     }
 
     fn create_camera(&mut self) -> Result<RendererCameraHandle> {
@@ -150,86 +91,14 @@ impl PillRenderer for Renderer {
             &self.state.device,
             self.state.camera_bind_group_layout.clone(),
         )?;
-        let handle = self.state.renderer_resource_storage.cameras.insert(camera);
+        let handle = self.state.cameras.insert(camera);
         Ok(handle)
-    }
-
-    // --- Update ---
-
-    fn update_material_textures(
-        &mut self,
-        renderer_material_handle: RendererMaterialHandle,
-        textures: &IndexMap<String, MaterialTexture>,
-    ) -> Result<()> {
-        RendererMaterial::update_textures(
-            &self.state.device,
-            renderer_material_handle,
-            &mut self.state.renderer_resource_storage,
-            textures,
-        )
-    }
-
-    fn update_material_parameters(
-        &mut self,
-        renderer_material_handle: RendererMaterialHandle,
-        parameters: &HashMap<String, MaterialParameter>,
-    ) -> Result<()> {
-        RendererMaterial::update_parameters(
-            &self.state.device,
-            &self.state.queue,
-            renderer_material_handle,
-            &mut self.state.renderer_resource_storage,
-            parameters,
-        )
     }
 
     // --- Destroy ---
 
-    fn destroy_shader(&mut self, renderer_shader_handle: RendererShaderHandle) -> Result<()> {
-        self.state
-            .renderer_resource_storage
-            .shaders
-            .remove(renderer_shader_handle)
-            .unwrap();
-        Ok(())
-    }
-
-    fn destroy_material(
-        &mut self,
-        renderer_material_handle: RendererMaterialHandle,
-    ) -> Result<()> {
-        self.state
-            .renderer_resource_storage
-            .materials
-            .remove(renderer_material_handle)
-            .unwrap();
-        Ok(())
-    }
-
-    fn destroy_texture(&mut self, renderer_texture_handle: RendererTextureHandle) -> Result<()> {
-        self.state
-            .renderer_resource_storage
-            .textures
-            .remove(renderer_texture_handle)
-            .unwrap();
-        Ok(())
-    }
-
-    fn destroy_mesh(&mut self, renderer_mesh_handle: RendererMeshHandle) -> Result<()> {
-        self.state
-            .renderer_resource_storage
-            .meshes
-            .remove(renderer_mesh_handle)
-            .unwrap();
-        Ok(())
-    }
-
     fn destroy_camera(&mut self, renderer_camera_handle: RendererCameraHandle) -> Result<()> {
-        self.state
-            .renderer_resource_storage
-            .cameras
-            .remove(renderer_camera_handle)
-            .unwrap();
+        self.state.cameras.remove(renderer_camera_handle).unwrap();
         Ok(())
     }
 
@@ -255,6 +124,7 @@ impl PillRenderer for Renderer {
         transform_component_storage: &ComponentStorage<TransformComponent>,
         delta_time: f32,
         timer: &mut Timer,
+        resource_manager: &ResourceManager,
     ) -> Result<()> {
         debug!(LogContext::Frame => "Starting frame render");
 
@@ -289,11 +159,11 @@ impl PillRenderer for Renderer {
             camera_components: camera_component_storage,
             transform_components: transform_component_storage,
             delta_time,
+            resources: resource_manager,
         };
 
         timer.begin_context("Scene Passes");
 
-        // Borrow trick: move passes out so &mut self is free for pass.draw()
         let mut passes = std::mem::take(&mut self.state.passes);
         for pass in &mut passes {
             pass.draw(&mut encoder, self, &frame, &view, &world)?;
@@ -430,11 +300,7 @@ impl PillRenderer for Renderer {
             desc.height,
             desc.format,
         )?;
-        let handle = self
-            .state
-            .renderer_resource_storage
-            .textures
-            .insert(texture);
+        let handle = self.state.pass_textures.insert(texture);
         Ok(handle)
     }
 
@@ -444,11 +310,7 @@ impl PillRenderer for Renderer {
             &self.state.surface_configuration,
             label,
         )?;
-        let handle = self
-            .state
-            .renderer_resource_storage
-            .textures
-            .insert(texture);
+        let handle = self.state.pass_textures.insert(texture);
         Ok(handle)
     }
 
@@ -457,8 +319,7 @@ impl PillRenderer for Renderer {
         handle: RendererTextureHandle,
     ) -> Option<&wgpu::TextureView> {
         self.state
-            .renderer_resource_storage
-            .textures
+            .pass_textures
             .get(handle)
             .map(|t| &t.texture_view)
     }
@@ -476,7 +337,7 @@ impl PillRenderer for Renderer {
             .unwrap();
         let active_camera_component = camera_storage.as_ref().unwrap();
 
-        self.state.renderer_resource_storage.engine_parameters.update(
+        self.state.engine_parameters.update(
             &self.state.queue,
             world.delta_time,
             active_camera_component.fog_density,
@@ -491,7 +352,6 @@ impl PillRenderer for Renderer {
             get_renderer_resource_handle_from_camera_component(active_camera_component);
         let renderer_camera = self
             .state
-            .renderer_resource_storage
             .cameras
             .get_mut(renderer_camera_handle)
             .ok_or(Error::new(RendererError::RendererResourceNotFound))?;
@@ -508,12 +368,7 @@ impl PillRenderer for Renderer {
             active_camera_transform,
         );
 
-        let renderer_camera = self
-            .state
-            .renderer_resource_storage
-            .cameras
-            .get(renderer_camera_handle)
-            .unwrap();
+        let renderer_camera = self.state.cameras.get(renderer_camera_handle).unwrap();
         let clear_color = active_camera_component.clear_color;
 
         let color_attachment = wgpu::RenderPassColorAttachment {
@@ -542,7 +397,8 @@ impl PillRenderer for Renderer {
         self.state.mesh_drawer.record_draw_commands(
             &self.state.queue,
             encoder,
-            &self.state.renderer_resource_storage,
+            world.resources,
+            &self.state.engine_parameters,
             color_attachment,
             depth_stencil_attachment,
             renderer_camera,
@@ -554,7 +410,9 @@ impl PillRenderer for Renderer {
 }
 
 pub struct State {
-    renderer_resource_storage: RendererResourceStorage,
+    pub(crate) cameras: PillSlotMap<RendererCameraHandle, RendererCamera>,
+    pub(crate) engine_parameters: EngineParameters,
+    pass_textures: PillSlotMap<RendererTextureHandle, RendererTexture>,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -581,7 +439,6 @@ impl State {
             .context("WINDOW_HEIGHT is missing from config")? as u32;
         let window_size = winit::dpi::PhysicalSize::new(window_width, window_height);
 
-        // 1. Create instance and surface
         let (instance, surface) = {
             let backends = match std::env::var("WGPU_BACKENDS").as_deref() {
                 std::result::Result::Ok("VULKAN") => wgpu::Backends::VULKAN,
@@ -603,7 +460,6 @@ impl State {
             (instance, surface)
         };
 
-        // 2. Adapter
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
@@ -616,7 +472,6 @@ impl State {
         let info = adapter.get_info();
         info!(LogContext::Rendering => "Using GPU: {} ({:?})", info.name, info.backend);
 
-        // 3. Device and queue
         let (device, queue) = {
             let wanted = wgpu::Features::DEPTH_CLIP_CONTROL
                 | wgpu::Features::TIMESTAMP_QUERY
@@ -635,7 +490,6 @@ impl State {
                 .context("Failed to request device")?
         };
 
-        // 4. Surface configuration
         let (surface_configuration, color_format, depth_format) = {
             let preferred_format = wgpu::TextureFormat::Rgba8UnormSrgb;
             let surface_capabilities = surface.get_capabilities(&adapter);
@@ -689,12 +543,10 @@ impl State {
             (surface_configuration, color_format, depth_format)
         };
 
-        // 5. Depth texture
         let depth_texture =
             RendererTexture::new_depth_texture(&device, &surface_configuration, "depth_texture")
                 .context("Failed to create depth texture")?;
 
-        // 6. Camera bind group layout
         let camera_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("camera_parameters_bind_group_layout"),
@@ -710,14 +562,15 @@ impl State {
                 }],
             });
 
-        // 7. Resource storage
-        let renderer_resource_storage = RendererResourceStorage::new(&device)?;
-
-        // 8. Mesh drawer
+        let engine_parameters = EngineParameters::new(&device)?;
+        let cameras = PillSlotMap::with_capacity_and_key(10);
+        let pass_textures = PillSlotMap::with_capacity_and_key(10);
         let mesh_drawer = MeshDrawer::new(&device, MAX_INSTANCE_PER_DRAWCALL_COUNT as u32);
 
         Ok(Self {
-            renderer_resource_storage,
+            cameras,
+            engine_parameters,
+            pass_textures,
             surface,
             device,
             queue,

@@ -1,9 +1,12 @@
-use crate::resources::TextureType;
+use crate::graphics::RendererTextureHandle;
+use crate::resources::{Resource, ResourceStorage, TextureType};
 
 use anyhow::*;
 use image::GenericImageView;
+use pill_core::PillTypeMapKey;
 
 pub struct RendererTexture {
+    pub name: String,
     pub texture: wgpu::Texture,
     pub texture_view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,
@@ -15,7 +18,7 @@ impl RendererTexture {
     pub fn new_texture(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        name: Option<&str>,
+        name: &str,
         image_data: &image::DynamicImage,
         texture_type: TextureType,
     ) -> Result<Self> {
@@ -34,7 +37,7 @@ impl RendererTexture {
         };
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: name,
+            label: Some(name),
             size,
             mip_level_count: 1,
             sample_count: 1,
@@ -75,6 +78,7 @@ impl RendererTexture {
         });
 
         Ok(Self {
+            name: name.to_string(),
             texture,
             texture_view,
             sampler,
@@ -119,6 +123,7 @@ impl RendererTexture {
         });
 
         Ok(Self {
+            name: label.to_string(),
             texture,
             texture_view,
             sampler,
@@ -162,9 +167,22 @@ impl RendererTexture {
         });
 
         Ok(Self {
+            name: label.to_string(),
             texture,
             texture_view,
             sampler,
         })
+    }
+}
+
+impl PillTypeMapKey for RendererTexture {
+    type Storage = ResourceStorage<RendererTexture>;
+}
+
+impl Resource for RendererTexture {
+    type Handle = RendererTextureHandle;
+
+    fn get_name(&self) -> String {
+        self.name.clone()
     }
 }

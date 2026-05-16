@@ -1,7 +1,9 @@
+use crate::graphics::RendererShaderHandle;
+use crate::resources::{Resource, ResourceStorage, ShaderParameterSlot, ShaderTextureSlot};
+
 use anyhow::Result;
 use indexmap::IndexMap;
-use pill_core::{debug, LogContext, PillStyle};
-use crate::resources::{ShaderParameterSlot, ShaderTextureSlot};
+use pill_core::{debug, LogContext, PillStyle, PillTypeMapKey};
 use std::collections::HashMap;
 
 pub struct RendererShader {
@@ -207,5 +209,17 @@ impl RendererShader {
             pass_engine_parameters,
             pass_camera_parameters,
         })
+    }
+}
+
+impl PillTypeMapKey for RendererShader {
+    type Storage = ResourceStorage<RendererShader>;
+}
+
+impl Resource for RendererShader {
+    type Handle = RendererShaderHandle;
+
+    fn get_name(&self) -> String {
+        self.name.clone()
     }
 }

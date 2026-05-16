@@ -139,6 +139,7 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
         transform_component_storage,
         0.0,
         &mut timer,
+        &engine.resource_manager,
     ) {
         Ok(_) => {
             timer.end_context()?;

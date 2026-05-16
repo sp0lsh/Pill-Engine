@@ -1,6 +1,8 @@
-use crate::resources::{MeshData, MeshVertex};
+use crate::graphics::RendererMeshHandle;
+use crate::resources::{MeshData, MeshVertex, Resource, ResourceStorage};
 
 use anyhow::*;
+use pill_core::PillTypeMapKey;
 use wgpu::util::DeviceExt;
 
 pub trait Vertex {
@@ -34,6 +36,18 @@ impl RendererMesh {
             index_buffer,
             index_count: mesh_data.indices.len() as u32,
         })
+    }
+}
+
+impl PillTypeMapKey for RendererMesh {
+    type Storage = ResourceStorage<RendererMesh>;
+}
+
+impl Resource for RendererMesh {
+    type Handle = RendererMeshHandle;
+
+    fn get_name(&self) -> String {
+        self.name.clone()
     }
 }
 

@@ -2,15 +2,12 @@ use crate::{
     ecs::{CameraComponent, ComponentStorage, EguiClient, EntityHandle, TransformComponent},
     graphics::{
         BufferDesc, Pass, PillRenderer, PipelineV2, PipelineV2Desc, RendererTargetDesc,
-        RenderQueueItem, RendererCameraHandle, RendererMaterialHandle, RendererMeshHandle,
-        RendererShaderHandle, RendererTextureHandle, WorldQuery,
+        RenderQueueItem, RendererCameraHandle, RendererTextureHandle, WorldQuery,
     },
-    internal::{MaterialParameter, MaterialTexture},
-    resources::{MeshData, ShaderParameterSlot, ShaderTextureSlot, TextureType},
+    resources::{ResourceManager, ShaderParameterSlot, ShaderTextureSlot},
 };
 
 use anyhow::Result;
-use image::DynamicImage;
 use indexmap::IndexMap;
 use pill_core::Timer;
 use std::{collections::HashMap, sync::Arc};
@@ -25,7 +22,7 @@ impl PillRenderer for DummyRenderer {
 
     // --- Create ---
 
-    fn create_shader(
+    fn create_shader_struct(
         &mut self,
         _name: &str,
         _vertex_wgsl: &str,
@@ -34,75 +31,15 @@ impl PillRenderer for DummyRenderer {
         _parameter_slots: &IndexMap<String, ShaderParameterSlot>,
         _pass_engine_parameters: bool,
         _pass_camera_parameters: bool,
-    ) -> Result<RendererShaderHandle> {
-        Ok(RendererShaderHandle::default())
-    }
-
-    fn create_material(
-        &mut self,
-        _name: &str,
-        _renderer_shader_handle: RendererShaderHandle,
-        _textures: &IndexMap<String, MaterialTexture>,
-        _parameters: &HashMap<String, MaterialParameter>,
-    ) -> Result<RendererMaterialHandle> {
-        Ok(RendererMaterialHandle::default())
-    }
-
-    fn create_texture(
-        &mut self,
-        _name: &str,
-        _image_data: &DynamicImage,
-        _texture_type: TextureType,
-    ) -> Result<RendererTextureHandle> {
-        Ok(RendererTextureHandle::default())
-    }
-
-    fn create_mesh(&mut self, _name: &str, _mesh_data: &MeshData) -> Result<RendererMeshHandle> {
-        Ok(RendererMeshHandle::default())
+    ) -> Result<crate::renderer::resources::RendererShader> {
+        unimplemented!("DummyRenderer has no GPU shader creation")
     }
 
     fn create_camera(&mut self) -> Result<RendererCameraHandle> {
         Ok(RendererCameraHandle::default())
     }
 
-    // --- Update ---
-
-    fn update_material_textures(
-        &mut self,
-        _renderer_material_handle: RendererMaterialHandle,
-        _textures: &IndexMap<String, MaterialTexture>,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn update_material_parameters(
-        &mut self,
-        _renderer_material_handle: RendererMaterialHandle,
-        _parameters: &HashMap<String, MaterialParameter>,
-    ) -> Result<()> {
-        Ok(())
-    }
-
     // --- Destroy ---
-
-    fn destroy_shader(&mut self, _renderer_shader_handle: RendererShaderHandle) -> Result<()> {
-        Ok(())
-    }
-
-    fn destroy_material(
-        &mut self,
-        _renderer_material_handle: RendererMaterialHandle,
-    ) -> Result<()> {
-        Ok(())
-    }
-
-    fn destroy_texture(&mut self, _renderer_texture_handle: RendererTextureHandle) -> Result<()> {
-        Ok(())
-    }
-
-    fn destroy_mesh(&mut self, _renderer_mesh_handle: RendererMeshHandle) -> Result<()> {
-        Ok(())
-    }
 
     fn destroy_camera(&mut self, _renderer_camera_handle: RendererCameraHandle) -> Result<()> {
         Ok(())
@@ -124,6 +61,7 @@ impl PillRenderer for DummyRenderer {
         _transform_component_storage: &ComponentStorage<TransformComponent>,
         _delta_time: f32,
         _timer: &mut Timer,
+        _resource_manager: &ResourceManager,
     ) -> Result<()> {
         Ok(())
     }

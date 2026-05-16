@@ -7,12 +7,13 @@ use crate::renderer::{
         MATERIAL_TEXTURES_BIND_GROUP_LAYOUT_INDEX,
     },
     instance::Instance,
-    resources::{RendererCamera, RendererResourceStorage, RendererShader},
+    resources::{EngineParameters, RendererCamera, RendererMaterial, RendererMesh, RendererShader},
 };
 use crate::{
     ecs::ComponentStorage,
     graphics::{RenderQueueItem, RendererMaterialHandle, RendererMeshHandle, RendererShaderHandle},
     internal::{TransformComponent, decompose_render_queue_key},
+    resources::ResourceManager,
 };
 use pill_core::{debug, LogContext, PillStyle, RendererError, Timer};
 
@@ -84,16 +85,16 @@ impl DrawingContext {
 
     pub fn change_shader(
         &mut self,
-        renderer_resource_storage: &RendererResourceStorage,
+        resource_manager: &ResourceManager,
+        engine_parameters: &EngineParameters,
         shader_handle: RendererShaderHandle,
         render_pass: &mut wgpu::RenderPass,
         camera: &RendererCamera,
     ) {
         self.shader_handle = Some(shader_handle);
-        let shader: &RendererShader = renderer_resource_storage
-            .shaders
-            .get(shader_handle)
-            .unwrap();
+        let shader: &RendererShader = resource_manager
+            .get_resource::<RendererShader>(&shader_handle)
+            .expect("RendererShader not found");
         self.shader_name = shader.name.clone();
 
         debug!(LogContext::Frame => "Changing shader to: {}", self.shader_name.name_style());
@@ -103,7 +104,7 @@ impl DrawingContext {
         if shader.pass_engine_parameters {
             render_pass.set_bind_group(
                 ENGINE_PARAMETERS_BIND_GROUP_LAYOUT_INDEX,
-                &renderer_resource_storage.engine_parameters.bind_group,
+                &engine_parameters.bind_group,
                 &[],
             );
         }
@@ -121,15 +122,14 @@ impl DrawingContext {
 
     pub fn change_material(
         &mut self,
-        renderer_resource_storage: &RendererResourceStorage,
+        resource_manager: &ResourceManager,
         material_handle: RendererMaterialHandle,
         render_pass: &mut wgpu::RenderPass,
     ) {
         self.material_handle = Some(material_handle);
-        let material = renderer_resource_storage
-            .materials
-            .get(material_handle)
-            .unwrap();
+        let material = resource_manager
+            .get_resource::<RendererMaterial>(&material_handle)
+            .expect("RendererMaterial not found");
         self.material_name = material.name.clone();
 
         if let Some(ref parameters_bind_group) = material.parameters_bind_group {
@@ -153,12 +153,14 @@ impl DrawingContext {
 
     pub fn change_mesh(
         &mut self,
-        renderer_resource_storage: &RendererResourceStorage,
+        resource_manager: &ResourceManager,
         mesh_handle: RendererMeshHandle,
         render_pass: &mut wgpu::RenderPass,
     ) {
         self.mesh_handle = Some(mesh_handle);
-        let mesh = renderer_resource_storage.meshes.get(mesh_handle).unwrap();
+        let mesh = resource_manager
+            .get_resource::<RendererMesh>(&mesh_handle)
+            .expect("RendererMesh not found");
         self.mesh_name = mesh.name.clone();
 
         self.mesh_index_count = mesh.index_count;
@@ -197,7 +199,8 @@ impl MeshDrawer {
         &mut self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        renderer_resource_storage: &RendererResourceStorage,
+        resource_manager: &ResourceManager,
+        engine_parameters: &EngineParameters,
         color_attachment: wgpu::RenderPassColorAttachment,
         depth_stencil_attachment: wgpu::RenderPassDepthStencilAttachment,
         camera: &RendererCamera,
@@ -281,7 +284,8 @@ impl MeshDrawer {
                 if current_drawing_context.shader_handle != Some(renderer_shader_handle) {
                     current_drawing_context.record_draw_accumulated_instances(&mut render_pass);
                     current_drawing_context.change_shader(
-                        renderer_resource_storage,
+                        resource_manager,
+                        engine_parameters,
                         renderer_shader_handle,
                         &mut render_pass,
                         camera,
@@ -291,7 +295,7 @@ impl MeshDrawer {
                 if current_drawing_context.material_handle != Some(renderer_material_handle) {
                     current_drawing_context.record_draw_accumulated_instances(&mut render_pass);
                     current_drawing_context.change_material(
-                        renderer_resource_storage,
+                        resource_manager,
                         renderer_material_handle,
                         &mut render_pass,
                     );
@@ -300,7 +304,7 @@ impl MeshDrawer {
                 if current_drawing_context.mesh_handle != Some(renderer_mesh_handle) {
                     current_drawing_context.record_draw_accumulated_instances(&mut render_pass);
                     current_drawing_context.change_mesh(
-                        renderer_resource_storage,
+                        resource_manager,
                         renderer_mesh_handle,
                         &mut render_pass,
                     );
