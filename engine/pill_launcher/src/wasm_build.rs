@@ -125,6 +125,7 @@ fn rewrite_scratch_manifest(scratch_pill_web_app_dir: &Path, game_dir: &Path) ->
     let pill_core = cargo_path(&engine.join("pill_core"));
     let pill_web = cargo_path(&engine.join("pill_web"));
     let pill_game = cargo_path(game_dir);
+    let wgpu_3dgs_core_vendor = cargo_path(&engine.join("vendor/wgpu-3dgs-core"));
 
     let manifest = scratch_pill_web_app_dir.join("Cargo.toml");
     modify_file(&manifest, &manifest, |line: String| -> String {
@@ -161,6 +162,8 @@ fn rewrite_scratch_manifest(scratch_pill_web_app_dir: &Path, game_dir: &Path) ->
         f,
         concat!(
             "\npill_game = {{ path = \"{pill_game}\" }}\n",
+            "\n[patch.crates-io]\n",
+            "wgpu-3dgs-core = {{ path = \"{wgpu_3dgs_core_vendor}\" }}\n",
             "\n[workspace]\nresolver = \"2\"\n",
             "\n[profile.release]\n",
             "opt-level = \"z\"\n",
@@ -171,6 +174,7 @@ fn rewrite_scratch_manifest(scratch_pill_web_app_dir: &Path, game_dir: &Path) ->
             "wasm-opt = [\"-Oz\", \"--strip-debug\", \"--strip-producers\", \"--enable-nontrapping-float-to-int\", \"--enable-bulk-memory\", \"--enable-sign-ext\", \"--enable-mutable-globals\", \"--enable-reference-types\"]\n",
         ),
         pill_game = pill_game,
+        wgpu_3dgs_core_vendor = wgpu_3dgs_core_vendor,
     )
     .context("Failed to append to scratch Cargo.toml")?;
 

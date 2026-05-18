@@ -1,0 +1,16 @@
+[package]
+name = "pill_game"
+version = "0.1.0"
+edition = "2021"
+workspace = "/Users/mk/dev/demo/Pill-Engine/engine"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pill_engine = { path = "../../engine/pill_engine", features = ["game", "internal"] }
+wgpu = "27.0"
+bytemuck = { version = "1.4", features = ["derive"] }
+glam = "0.30.8"
+anyhow = "1.0"
+wgpu-3dgs-viewer = "0.5"

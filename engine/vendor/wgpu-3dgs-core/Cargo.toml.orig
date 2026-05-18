@@ -1,0 +1,71 @@
+[package]
+name = "wgpu-3dgs-core"
+version = "0.5.0"
+edition = "2024"
+authors = ["Lio Qing"]
+license = "MIT OR Apache-2.0"
+description = "A 3D Gaussian splatting library written in Rust using wgpu."
+readme = "README.md"
+include = [
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "CHANGELOG.md",
+    "Cargo.toml",
+    "examples/**/*",
+    "src/**/*",
+]
+repository = "https://github.com/LioQing/wgpu-3dgs-core"
+homepage = "https://github.com/LioQing/wgpu-3dgs-core"
+keywords = ["gaussian-splatting", "point-cloud", "wgpu", "graphics", "ply"]
+categories = ["graphics", "wasm"]
+
+[lib]
+name = "wgpu_3dgs_core"
+path = "src/lib.rs"
+
+[[example]]
+name = "write-ply"
+path = "examples/write_ply.rs"
+doc-scrape-examples = true
+
+[[example]]
+name = "read-ply"
+path = "examples/read_ply.rs"
+doc-scrape-examples = true
+
+[[example]]
+name = "write-spz"
+path = "examples/write_spz.rs"
+doc-scrape-examples = true
+
+[[example]]
+name = "read-spz"
+path = "examples/read_spz.rs"
+doc-scrape-examples = true
+
+[package.metadata.docs.rs]
+all-features = true
+cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
+
+[dependencies]
+bytemuck = { version = "1.23", features = [
+    "derive",
+    "extern_crate_alloc",
+    "min_const_generics",
+] }
+glam = { version = "0.30", features = ["bytemuck"] }
+half = { version = "2.7", features = ["bytemuck"] }
+log = "0.4"
+oneshot = "0.1"
+paste = "1.0"
+ply-rs = "0.1"
+thiserror = "2.0"
+wgpu = "27.0"
+wesl = "0.2"
+flate2 = "1.1"
+itertools = "0.14"
+
+[dev-dependencies]
+assert_matches = { version = "1.5" }
+pollster = { version = "0.4", features = ["macro"] }

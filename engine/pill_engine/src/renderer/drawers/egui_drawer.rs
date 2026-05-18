@@ -37,9 +37,12 @@ impl EguiDrawer {
         let renderer = egui_wgpu::Renderer::new(
             device,
             output_color_format,
-            output_depth_format,
-            msaa_samples,
-            false,
+            egui_wgpu::RendererOptions {
+                depth_stencil_format: output_depth_format,
+                msaa_samples,
+                dithering: false,
+                ..Default::default()
+            },
         );
 
         EguiDrawer {
@@ -98,6 +101,7 @@ impl EguiDrawer {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: window_surface_view,
+                depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,

@@ -80,10 +80,12 @@ pub mod game {
         resources::Sound,
     };
 
+    pub use crate::graphics::{Pass, PillRenderer, WorldQuery};
+
     extern crate pill_core;
     pub use pill_core::{
-        create_game, define_new_pill_slotmap_key, Color, PillTypeMapKey, Vector2f, Vector2i,
-        Vector3f, DISTINCT_COLOR_PALETTE,
+        create_game, define_new_pill_slotmap_key, Color, PillSlotMapKey, PillTypeMapKey, Vector2f,
+        Vector2i, Vector3f, DISTINCT_COLOR_PALETTE,
     };
 
     extern crate anyhow;

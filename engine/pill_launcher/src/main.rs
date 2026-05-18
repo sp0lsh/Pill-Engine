@@ -188,6 +188,18 @@ pub(crate) fn modify_file<A: FnMut(String) -> String>(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn adhoc_sign(path: &PathBuf) -> Result<()> {
+    let status = Command::new("codesign")
+        .args(["--force", "--sign", "-", path.to_str().unwrap_or("")])
+        .status()
+        .context("codesign not found")?;
+    if !status.success() {
+        bail!("codesign failed on {}", path.display());
+    }
+    Ok(())
+}
+
 fn copy_if_newer(source: &PathBuf, destination: &PathBuf) -> Result<bool> {
     // returns true if copied
     if !source.exists() {
@@ -896,13 +908,19 @@ fn build_game_project(
     // Copy the dylibs for the initial build only (not consecutive hot-reloads, otherwise we
     // overwrite loaded libs and crash!)
     if *compile_mode != CompileMode::HotReload || !hot_reload_child {
-        if copy_if_newer(&game_src, &data_dir.join(dylib("pill_game")))? {
+        let game_dest = data_dir.join(dylib("pill_game"));
+        let runtime_dest = data_dir.join(dylib("pill_runtime"));
+        if copy_if_newer(&game_src, &game_dest)? {
             println!("Copied game dylib");
+            #[cfg(target_os = "macos")]
+            adhoc_sign(&game_dest)?;
         } else {
             println!("Skipping copying of game dylib");
         }
-        if copy_if_newer(&runtime_src, &data_dir.join(dylib("pill_runtime")))? {
+        if copy_if_newer(&runtime_src, &runtime_dest)? {
             println!("Copied runtime dylib");
+            #[cfg(target_os = "macos")]
+            adhoc_sign(&runtime_dest)?;
         } else {
             println!("Skipping copying of runtime dylib");
         }

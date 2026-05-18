@@ -29,10 +29,9 @@ pub fn audio_system(engine: &mut Engine) -> Result<()> {
     let mut left_ear_position = Vector3f::new(-1.0, 0.0, 0.0);
     let mut right_ear_position = Vector3f::new(1.0, 0.0, 0.0);
 
-    // Update ear positions
-    for (_entity_handle, audio_listener_component, transform_component) in
-        engine.iterate_two_components::<AudioListenerComponent, TransformComponent>()?
-    {
+    // Update ear positions (skip if scene doesn't use audio listener)
+    if let Ok(iter) = engine.iterate_two_components::<AudioListenerComponent, TransformComponent>() {
+    for (_entity_handle, audio_listener_component, transform_component) in iter {
         if audio_listener_component.enabled {
             // Get the retotation matrix
             let left_rotation_matrix = get_rotation_matrix(transform_component.rotation)?;
@@ -49,6 +48,7 @@ pub fn audio_system(engine: &mut Engine) -> Result<()> {
             break;
         }
     }
+    }
 
     // Update the sinks with new positions for left and right ear
     let audio_manager = engine.get_global_component_mut::<AudioManagerComponent>()?;
@@ -59,15 +59,15 @@ pub fn audio_system(engine: &mut Engine) -> Result<()> {
 
     // Update emitter position in all sinks based on transform components of entities to which audio source components are added
     let active_scene = engine.scene_manager.get_active_scene()?;
-    for (_entity_handle, audio_source_component, transform_component) in
-        active_scene.get_two_component_iterator::<AudioSourceComponent, TransformComponent>()?
-    {
+    if let Ok(iter) = active_scene.get_two_component_iterator::<AudioSourceComponent, TransformComponent>() {
+    for (_entity_handle, audio_source_component, transform_component) in iter {
         let audio_manager = engine.get_global_component::<AudioManagerComponent>()?;
         if let Some(index) = audio_source_component.sink_handle {
             audio_manager
                 .get_spatial_sink(index)
                 .set_emitter_position(transform_component.position.into());
         }
+    }
     }
 
     // --- Return free sinks to AudioManager
@@ -81,9 +81,8 @@ pub fn audio_system(engine: &mut Engine) -> Result<()> {
         .as_mut()
         .unwrap();
     let active_scene = engine.scene_manager.get_active_scene_mut()?;
-    for (_entity_handle, audio_source_component) in
-        active_scene.get_one_component_iterator_mut::<AudioSourceComponent>()?
-    {
+    if let Ok(iter) = active_scene.get_one_component_iterator_mut::<AudioSourceComponent>() {
+    for (_entity_handle, audio_source_component) in iter {
         // Check if the audio source has sink handle assigned
         if let Some(sink_handle) = audio_source_component.sink_handle {
             // Check if is playing
@@ -105,6 +104,7 @@ pub fn audio_system(engine: &mut Engine) -> Result<()> {
                 audio_manager.return_sink(sink_handle, &sound_type);
             }
         }
+    }
     }
 
     Ok(())

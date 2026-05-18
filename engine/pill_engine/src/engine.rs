@@ -1072,6 +1072,10 @@ impl Engine {
             .register_resource_type::<T>(max_resource_count)
     }
 
+    pub fn get_resources_path(&self) -> &std::path::Path {
+        &self.game_resources_directory_path
+    }
+
     // Adds resource to the engine
     pub fn add_resource<T>(&mut self, resource: T) -> Result<T::Handle>
     where
@@ -1235,6 +1239,15 @@ impl Engine {
             .context(error_message.to_string())?;
         remove_result.1.destroy(self, remove_result.0)?;
 
+        Ok(())
+    }
+
+    /// Set a custom render pass chain. Marks the renderer as bootstrapped so the default
+    /// pass chain is not installed on the first frame.
+    #[cfg(not(feature = "headless"))]
+    pub fn set_render_passes(&mut self, passes: Vec<Box<dyn Pass>>) -> Result<()> {
+        self.renderer.set_passes(passes)?;
+        self.get_global_component_mut::<RenderStateComponent>()?.boot_done = true;
         Ok(())
     }
 }

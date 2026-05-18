@@ -373,6 +373,7 @@ impl PillRenderer for Renderer {
 
         let color_attachment = wgpu::RenderPassColorAttachment {
             view,
+            depth_slice: None,
             resolve_target: None,
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -453,6 +454,7 @@ impl State {
                 backends,
                 flags: wgpu::InstanceFlags::from_build_config().with_env(),
                 backend_options: wgpu::BackendOptions::default(),
+                memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             });
             let surface = instance
                 .create_surface(window.clone())
@@ -482,9 +484,19 @@ impl State {
                 .request_device(&wgpu::DeviceDescriptor {
                     label: None,
                     required_features: features,
-                    required_limits: wgpu::Limits::default(),
+                    required_limits: {
+                        let adapter_limits = adapter.limits();
+                        wgpu::Limits {
+                            max_compute_workgroup_storage_size: adapter_limits.max_compute_workgroup_storage_size,
+                            max_compute_invocations_per_workgroup: adapter_limits.max_compute_invocations_per_workgroup,
+                            max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
+                            max_buffer_size: adapter_limits.max_buffer_size,
+                            ..wgpu::Limits::default()
+                        }
+                    },
                     memory_hints: wgpu::MemoryHints::default(),
                     trace: wgpu::Trace::default(),
+                    experimental_features: wgpu::ExperimentalFeatures::default(),
                 })
                 .await
                 .context("Failed to request device")?
@@ -502,11 +514,6 @@ impl State {
                 .contains(&wgpu::PresentMode::Mailbox)
             {
                 wgpu::PresentMode::Mailbox
-            } else if surface_capabilities
-                .present_modes
-                .contains(&wgpu::PresentMode::Immediate)
-            {
-                wgpu::PresentMode::Immediate
             } else {
                 wgpu::PresentMode::Fifo
             };
@@ -535,7 +542,7 @@ impl State {
                 desired_maximum_frame_latency: 2,
                 present_mode,
                 alpha_mode: wgpu::CompositeAlphaMode::Auto,
-                view_formats: vec![format],
+                view_formats: vec![format, format.remove_srgb_suffix()],
             };
             surface.configure(&device, &surface_configuration);
             let color_format = surface_configuration.format;

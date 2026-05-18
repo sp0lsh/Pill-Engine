@@ -1,0 +1,84 @@
+use glam::*;
+use wgpu::util::DeviceExt;
+
+use crate::{BufferWrapper, FixedSizeBufferWrapper, FixedSizeBufferWrapperError};
+
+/// The model transformation buffer.
+///
+/// This buffer holds the model transformation data, including position, rotation, and scale.
+/// It is used to transform the model from model space to world space.
+#[derive(Debug, Clone)]
+pub struct ModelTransformBuffer(wgpu::Buffer);
+
+impl ModelTransformBuffer {
+    /// Create a new model transformation buffer.
+    pub fn new(device: &wgpu::Device) -> Self {
+        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Model transform Buffer"),
+            contents: bytemuck::bytes_of(&ModelTransformPod::default()),
+            usage: Self::DEFAULT_USAGES,
+        });
+
+        Self(buffer)
+    }
+
+    /// Update the model transformation buffer.
+    pub fn update(&self, queue: &wgpu::Queue, pos: Vec3, rot: Quat, scale: Vec3) {
+        self.update_with_pod(queue, &ModelTransformPod::new(pos, rot, scale));
+    }
+
+    /// Update the model transformation buffer with [`ModelTransformPod`].
+    pub fn update_with_pod(&self, queue: &wgpu::Queue, pod: &ModelTransformPod) {
+        queue.write_buffer(&self.0, 0, bytemuck::bytes_of(pod));
+    }
+}
+
+impl BufferWrapper for ModelTransformBuffer {
+    fn buffer(&self) -> &wgpu::Buffer {
+        &self.0
+    }
+}
+
+impl From<ModelTransformBuffer> for wgpu::Buffer {
+    fn from(wrapper: ModelTransformBuffer) -> Self {
+        wrapper.0
+    }
+}
+
+impl TryFrom<wgpu::Buffer> for ModelTransformBuffer {
+    type Error = FixedSizeBufferWrapperError;
+
+    fn try_from(buffer: wgpu::Buffer) -> Result<Self, Self::Error> {
+        Self::verify_buffer_size(&buffer).map(|()| Self(buffer))
+    }
+}
+
+impl FixedSizeBufferWrapper for ModelTransformBuffer {
+    type Pod = ModelTransformPod;
+}
+
+/// The POD representation of a model transformation.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ModelTransformPod {
+    pub pos: [f32; 4],
+    pub rot: Quat,
+    pub scale: [f32; 4],
+}
+
+impl ModelTransformPod {
+    /// Create a new model transformation.
+    pub const fn new(pos: Vec3, rot: Quat, scale: Vec3) -> Self {
+        Self {
+            pos: [pos.x, pos.y, pos.z, 0.0],
+            rot,
+            scale: [scale.x, scale.y, scale.z, 0.0],
+        }
+    }
+}
+
+impl Default for ModelTransformPod {
+    fn default() -> Self {
+        Self::new(Vec3::ZERO, Quat::IDENTITY, Vec3::ONE)
+    }
+}
