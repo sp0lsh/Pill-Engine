@@ -1250,4 +1250,13 @@ impl Engine {
         self.get_global_component_mut::<RenderStateComponent>()?.boot_done = true;
         Ok(())
     }
+
+    /// Create a `PassEgui` wired to this engine's egui client and window.
+    /// Add the returned pass to `set_render_passes` to enable the egui overlay.
+    #[cfg(not(feature = "headless"))]
+    pub fn create_pass_egui(&self) -> Result<Box<dyn Pass>> {
+        let egui_client = self.get_global_component::<RenderStateComponent>()?.egui_client.clone();
+        let window = self.renderer.get_window();
+        Ok(Box::new(PassEgui::new(window, egui_client)))
+    }
 }

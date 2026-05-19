@@ -210,6 +210,10 @@ impl PillRenderer for Renderer {
         self.state.color_format
     }
 
+    fn get_window(&self) -> Arc<winit::window::Window> {
+        self.state.window.clone()
+    }
+
     fn create_buffer(&mut self, desc: BufferDesc) -> Result<wgpu::Buffer> {
         let buffer = self.state.device.create_buffer(&wgpu::BufferDescriptor {
             label: desc.label,

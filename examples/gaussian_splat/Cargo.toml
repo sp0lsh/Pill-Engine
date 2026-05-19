@@ -14,3 +14,6 @@ bytemuck = { version = "1.4", features = ["derive"] }
 glam = "0.30.8"
 anyhow = "1.0"
 wgpu-3dgs-viewer = "0.5"
+egui = "0.33"
+egui-wgpu = "0.33"
+arboard = "3"

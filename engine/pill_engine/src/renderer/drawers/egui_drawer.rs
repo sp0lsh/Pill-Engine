@@ -21,7 +21,9 @@ impl EguiDrawer {
         msaa_samples: u32,
         window: Arc<winit::window::Window>,
     ) -> EguiDrawer {
-        let window_scale_factor = window.scale_factor() as f32;
+        // Avoid calling window.scale_factor() here: on macOS it crashes when called
+        // from inside a drawRect callback. We use 1.0 and update via ScaleFactorChanged events.
+        let window_scale_factor = 1.0_f32;
         let context = egui::Context::default();
         let id = context.viewport_id();
 
@@ -55,6 +57,9 @@ impl EguiDrawer {
     }
 
     pub fn handle_input(&mut self, event: &WindowEvent) {
+        if let WindowEvent::ScaleFactorChanged { scale_factor, .. } = event {
+            self.window_scale_factor = *scale_factor as f32;
+        }
         let _ = self.state.on_window_event(&self.window, event);
     }
 

@@ -153,6 +153,8 @@ pub trait PillRenderer {
 
     fn get_surface_format(&self) -> wgpu::TextureFormat;
 
+    fn get_window(&self) -> Arc<winit::window::Window>;
+
     fn create_buffer(&mut self, desc: BufferDesc) -> Result<wgpu::Buffer>;
 
     fn create_pipeline_v2(&mut self, desc: PipelineV2Desc) -> Result<PipelineV2>;

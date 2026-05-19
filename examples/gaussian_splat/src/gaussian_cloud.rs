@@ -42,10 +42,9 @@ impl Resource for GaussianCloud {
 
     fn initialize(&mut self, engine: &mut Engine) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
-        if let GaussianCloudSource::Path(ref mut path) = self.source {
-            if path.is_relative() {
-                *path = engine.get_resources_path().join(&*path);
-            }
+        let GaussianCloudSource::Path(ref mut path) = self.source;
+        if path.is_relative() {
+            *path = engine.get_resources_path().join(&*path);
         }
         Ok(())
     }
