@@ -33,6 +33,7 @@ impl CameraParametersData {
         }
     }
 
+    /// Writes the latest camera position and view-projection matrix from ECS components into the CPU-side struct.
     pub fn update_data(
         &mut self,
         camera_component: &CameraComponent,
@@ -80,6 +81,7 @@ pub struct RendererCamera {
 }
 
 impl RendererCamera {
+    /// Allocates the camera uniform buffer and bind group using the provided layout.
     pub fn new(
         device: &wgpu::Device,
         camera_bind_group_layout: wgpu::BindGroupLayout,
@@ -110,6 +112,7 @@ impl RendererCamera {
         })
     }
 
+    /// Recomputes view-projection from ECS components and uploads the result to the GPU buffer.
     pub fn update(
         &mut self,
         queue: &wgpu::Queue,

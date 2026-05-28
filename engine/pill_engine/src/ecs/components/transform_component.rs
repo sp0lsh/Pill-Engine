@@ -177,15 +177,15 @@ impl TransformComponent {
 }
 
 pub fn update_transform_matrices(transform_component: &mut TransformComponent) {
-    let q = Quat::from_rotation_y(transform_component.rotation.y.to_radians())
+    let rotation = Quat::from_rotation_y(transform_component.rotation.y.to_radians())
         * Quat::from_rotation_x(transform_component.rotation.x.to_radians())
         * Quat::from_rotation_z(transform_component.rotation.z.to_radians());
     transform_component.model_matrix = Matrix4f::from_scale_rotation_translation(
         transform_component.scale,
-        q,
+        rotation,
         transform_component.position,
     );
-    transform_component.normal_matrix = Matrix3fA::from_quat(q);
+    transform_component.normal_matrix = Matrix3fA::from_quat(rotation);
 }
 
 pub fn get_model_matrix(transform_component: &TransformComponent) -> Matrix4f {

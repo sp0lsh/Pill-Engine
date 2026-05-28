@@ -101,7 +101,8 @@ impl RendererMaterial {
     }
 
     fn calculate_uniform_size(parameter_slots: &[(String, ShaderParameterSlot)]) -> usize {
-        parameter_slots.len() * 16 // each slot is padded to 16 bytes per std140 alignment rules
+        const STD140_SLOT_BYTES: usize = 16; // each slot is padded to 16 bytes per std140 alignment rules
+        parameter_slots.len() * STD140_SLOT_BYTES
     }
 
     /// Packs parameter values into a std140-aligned byte buffer and uploads it to the GPU.

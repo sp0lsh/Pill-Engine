@@ -5,9 +5,7 @@ use crate::graphics::{
 };
 use crate::internal::decompose_render_queue_key;
 use crate::{
-    ecs::{CameraComponent, ComponentStorage},
     graphics::{Pass, PillRenderer, RendererTextureHandle, WorldQuery},
-    internal::TransformComponent,
     renderer::{
         config::{
             CAMERA_PARAMETERS_BIND_GROUP_LAYOUT_INDEX, ENGINE_PARAMETERS_BIND_GROUP_LAYOUT_INDEX,
@@ -21,7 +19,7 @@ use crate::{
     },
     resources::ResourceManager,
 };
-use pill_core::{debug, LogContext, PillSlotMapKey, PillStyle, RendererError, Result, Timer};
+use pill_core::{debug, LogContext, PillSlotMapKey, PillStyle, RendererError, Result};
 
 // --- DrawingContext ---
 
@@ -37,9 +35,6 @@ struct DrawingContext {
     mesh_index_count: u32,
 
     accumulated_instance_range: Range<u32>,
-    accumulated_instance_count: u32,
-
-    rendering_context_change_number: u32,
 
     instance_batch_number: u32,
     instance_batch_size: u32,
@@ -50,7 +45,7 @@ impl DrawingContext {
         debug!(
             LogContext::Frame =>
             "Draw {} instance(s) {}->{}/{} command recorded [Batch: {}, Rendering order: {}, Shader: {}, Material: {}, Mesh: {}]",
-            self.accumulated_instance_count,
+            self.accumulated_instance_range.end - self.accumulated_instance_range.start,
             self.accumulated_instance_range.start,
             self.accumulated_instance_range.end - 1,
             self.instance_batch_size,
@@ -63,7 +58,7 @@ impl DrawingContext {
     }
 
     fn record_draw_accumulated_instances(&mut self, render_pass: &mut wgpu::RenderPass) {
-        if self.accumulated_instance_count > 0 {
+        if self.accumulated_instance_range.end > self.accumulated_instance_range.start {
             render_pass.draw_indexed(
                 0..self.mesh_index_count,
                 0,
@@ -72,20 +67,15 @@ impl DrawingContext {
             self.log();
             self.accumulated_instance_range =
                 self.accumulated_instance_range.end..self.accumulated_instance_range.end;
-            self.accumulated_instance_count = 0;
         }
     }
 
     fn accumulate_instance(&mut self) {
-        self.accumulated_instance_range =
-            self.accumulated_instance_range.start..self.accumulated_instance_range.end + 1;
-        self.accumulated_instance_count =
-            self.accumulated_instance_range.end - self.accumulated_instance_range.start;
+        self.accumulated_instance_range.end += 1;
     }
 
     fn change_rendering_order(&mut self, new_order: u8) {
         self.rendering_order = new_order;
-        self.rendering_context_change_number += 1;
         debug!(LogContext::Frame => "Rendering order changed to: {}", self.rendering_order);
     }
 
@@ -122,8 +112,6 @@ impl DrawingContext {
                 &[],
             );
         }
-
-        self.rendering_context_change_number += 1;
     }
 
     fn change_material(
@@ -153,8 +141,6 @@ impl DrawingContext {
                 &[],
             );
         }
-
-        self.rendering_context_change_number += 1;
     }
 
     fn change_mesh(
@@ -172,8 +158,6 @@ impl DrawingContext {
         self.mesh_index_count = mesh.index_count;
         render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
         render_pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-
-        self.rendering_context_change_number += 1;
     }
 }
 
@@ -317,7 +301,6 @@ impl Pass for PassMesh {
             current_drawing_context.instance_batch_size = batch_size as u32;
 
             self.instances.clear();
-            self.instances.reserve(instance_batch.len());
 
             for render_queue_item in instance_batch {
                 let transform_slot = world
@@ -331,16 +314,15 @@ impl Pass for PassMesh {
                 self.instances.push(Instance::new(transform_component));
             }
 
+            let instance_buffer = self.instance_buffer.as_ref().unwrap();
             renderer.get_queue().write_buffer(
-                self.instance_buffer.as_ref().unwrap(),
+                instance_buffer,
                 0,
                 bytemuck::cast_slice(&self.instances),
             );
-
-            render_pass.set_vertex_buffer(1, self.instance_buffer.as_ref().unwrap().slice(..));
+            render_pass.set_vertex_buffer(1, instance_buffer.slice(..));
 
             current_drawing_context.accumulated_instance_range = 0..0;
-            current_drawing_context.accumulated_instance_count = 0;
 
             for (j, render_queue_item) in instance_batch.iter().enumerate() {
                 let key_fields = decompose_render_queue_key(render_queue_item.key);

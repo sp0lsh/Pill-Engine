@@ -128,7 +128,7 @@ impl Timer {
     }
 
     /// Returns all counters as a slice of (label, value) pairs.
-    pub fn counters(&self) -> &Vec<(String, u64)> {
+    pub fn counters(&self) -> &[(String, u64)] {
         &self.counters
     }
 
