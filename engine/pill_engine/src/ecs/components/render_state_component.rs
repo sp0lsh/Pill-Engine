@@ -12,6 +12,7 @@ pub struct RenderStateComponent {
 }
 
 impl RenderStateComponent {
+    /// Creates the component in its pre-boot state with the provided egui client.
     pub fn new(egui_client: Arc<EguiClient>) -> Self {
         Self {
             boot_done: false,

@@ -89,6 +89,14 @@ impl PillRenderer for DummyRenderer {
         wgpu::TextureFormat::Rgba8UnormSrgb
     }
 
+    fn get_engine_parameters(&self) -> &crate::renderer::resources::EngineParameters {
+        unimplemented!("DummyRenderer has no EngineParameters")
+    }
+
+    fn get_camera_bind_group_layout(&self) -> wgpu::BindGroupLayout {
+        unimplemented!("DummyRenderer has no wgpu Device")
+    }
+
     fn create_buffer(&mut self, _desc: BufferDesc) -> Result<wgpu::Buffer> {
         unimplemented!("DummyRenderer has no wgpu Device")
     }

@@ -92,6 +92,7 @@ where
         + Add<Output = T>
         + Not<Output = T>,
 {
+    /// Computes mask, shift, and maximum value for a bit field at the given bit range.
     pub fn new(mask_range: core::ops::Range<T>) -> Self {
         let one: T = T::from(1_u8);
         let two: T = T::from(2_u8);
@@ -110,7 +111,7 @@ where
     }
 }
 
-// Creates pill engine render queue composed from order, material index, material version, mesh index, mesh version
+/// Creates pill engine render queue composed from order, material index, material version, mesh index, mesh version
 pub fn compose_render_queue_key(
     resource_manager: &ResourceManager,
     material_handle: &MaterialHandle,
@@ -152,7 +153,7 @@ pub fn compose_render_queue_key(
     }
 }
 
-// PBR path: PBRMaterial always uses default lit shader
+/// PBR path: PBRMaterial always uses default lit shader
 pub fn compose_pbr_render_queue_key(
     resource_manager: &ResourceManager,
     material_handle: PBRMaterialHandle,
@@ -201,7 +202,7 @@ pub struct RenderQueueKeyFields {
     pub mesh_version: u8,
 }
 
-// Decomposes pill engine render queue key into separate fields
+/// Decomposes pill engine render queue key into separate fields
 pub fn decompose_render_queue_key(render_queue_key: RenderQueueKey) -> RenderQueueKeyFields {
     let order: u8 = ((render_queue_key & RENDER_QUEUE_KEY_ORDER.mask as RenderQueueKey)
         >> RENDER_QUEUE_KEY_ORDER.mask_shift as RenderQueueKey) as u8;

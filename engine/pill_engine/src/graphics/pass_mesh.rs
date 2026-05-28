@@ -1,26 +1,32 @@
 use std::{num::NonZeroU32, ops::Range};
 
-use crate::renderer::{
-    config::{
-        CAMERA_PARAMETERS_BIND_GROUP_LAYOUT_INDEX, ENGINE_PARAMETERS_BIND_GROUP_LAYOUT_INDEX,
-        INITIAL_INSTANCE_VECTOR_CAPACITY, MATERIAL_PARAMETERS_BIND_GROUP_LAYOUT_INDEX,
-        MATERIAL_TEXTURES_BIND_GROUP_LAYOUT_INDEX,
-    },
-    instance::Instance,
-    resources::{EngineParameters, RendererCamera, RendererMaterial, RendererMesh, RendererShader},
+use crate::graphics::{
+    RenderQueueItem, RendererMaterialHandle, RendererMeshHandle, RendererShaderHandle,
 };
+use crate::internal::decompose_render_queue_key;
 use crate::{
-    ecs::ComponentStorage,
-    graphics::{RenderQueueItem, RendererMaterialHandle, RendererMeshHandle, RendererShaderHandle},
-    internal::{decompose_render_queue_key, TransformComponent},
+    ecs::{CameraComponent, ComponentStorage},
+    graphics::{Pass, PillRenderer, RendererTextureHandle, WorldQuery},
+    internal::TransformComponent,
+    renderer::{
+        config::{
+            CAMERA_PARAMETERS_BIND_GROUP_LAYOUT_INDEX, ENGINE_PARAMETERS_BIND_GROUP_LAYOUT_INDEX,
+            INITIAL_INSTANCE_VECTOR_CAPACITY, MATERIAL_PARAMETERS_BIND_GROUP_LAYOUT_INDEX,
+            MATERIAL_TEXTURES_BIND_GROUP_LAYOUT_INDEX, MAX_INSTANCE_PER_DRAWCALL_COUNT,
+        },
+        instance::Instance,
+        resources::{
+            EngineParameters, RendererCamera, RendererMaterial, RendererMesh, RendererShader,
+        },
+    },
     resources::ResourceManager,
 };
-use pill_core::{debug, LogContext, PillStyle, RendererError, Timer};
+use pill_core::{debug, LogContext, PillSlotMapKey, PillStyle, RendererError, Result, Timer};
 
-use pill_core::Result;
+// --- DrawingContext ---
 
 #[derive(Debug, Clone, Default)]
-pub struct DrawingContext {
+struct DrawingContext {
     rendering_order: u8,
     shader_handle: Option<RendererShaderHandle>,
     shader_name: String,
@@ -40,7 +46,7 @@ pub struct DrawingContext {
 }
 
 impl DrawingContext {
-    pub fn log(&self) {
+    fn log(&self) {
         debug!(
             LogContext::Frame =>
             "Draw {} instance(s) {}->{}/{} command recorded [Batch: {}, Rendering order: {}, Shader: {}, Material: {}, Mesh: {}]",
@@ -56,7 +62,7 @@ impl DrawingContext {
         );
     }
 
-    pub fn record_draw_accumulated_instances(&mut self, render_pass: &mut wgpu::RenderPass) {
+    fn record_draw_accumulated_instances(&mut self, render_pass: &mut wgpu::RenderPass) {
         if self.accumulated_instance_count > 0 {
             render_pass.draw_indexed(
                 0..self.mesh_index_count,
@@ -70,20 +76,20 @@ impl DrawingContext {
         }
     }
 
-    pub fn accumulate_instance(&mut self) {
+    fn accumulate_instance(&mut self) {
         self.accumulated_instance_range =
             self.accumulated_instance_range.start..self.accumulated_instance_range.end + 1;
         self.accumulated_instance_count =
             self.accumulated_instance_range.end - self.accumulated_instance_range.start;
     }
 
-    pub fn change_rendering_order(&mut self, new_order: u8) {
+    fn change_rendering_order(&mut self, new_order: u8) {
         self.rendering_order = new_order;
         self.rendering_context_change_number += 1;
         debug!(LogContext::Frame => "Rendering order changed to: {}", self.rendering_order);
     }
 
-    pub fn change_shader(
+    fn change_shader(
         &mut self,
         resource_manager: &ResourceManager,
         engine_parameters: &EngineParameters,
@@ -120,7 +126,7 @@ impl DrawingContext {
         self.rendering_context_change_number += 1;
     }
 
-    pub fn change_material(
+    fn change_material(
         &mut self,
         resource_manager: &ResourceManager,
         material_handle: RendererMaterialHandle,
@@ -151,7 +157,7 @@ impl DrawingContext {
         self.rendering_context_change_number += 1;
     }
 
-    pub fn change_mesh(
+    fn change_mesh(
         &mut self,
         resource_manager: &ResourceManager,
         mesh_handle: RendererMeshHandle,
@@ -171,156 +177,229 @@ impl DrawingContext {
     }
 }
 
-pub struct MeshDrawer {
-    max_instance_batch_size: u32,
+// --- PassMesh ---
+
+/// Instance-batched rendering pass using `RendererShader` pipelines.
+/// Install via `renderer.set_passes(vec![Box::new(PassMesh::new())])`.
+pub struct PassMesh {
+    depth_handle: Option<RendererTextureHandle>,
+    camera: Option<RendererCamera>,
+    instance_buffer: Option<wgpu::Buffer>,
     instances: Vec<Instance>,
-    instance_buffer: wgpu::Buffer,
 }
 
-impl MeshDrawer {
-    pub fn new(device: &wgpu::Device, max_instance_batch_size: u32) -> Self {
-        let buffer_size = (size_of::<Instance>() * max_instance_batch_size as usize) as u64;
-        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("instance_buffer"),
-            size: buffer_size,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        MeshDrawer {
-            max_instance_batch_size,
-            instances: Vec::<Instance>::with_capacity(INITIAL_INSTANCE_VECTOR_CAPACITY),
-            instance_buffer,
+impl PassMesh {
+    /// Creates a `PassMesh`; GPU resources are allocated lazily in `Pass::init`.
+    pub fn new() -> Self {
+        Self {
+            depth_handle: None,
+            camera: None,
+            instance_buffer: None,
+            instances: Vec::with_capacity(INITIAL_INSTANCE_VECTOR_CAPACITY),
         }
     }
+}
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn record_draw_commands(
+impl Default for PassMesh {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Pass for PassMesh {
+    fn get_label(&self) -> &str {
+        "pass_mesh"
+    }
+
+    /// Allocates the depth texture, camera UBO, and instance buffer.
+    fn init(&mut self, renderer: &mut dyn PillRenderer) -> Result<()> {
+        self.depth_handle = Some(renderer.create_depth_texture("pass_mesh_depth")?);
+
+        let layout = renderer.get_camera_bind_group_layout();
+        self.camera = Some(RendererCamera::new(renderer.get_device(), layout)?);
+
+        let buffer_size =
+            (std::mem::size_of::<Instance>() * MAX_INSTANCE_PER_DRAWCALL_COUNT) as u64;
+        self.instance_buffer = Some(
+            renderer
+                .get_device()
+                .create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("pass_mesh_instance_buffer"),
+                    size: buffer_size,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }),
+        );
+
+        Ok(())
+    }
+
+    /// Records instance-batched draw commands for the current frame.
+    fn draw(
         &mut self,
-        queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        resource_manager: &ResourceManager,
-        engine_parameters: &EngineParameters,
-        color_attachment: wgpu::RenderPassColorAttachment,
-        depth_stencil_attachment: wgpu::RenderPassDepthStencilAttachment,
-        camera: &RendererCamera,
-        render_queue: &[RenderQueueItem],
-        transform_component_storage: &ComponentStorage<TransformComponent>,
-        timer: &mut Timer,
+        renderer: &mut dyn PillRenderer,
+        _frame: &wgpu::SurfaceTexture,
+        view: &wgpu::TextureView,
+        world: &WorldQuery<'_>,
     ) -> Result<()> {
-        timer.record("Prepare render pass");
+        // Resolve active camera.
+        let active_camera_index = world.active_camera.data().index as usize;
+        let active_camera_component = world
+            .camera_components
+            .data
+            .get(active_camera_index)
+            .unwrap()
+            .as_ref()
+            .unwrap();
+        let active_camera_transform = world
+            .transform_components
+            .data
+            .get(active_camera_index)
+            .unwrap()
+            .as_ref()
+            .unwrap();
+
+        // Update camera UBO.
+        self.camera.as_mut().unwrap().update(
+            renderer.get_queue(),
+            active_camera_component,
+            active_camera_transform,
+        );
+
+        let clear_color = active_camera_component.clear_color;
+
+        let depth_view = renderer
+            .get_render_target_view(self.depth_handle.unwrap())
+            .ok_or_else(|| -> pill_core::PillError { RendererError::Other.into() })?;
+
         debug!(LogContext::Frame => "Recording mesh draw commands");
 
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("main pass"),
-            color_attachments: &[Some(color_attachment.clone())],
-            depth_stencil_attachment: Some(depth_stencil_attachment.clone()),
+            label: Some("pass_mesh"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: clear_color.x as f64,
+                        g: clear_color.y as f64,
+                        b: clear_color.z as f64,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
             timestamp_writes: None,
             occlusion_query_set: None,
         });
 
         let mut current_drawing_context = DrawingContext::default();
 
-        for (i, instance_batch) in render_queue
-            .chunks(self.max_instance_batch_size as usize)
+        let render_pass: &mut wgpu::RenderPass<'static> =
+            unsafe { std::mem::transmute(&mut render_pass) };
+
+        for (i, instance_batch) in world
+            .render_queue
+            .chunks(MAX_INSTANCE_PER_DRAWCALL_COUNT)
             .enumerate()
         {
             let batch_size = instance_batch.len();
             current_drawing_context.instance_batch_number = i as u32;
             current_drawing_context.instance_batch_size = batch_size as u32;
 
-            timer.begin_context(format!("Prepare draw instance batch {}", i));
-            timer.record("Write instance buffer".to_string());
-
             self.instances.clear();
             self.instances.reserve(instance_batch.len());
 
             for render_queue_item in instance_batch {
-                let transform_slot = transform_component_storage
+                let transform_slot = world
+                    .transform_components
                     .data
                     .get(render_queue_item.entity_index as usize)
                     .ok_or_else(|| -> pill_core::PillError { RendererError::Other.into() })?;
                 let transform_component = transform_slot
                     .as_ref()
                     .ok_or_else(|| -> pill_core::PillError { RendererError::Other.into() })?;
-                //println!("Creating new instance with transform component: {:?} {:?}", i, transform_component.position);
                 self.instances.push(Instance::new(transform_component));
             }
 
-            queue.write_buffer(
-                &self.instance_buffer,
+            renderer.get_queue().write_buffer(
+                self.instance_buffer.as_ref().unwrap(),
                 0,
                 bytemuck::cast_slice(&self.instances),
             );
 
-            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-
-            timer.record("Record draw instances commands");
+            render_pass.set_vertex_buffer(1, self.instance_buffer.as_ref().unwrap().slice(..));
 
             current_drawing_context.accumulated_instance_range = 0..0;
             current_drawing_context.accumulated_instance_count = 0;
 
             for (j, render_queue_item) in instance_batch.iter().enumerate() {
-                let render_queue_key_fields = decompose_render_queue_key(render_queue_item.key);
+                let key_fields = decompose_render_queue_key(render_queue_item.key);
 
                 let renderer_shader_handle = RendererShaderHandle::new(
-                    render_queue_key_fields.shader_index.into(),
-                    NonZeroU32::new(render_queue_key_fields.shader_version.into()).unwrap(),
+                    key_fields.shader_index.into(),
+                    NonZeroU32::new(key_fields.shader_version.into()).unwrap(),
                 );
                 let renderer_material_handle = RendererMaterialHandle::new(
-                    render_queue_key_fields.material_index.into(),
-                    NonZeroU32::new(render_queue_key_fields.material_version.into()).unwrap(),
+                    key_fields.material_index.into(),
+                    NonZeroU32::new(key_fields.material_version.into()).unwrap(),
                 );
                 let renderer_mesh_handle = RendererMeshHandle::new(
-                    render_queue_key_fields.mesh_index.into(),
-                    NonZeroU32::new(render_queue_key_fields.mesh_version.into()).unwrap(),
+                    key_fields.mesh_index.into(),
+                    NonZeroU32::new(key_fields.mesh_version.into()).unwrap(),
                 );
 
-                if current_drawing_context.rendering_order > render_queue_key_fields.order {
-                    current_drawing_context.record_draw_accumulated_instances(&mut render_pass);
-                    current_drawing_context.change_rendering_order(render_queue_key_fields.order);
+                if current_drawing_context.rendering_order > key_fields.order {
+                    current_drawing_context.record_draw_accumulated_instances(render_pass);
+                    current_drawing_context.change_rendering_order(key_fields.order);
                 }
 
                 if current_drawing_context.shader_handle != Some(renderer_shader_handle) {
-                    current_drawing_context.record_draw_accumulated_instances(&mut render_pass);
+                    current_drawing_context.record_draw_accumulated_instances(render_pass);
                     current_drawing_context.change_shader(
-                        resource_manager,
-                        engine_parameters,
+                        world.resources,
+                        renderer.get_engine_parameters(),
                         renderer_shader_handle,
-                        &mut render_pass,
-                        camera,
+                        render_pass,
+                        self.camera.as_ref().unwrap(),
                     );
                 }
 
                 if current_drawing_context.material_handle != Some(renderer_material_handle) {
-                    current_drawing_context.record_draw_accumulated_instances(&mut render_pass);
+                    current_drawing_context.record_draw_accumulated_instances(render_pass);
                     current_drawing_context.change_material(
-                        resource_manager,
+                        world.resources,
                         renderer_material_handle,
-                        &mut render_pass,
+                        render_pass,
                     );
                 }
 
                 if current_drawing_context.mesh_handle != Some(renderer_mesh_handle) {
-                    current_drawing_context.record_draw_accumulated_instances(&mut render_pass);
+                    current_drawing_context.record_draw_accumulated_instances(render_pass);
                     current_drawing_context.change_mesh(
-                        resource_manager,
+                        world.resources,
                         renderer_mesh_handle,
-                        &mut render_pass,
+                        render_pass,
                     );
                 }
 
                 current_drawing_context.accumulate_instance();
 
                 if j == batch_size - 1 {
-                    current_drawing_context.record_draw_accumulated_instances(&mut render_pass);
+                    current_drawing_context.record_draw_accumulated_instances(render_pass);
                 }
             }
-
-            timer.end_context()?;
         }
 
-        drop(render_pass);
         Ok(())
     }
 }

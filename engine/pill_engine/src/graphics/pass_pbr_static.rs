@@ -586,11 +586,14 @@ impl Pass for PassPBRStatic {
                 .as_ref()
                 .unwrap();
             // Rotation stored in radians (game convention); match old shader's X*Y*Z quaternion order.
-            let q = Quat::from_rotation_x(transform.rotation.x)
+            let rotation = Quat::from_rotation_x(transform.rotation.x)
                 * Quat::from_rotation_y(transform.rotation.y)
                 * Quat::from_rotation_z(transform.rotation.z);
-            let model_mat: Mat4 =
-                Mat4::from_scale_rotation_translation(transform.scale, q, transform.position);
+            let model_mat: Mat4 = Mat4::from_scale_rotation_translation(
+                transform.scale,
+                rotation,
+                transform.position,
+            );
             let mvp: [[f32; 4]; 4] = (vp_mat * model_mat).to_cols_array_2d();
             let model: [[f32; 4]; 4] = model_mat.to_cols_array_2d();
 

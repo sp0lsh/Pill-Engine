@@ -218,6 +218,14 @@ impl PillRenderer for Renderer {
         self.state.color_format
     }
 
+    fn get_engine_parameters(&self) -> &crate::renderer::resources::EngineParameters {
+        &self.state.engine_parameters
+    }
+
+    fn get_camera_bind_group_layout(&self) -> wgpu::BindGroupLayout {
+        self.state.camera_bind_group_layout.clone()
+    }
+
     fn create_buffer(&mut self, desc: BufferDesc) -> Result<wgpu::Buffer> {
         let buffer = self.state.device.create_buffer(&wgpu::BufferDescriptor {
             label: desc.label,

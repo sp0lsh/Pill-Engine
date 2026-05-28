@@ -11,6 +11,7 @@ pub struct Handle<T> {
 }
 
 impl<T> Handle<T> {
+    /// Constructs a handle from a raw slot index and generation counter.
     #[inline]
     pub const fn from_parts(index: u32, generation: u32) -> Self {
         Self {
@@ -19,11 +20,13 @@ impl<T> Handle<T> {
         }
     }
 
+    /// Returns the slot index encoded in this handle.
     #[inline]
     pub const fn index(&self) -> u32 {
         self.raw as u32
     }
 
+    /// Returns the generation counter encoded in this handle.
     #[inline]
     pub const fn generation(&self) -> u32 {
         (self.raw >> 32) as u32
@@ -34,6 +37,7 @@ impl<T> Handle<T> {
         _marker: PhantomData,
     };
 
+    /// Returns `true` if this handle has not been set to the sentinel invalid value.
     #[inline]
     pub const fn is_valid(&self) -> bool {
         self.raw != u64::MAX
@@ -81,6 +85,7 @@ impl<K, V> Default for ResourcePool<K, V> {
 }
 
 impl<K, V> ResourcePool<K, V> {
+    /// Creates an empty pool with no allocated slots.
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
@@ -89,13 +94,14 @@ impl<K, V> ResourcePool<K, V> {
         }
     }
 
+    /// Inserts a resource and returns a handle that uniquely identifies this slot generation.
     #[inline]
     pub fn insert(&mut self, resource: V) -> Handle<K> {
         if let Some(idx) = self.free_list.pop() {
-            let e = &mut self.entries[idx as usize];
-            e.generation = e.generation.wrapping_add(1);
-            e.resource = Some(resource);
-            Handle::from_parts(idx, e.generation)
+            let entry = &mut self.entries[idx as usize];
+            entry.generation = entry.generation.wrapping_add(1);
+            entry.resource = Some(resource);
+            Handle::from_parts(idx, entry.generation)
         } else {
             let idx = self.entries.len() as u32;
             self.entries.push(Entry {
@@ -106,45 +112,48 @@ impl<K, V> ResourcePool<K, V> {
         }
     }
 
+    /// Removes the resource at the given handle; returns `None` if the handle is stale or out of bounds.
     #[inline]
     pub fn remove(&mut self, h: Handle<K>) -> Option<V> {
         let idx = h.index() as usize;
         if idx >= self.entries.len() {
             return None;
         }
-        let e = &mut self.entries[idx];
-        if e.generation != h.generation() {
+        let entry = &mut self.entries[idx];
+        if entry.generation != h.generation() {
             return None;
         }
-        let res = e.resource.take();
-        e.generation = e.generation.wrapping_add(1);
+        let res = entry.resource.take();
+        entry.generation = entry.generation.wrapping_add(1);
         self.free_list.push(h.index());
         res
     }
 
+    /// Returns a shared reference to the resource at the given handle, or `None` if stale or absent.
     #[inline]
     pub fn get(&self, h: Handle<K>) -> Option<&V> {
         let idx = h.index() as usize;
         if idx >= self.entries.len() {
             return None;
         }
-        let e = &self.entries[idx];
-        if e.generation != h.generation() {
+        let entry = &self.entries[idx];
+        if entry.generation != h.generation() {
             return None;
         }
-        e.resource.as_ref()
+        entry.resource.as_ref()
     }
 
+    /// Returns an exclusive reference to the resource at the given handle, or `None` if stale or absent.
     #[inline]
     pub fn get_mut(&mut self, h: Handle<K>) -> Option<&mut V> {
         let idx = h.index() as usize;
         if idx >= self.entries.len() {
             return None;
         }
-        let e = &mut self.entries[idx];
-        if e.generation != h.generation() {
+        let entry = &mut self.entries[idx];
+        if entry.generation != h.generation() {
             return None;
         }
-        e.resource.as_mut()
+        entry.resource.as_mut()
     }
 }

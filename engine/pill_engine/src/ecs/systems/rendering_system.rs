@@ -160,7 +160,7 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
             )?;
             Ok(())
         }
-        Err(e) => match e.downcast_ref::<RendererError>() {
+        Err(error) => match error.downcast_ref::<RendererError>() {
             Some(RendererError::SurfaceLost) => {
                 timer.end_context()?;
                 engine.system_manager.update_system_timer(
@@ -174,7 +174,7 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
             Some(RendererError::SurfaceOutOfMemory) => {
                 panic!("Critical: Renderer error, system out of memory");
             }
-            _ => Err(e),
+            _ => Err(error),
         },
     }
 }

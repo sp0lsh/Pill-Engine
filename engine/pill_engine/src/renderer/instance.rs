@@ -10,6 +10,7 @@ pub struct Instance {
 }
 
 impl Instance {
+    /// Creates an instance from a transform component's position, rotation, and scale.
     pub fn new(transform_component: &TransformComponent) -> Instance {
         Instance {
             transform: Matrix3f::from_cols(

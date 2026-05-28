@@ -451,8 +451,8 @@ impl Engine {
                             EngineError::NonReturnedSystemTimer(system_name.clone())
                         );
                     }
-                    Err(e) => {
-                        panic!("{}", EngineError::Other(e.to_string()));
+                    Err(error) => {
+                        panic!("{}", EngineError::Other(error.to_string()));
                     }
                 };
 

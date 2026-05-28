@@ -168,6 +168,12 @@ pub trait PillRenderer {
     /// Returns the surface texture format; used when creating pass render pipelines.
     fn get_surface_format(&self) -> wgpu::TextureFormat;
 
+    /// Returns the shared engine-parameters UBO; required by passes that use legacy RendererShader pipelines.
+    fn get_engine_parameters(&self) -> &crate::renderer::resources::EngineParameters;
+
+    /// Returns a clone of the camera bind-group layout; required to create a RendererCamera in pass init.
+    fn get_camera_bind_group_layout(&self) -> wgpu::BindGroupLayout;
+
     /// Allocates a GPU buffer with the given descriptor.
     fn create_buffer(&mut self, desc: BufferDesc) -> Result<wgpu::Buffer>;
 

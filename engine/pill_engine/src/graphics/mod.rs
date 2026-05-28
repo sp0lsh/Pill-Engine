@@ -6,6 +6,7 @@ mod dummy_renderer;
 mod egui;
 #[cfg(feature = "debug_ui")]
 mod pass_egui;
+mod pass_mesh;
 mod pass_pbr_static;
 mod render_queue;
 mod renderer;
@@ -24,6 +25,7 @@ pub use self::dummy_renderer::DummyRenderer;
 pub use egui::EguiUI;
 #[cfg(feature = "debug_ui")]
 pub use pass_egui::PassEgui;
+pub use pass_mesh::PassMesh;
 pub use pass_pbr_static::PassPBRStatic;
 
 pub use render_queue::{
