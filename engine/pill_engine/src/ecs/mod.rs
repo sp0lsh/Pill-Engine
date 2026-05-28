@@ -50,7 +50,8 @@ pub use components::transform_component::{
     get_model_matrix, get_normal_matrix, update_transform_matrices, TransformComponent,
 };
 
-pub use components::mesh_rendering_component::MeshRenderingComponent;
+pub use components::mesh_component::MeshComponent;
+pub use components::pbr_renderable_component::PbrRenderableComponent;
 
 pub use components::time_component::TimeComponent;
 

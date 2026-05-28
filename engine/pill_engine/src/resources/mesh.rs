@@ -1,5 +1,5 @@
 use crate::{
-    ecs::MeshRenderingComponent,
+    ecs::{MeshComponent, PbrRenderableComponent},
     engine::Engine,
     renderer::resources::RendererMesh,
     resources::{Resource, ResourceStorage},
@@ -188,18 +188,26 @@ impl Resource for Mesh {
             .resource_manager
             .remove_resource_by_name::<RendererMesh>(&self.name)?;
 
-        // Find mesh rendering components that use this mesh and update them
+        // Null out any MeshComponent or PbrRenderableComponent that references this mesh
         for (_scene_handle, scene) in engine.scene_manager.scenes.iter_mut() {
-            for (_entity_handle, mesh_rendering_component) in
-                scene.get_one_component_iterator_mut::<MeshRenderingComponent>()?
-            {
-                if let Some(mesh_handle) = mesh_rendering_component.mesh_handle {
-                    // If mesh rendering component has handle to this mesh
-                    if mesh_handle.data() == self_handle.data() {
-                        mesh_rendering_component.set_mesh_handle(Option::<MeshHandle>::None);
-                        mesh_rendering_component
-                            .update_render_queue_key(&engine.resource_manager)
-                            .unwrap();
+            if let Ok(iter) = scene.get_one_component_iterator_mut::<MeshComponent>() {
+                for (_entity_handle, mesh_component) in iter {
+                    if let Some(mesh_handle) = mesh_component.mesh_handle {
+                        if mesh_handle.data() == self_handle.data() {
+                            mesh_component.set_mesh_handle(Option::<MeshHandle>::None);
+                        }
+                    }
+                }
+            }
+            if let Ok(iter) = scene.get_one_component_iterator_mut::<PbrRenderableComponent>() {
+                for (_entity_handle, pbr_renderable_component) in iter {
+                    if let Some(mesh_handle) = pbr_renderable_component.mesh_handle {
+                        if mesh_handle.data() == self_handle.data() {
+                            pbr_renderable_component.set_mesh_handle(Option::<MeshHandle>::None);
+                            pbr_renderable_component
+                                .update_render_queue_key(&engine.resource_manager)
+                                .unwrap();
+                        }
                     }
                 }
             }

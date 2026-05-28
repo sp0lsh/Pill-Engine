@@ -22,14 +22,14 @@ const DEFERRED_REQUEST_VARIANT_SET_PBR_MATERIAL: usize = 3;
 
 // --- Builder ---
 
-pub struct MeshRenderingComponentBuilder {
-    component: MeshRenderingComponent,
+pub struct PbrRenderableComponentBuilder {
+    component: PbrRenderableComponent,
 }
 
-impl MeshRenderingComponentBuilder {
+impl PbrRenderableComponentBuilder {
     pub fn default() -> Self {
         Self {
-            component: MeshRenderingComponent::new(),
+            component: PbrRenderableComponent::new(),
         }
     }
 
@@ -48,15 +48,15 @@ impl MeshRenderingComponentBuilder {
         self
     }
 
-    pub fn build(self) -> MeshRenderingComponent {
+    pub fn build(self) -> PbrRenderableComponent {
         self.component
     }
 }
 
-// --- Mesh Rendering Component ---
+// --- PBR Renderable Component ---
 
 #[readonly::make]
-pub struct MeshRenderingComponent {
+pub struct PbrRenderableComponent {
     #[readonly]
     pub mesh_handle: Option<MeshHandle>,
     #[readonly]
@@ -70,15 +70,15 @@ pub struct MeshRenderingComponent {
     deferred_update_manager: Option<DeferredUpdateManagerPointer>,
 }
 
-impl Default for MeshRenderingComponent {
+impl Default for PbrRenderableComponent {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl MeshRenderingComponent {
-    pub fn builder() -> MeshRenderingComponentBuilder {
-        MeshRenderingComponentBuilder::default()
+impl PbrRenderableComponent {
+    pub fn builder() -> PbrRenderableComponentBuilder {
+        PbrRenderableComponentBuilder::default()
     }
 
     pub fn new() -> Self {
@@ -141,7 +141,6 @@ impl MeshRenderingComponent {
                 compose_render_queue_key(resource_manager, &material_handle, mesh_handle)
             };
 
-            // Compose render queue key and set it
             if let Ok(render_queue_key) = result {
                 self.render_queue_key = Some(render_queue_key);
             } else {
@@ -162,7 +161,7 @@ impl MeshRenderingComponent {
             let scene_handle = self.scene_handle.expect(
                 "Critical: Cannot post deferred update request. No SceneHandle set in Component",
             );
-            let request = DeferredUpdateComponentRequest::<MeshRenderingComponent>::new(
+            let request = DeferredUpdateComponentRequest::<PbrRenderableComponent>::new(
                 entity_handle,
                 scene_handle,
                 request_variant,
@@ -172,11 +171,11 @@ impl MeshRenderingComponent {
     }
 }
 
-impl PillTypeMapKey for MeshRenderingComponent {
-    type Storage = ComponentStorage<MeshRenderingComponent>;
+impl PillTypeMapKey for PbrRenderableComponent {
+    type Storage = ComponentStorage<PbrRenderableComponent>;
 }
 
-impl Component for MeshRenderingComponent {
+impl Component for PbrRenderableComponent {
     fn initialize(&mut self, engine: &mut Engine) -> Result<()> {
         // This component is using DeferredUpdateSystem so keep DeferredUpdateManager
         let deferred_update_component = engine
@@ -226,7 +225,6 @@ impl Component for MeshRenderingComponent {
     fn deferred_update(&mut self, engine: &mut Engine, request: usize) -> Result<()> {
         match request {
             DEFERRED_REQUEST_VARIANT_SET_MATERIAL => {
-                // Check if material handle is valid
                 engine
                     .get_resource::<Material>(&self.material_handle.unwrap())
                     .context(format!(
@@ -235,7 +233,6 @@ impl Component for MeshRenderingComponent {
                         "Material".specific_object_style()
                     ))?;
 
-                // Update mesh rendering queue
                 self.update_render_queue_key(&engine.resource_manager)?;
             }
             DEFERRED_REQUEST_VARIANT_SET_PBR_MATERIAL => {
@@ -250,7 +247,6 @@ impl Component for MeshRenderingComponent {
                 self.update_render_queue_key(&engine.resource_manager)?;
             }
             DEFERRED_REQUEST_VARIANT_SET_MESH => {
-                // Check if mesh handle is valid
                 engine
                     .get_resource::<Mesh>(&self.mesh_handle.unwrap())
                     .context(format!(
@@ -259,7 +255,6 @@ impl Component for MeshRenderingComponent {
                         "Mesh".specific_object_style()
                     ))?;
 
-                // Update mesh rendering queue
                 self.update_render_queue_key(&engine.resource_manager)?;
             }
             DEFERRED_REQUEST_VARIANT_UPDATE_RENDER_QUEUE => {

@@ -2,7 +2,7 @@ use crate::{
     config::*,
     ecs::{
         DeferredUpdateComponent, DeferredUpdateManagerPointer, DeferredUpdateResourceRequest,
-        MeshRenderingComponent,
+        PbrRenderableComponent,
     },
     engine::Engine,
     graphics::RENDER_QUEUE_KEY_ORDER,
@@ -559,12 +559,12 @@ impl Resource for Material {
         match request {
             DEFERRED_REQUEST_VARIANT_RENDERING_ORDER => {
                 for (_scene_handle, scene) in engine.scene_manager.scenes.iter_mut() {
-                    for (_entity_handle, mesh_rendering_component) in
-                        scene.get_one_component_iterator_mut::<MeshRenderingComponent>()?
+                    for (_entity_handle, pbr_renderable_component) in
+                        scene.get_one_component_iterator_mut::<PbrRenderableComponent>()?
                     {
-                        if let Some(material_handle) = mesh_rendering_component.material_handle {
+                        if let Some(material_handle) = pbr_renderable_component.material_handle {
                             if material_handle.data() == self.handle.unwrap().data() {
-                                mesh_rendering_component
+                                pbr_renderable_component
                                     .update_render_queue_key(&engine.resource_manager)
                                     .unwrap();
                             }

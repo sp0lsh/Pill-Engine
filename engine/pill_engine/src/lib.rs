@@ -64,8 +64,8 @@ pub mod game {
         ecs::{
             CameraAspectRatio, CameraComponent, Component, ComponentStorage, EntityHandle,
             GamepadAxis, GamepadButton, GlobalComponent, GlobalComponentStorage, InputComponent,
-            MeshRenderingComponent, PlayerId, SceneHandle, TimeComponent, TransformComponent,
-            UpdatePhase,
+            MeshComponent, PbrRenderableComponent, PlayerId, SceneHandle, TimeComponent,
+            TransformComponent, UpdatePhase,
         },
         engine::{Engine, KeyboardKey, MouseButton, PillGame},
         resources::{
@@ -103,8 +103,8 @@ mod internal_mod {
             networking_system_server, update_transform_matrices, AudioListenerComponent,
             AudioManagerComponent, AudioSourceComponent, CameraAspectRatio, CameraComponent,
             ComponentStorage, EguiClient, EntityHandle, EntityUpdate, InputComponent,
-            MeshRenderingComponent, NetworkEntityAction, NetworkEntityState,
-            NetworkManagerComponent, NetworkSide, NetworkStateComponent, NetworkUpdatePayload,
+            MeshComponent, NetworkEntityAction, NetworkEntityState, NetworkManagerComponent,
+            NetworkSide, NetworkStateComponent, NetworkUpdatePayload, PbrRenderableComponent,
             RenderStateComponent, Scene, TimeComponent, TransformComponent,
         },
         engine::{Engine, PillGame},
@@ -134,8 +134,8 @@ mod internal_mod {
             get_model_matrix, get_normal_matrix,
             get_renderer_resource_handle_from_camera_component, update_transform_matrices,
             CameraAspectRatio, CameraComponent, ComponentStorage, EguiClient, EntityHandle,
-            InputComponent, MeshRenderingComponent, RenderStateComponent, Scene, TimeComponent,
-            TransformComponent,
+            InputComponent, MeshComponent, PbrRenderableComponent, RenderStateComponent, Scene,
+            TimeComponent, TransformComponent,
         },
         engine::{Engine, PillGame},
         graphics::{

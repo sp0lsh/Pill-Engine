@@ -6,7 +6,7 @@ fn rotate_cubes_system(engine: &mut Engine) -> Result<()> {
     let dt = engine.get_global_component::<TimeComponent>()?.delta_time;
 
     for (_entity, transform, _mesh) in
-        engine.iterate_two_components_mut::<TransformComponent, MeshRenderingComponent>()?
+        engine.iterate_two_components_mut::<TransformComponent, PbrRenderableComponent>()?
     {
         let rot = transform.rotation;
         transform.set_rotation(Vector3f::new(
@@ -26,7 +26,7 @@ impl PillGame for WebGame {
 
         engine.register_component::<TransformComponent>(active_scene)?;
         engine.register_component::<CameraComponent>(active_scene)?;
-        engine.register_component::<MeshRenderingComponent>(active_scene)?;
+        engine.register_component::<PbrRenderableComponent>(active_scene)?;
 
         let cube_mesh_handle = engine.add_resource(Mesh::cube("cube", 2.0))?;
         let material_handle = engine.add_resource(
@@ -54,7 +54,7 @@ impl PillGame for WebGame {
             .build_entity(active_scene)
             .with_component(TransformComponent::new())
             .with_component(
-                MeshRenderingComponent::builder()
+                PbrRenderableComponent::builder()
                     .mesh(&cube_mesh_handle)
                     .pbr_material(&material_handle)
                     .build(),

@@ -1,7 +1,7 @@
 use crate::{
     config::RENDERING_SYSTEM,
     ecs::{
-        CameraAspectRatio, CameraComponent, EntityHandle, MeshRenderingComponent,
+        CameraAspectRatio, CameraComponent, EntityHandle, PbrRenderableComponent,
         RenderStateComponent, TransformComponent,
     },
     engine::Engine,
@@ -72,13 +72,13 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
     let mut _matrix_calculation_duration: f32 = 0.0;
     let mut add_to_render_queue_duration: f32 = 0.0;
 
-    for (entity_handle, _transform_component, mesh_rendering_component) in engine
+    for (entity_handle, _transform_component, pbr_renderable_component) in engine
         .scene_manager
-        .get_two_component_iterator_mut::<TransformComponent, MeshRenderingComponent>(
+        .get_two_component_iterator_mut::<TransformComponent, PbrRenderableComponent>(
         active_scene_handle,
     )? {
         let add_to_render_queue_start_time = Instant::now();
-        if let Some(render_queue_key) = mesh_rendering_component.render_queue_key {
+        if let Some(render_queue_key) = pbr_renderable_component.render_queue_key {
             let render_queue_item = RenderQueueItem {
                 key: render_queue_key,
                 entity_index: entity_handle.data().index,

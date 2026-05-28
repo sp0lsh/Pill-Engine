@@ -192,7 +192,7 @@ impl PillGame for WebGame {
 
         engine.register_component::<TransformComponent>(active_scene)?;
         engine.register_component::<CameraComponent>(active_scene)?;
-        engine.register_component::<MeshRenderingComponent>(active_scene)?;
+        engine.register_component::<PbrRenderableComponent>(active_scene)?;
         engine.register_component::<PillParticleComponent>(active_scene)?;
         engine.register_component::<HeroPillComponent>(active_scene)?;
 
@@ -258,7 +258,7 @@ impl PillGame for WebGame {
                     .build(),
             )
             .with_component(
-                MeshRenderingComponent::builder()
+                PbrRenderableComponent::builder()
                     .mesh(&pill_mesh)
                     .pbr_material(&hero_material)
                     .build(),
@@ -296,7 +296,7 @@ impl PillGame for WebGame {
                         .build(),
                 )
                 .with_component(
-                    MeshRenderingComponent::builder()
+                    PbrRenderableComponent::builder()
                         .mesh(&pill_mesh)
                         .pbr_material(&material)
                         .build(),
