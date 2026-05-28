@@ -114,32 +114,12 @@ pub const DEFAULT_UNLIT_SHADER_TINT_PARAMETER_SLOT_NAME: &str = "tint";
 pub const DEFAULT_UNLIT_MATERIAL_NAME: &str = "pill_engine_default_unlit_material";
 
 // Render queue key
-pub type RenderQueueKeyType = u64; // Defines size of renderer queue key (Should be u8, u16, u32, or u64)
+pub type RenderQueueKeyType = u64;
 
-pub const RENDER_QUEUE_KEY_ITEMS_LENGTH: [RenderQueueKeyType; 7] = [5, 8, 8, 8, 8, 8, 8]; // Defines size of next render queue key parts (bits from left to right)
-
-// 64-bit render sort key layout (u64)
-// +---------+--------------+---------------------------------------------------------+
-// | Bits    |   Field      |  Description                                            |
-// +---------+--------------+---------------------------------------------------------+
-// |  0..4  | Order        |  5 bits: render order (max 32)                           |
-// |  5..12 | Shader Idx   |  8 bits: shader index (max 256)                          |
-// | 13..20 | Shader Ver   |  8 bits: shader version (max 256)                        |
-// | 21..28 | Material Idx |  8 bits: material index (max 256)                        |
-// | 29..36 | Material Ver |  8 bits: material version (max 256)                      |
-// | 37..44 | Mesh Idx     |  8 bits: mesh index (max 256)                            |
-// | 45..52 | Mesh Ver     |  8 bits: mesh version (max 256)                          |
-// | 53..63 | Free         | 11 bits: free for future use                             |
-// +---------+--------------+---------------------------------------------------------+
-
-// Indices of render queue key parts (maps RENDER_QUEUE_KEY_ITEMS_LENGTH)
-pub const RENDER_QUEUE_KEY_RENDERING_ORDER_IDX: u8 = 0;
-pub const RENDER_QUEUE_KEY_SHADER_INDEX_IDX: u8 = 1;
-pub const RENDER_QUEUE_KEY_SHADER_VERSION_IDX: u8 = 2;
-pub const RENDER_QUEUE_KEY_MATERIAL_INDEX_IDX: u8 = 3;
-pub const RENDER_QUEUE_KEY_MATERIAL_VERSION_IDX: u8 = 4;
-pub const RENDER_QUEUE_KEY_MESH_INDEX_IDX: u8 = 5;
-pub const RENDER_QUEUE_KEY_MESH_VERSION_IDX: u8 = 6;
+// 64-bit render sort key layout (MSB → LSB):
+// bit: 63        59 58       51 50       43 42       35 34       27 26       19 18       11 10        0
+//      [  order   ] [shader_idx] [shader_ver] [ mat_idx ] [ mat_ver ] [mesh_idx ] [mesh_ver ] [  unused  ]
+//      [  5 bits  ] [  8 bits  ] [  8 bits  ] [  8 bits  ] [  8 bits  ] [  8 bits  ] [  8 bits  ] [ 11 bits ]
 
 // Default resource handle - Color texture
 pub const DEFAULT_COLOR_TEXTURE_HANDLE: TextureHandle = TextureHandle(PillSlotMapKeyData {

@@ -9,24 +9,12 @@ use crate::{
 
 use pill_core::PillSlotMapKey;
 
-use core::fmt::{self, Debug};
-use lazy_static::lazy_static;
+use core::fmt;
 use pill_core::Result;
-use std::{
-    cmp::Ordering,
-    convert::TryInto,
-    fmt::{Binary, Display},
-    ops::{Add, Not, Range, Shl, Sub},
-};
+use std::cmp::Ordering;
 
-// --- Render queue
+// --- Render queue item ---
 
-pub struct RenderQueue {
-    pub items: Vec<RenderQueueItem>,
-    pub context_change_indices: Vec<u32>,
-}
-
-// --- Render queue item
 pub struct RenderQueueItem {
     pub key: RenderQueueKey,
     pub entity_index: u32,
@@ -52,66 +40,53 @@ impl PartialEq for RenderQueueItem {
 
 impl Eq for RenderQueueItem {}
 
-impl Display for RenderQueueItem {
+impl fmt::Display for RenderQueueItem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "({} {})", self.key, self.entity_index)
     }
 }
 
-impl Debug for RenderQueueItem {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for RenderQueueItem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "({} {})", self.key, self.entity_index)
     }
 }
 
-// --- Render queue field ---
+// --- Render queue key type ---
 
-pub struct RenderQueueField<T> {
-    pub mask_range: core::ops::Range<T>,
-    pub mask_shift: T,
-    pub mask: T,
-    pub max: T,
+pub type RenderQueueKey = crate::config::RenderQueueKeyType;
+
+// --- Bit-field descriptors ---
+
+pub struct RenderQueueFieldDesc {
+    pub mask: RenderQueueKey,
+    pub mask_shift: u32,
+    pub max: RenderQueueKey,
 }
 
-pub trait Pow {
-    fn pow(self, exp: Self) -> Self;
-}
-
-impl<T> RenderQueueField<T>
-where
-    T: Copy
-        + Default
-        + Pow
-        + Binary
-        + Debug
-        + From<u8>
-        + From<u32>
-        + Ord
-        + Shl<Output = T>
-        + Sub<Output = T>
-        + Add<Output = T>
-        + Not<Output = T>,
-{
-    /// Computes mask, shift, and maximum value for a bit field at the given bit range.
-    pub fn new(mask_range: core::ops::Range<T>) -> Self {
-        let one: T = T::from(1_u8);
-        let two: T = T::from(2_u8);
-        let mask_range_length = mask_range.end - mask_range.start + one;
-        let mask_size: T = T::from(std::mem::size_of::<T>() as u8 * 8);
-        let mask_shift: T = mask_size - mask_range.end - one;
-        let mask: T = pill_core::create_bitmask_from_range::<T>(&mask_range);
-        let max: T = two.pow(mask_range_length) - one;
-
-        RenderQueueField {
-            mask_range,
-            mask_shift,
-            mask,
-            max,
-        }
+const fn field(mask: u64, shift: u32, max: u64) -> RenderQueueFieldDesc {
+    RenderQueueFieldDesc {
+        mask,
+        mask_shift: shift,
+        max,
     }
 }
 
-/// Creates pill engine render queue composed from order, material index, material version, mesh index, mesh version
+pub const RENDER_QUEUE_KEY_ORDER: RenderQueueFieldDesc = field(0xF800_0000_0000_0000, 59, 31);
+pub const RENDER_QUEUE_KEY_SHADER_INDEX: RenderQueueFieldDesc =
+    field(0x07F8_0000_0000_0000, 51, 255);
+pub const RENDER_QUEUE_KEY_SHADER_VERSION: RenderQueueFieldDesc =
+    field(0x0007_F800_0000_0000, 43, 255);
+pub const RENDER_QUEUE_KEY_MATERIAL_INDEX: RenderQueueFieldDesc =
+    field(0x0000_07F8_0000_0000, 35, 255);
+pub const RENDER_QUEUE_KEY_MATERIAL_VERSION: RenderQueueFieldDesc =
+    field(0x0000_0007_F800_0000, 27, 255);
+pub const RENDER_QUEUE_KEY_MESH_INDEX: RenderQueueFieldDesc = field(0x0000_0000_07F8_0000, 19, 255);
+pub const RENDER_QUEUE_KEY_MESH_VERSION: RenderQueueFieldDesc =
+    field(0x0000_0000_0007_F800, 11, 255);
+
+// --- Compose ---
+
 pub fn compose_render_queue_key(
     resource_manager: &ResourceManager,
     material_handle: &MaterialHandle,
@@ -133,23 +108,22 @@ pub fn compose_render_queue_key(
         let renderer_mesh_handle =
             resource_manager.get_resource_handle::<RendererMesh>(&mesh.name)?;
 
-        let render_queue_key: RenderQueueKey = ((RENDER_QUEUE_KEY_ORDER.max
-            - material.rendering_order as RenderQueueKey)
-            << RENDER_QUEUE_KEY_ORDER.mask_shift)
-            | ((renderer_shader_handle.data().index as RenderQueueKey)
-                << RENDER_QUEUE_KEY_SHADER_INDEX.mask_shift)
-            | ((renderer_shader_handle.data().version.get() as RenderQueueKey)
-                << RENDER_QUEUE_KEY_SHADER_VERSION.mask_shift)
-            | ((renderer_material_handle.data().index as RenderQueueKey)
-                << RENDER_QUEUE_KEY_MATERIAL_INDEX.mask_shift)
-            | ((renderer_material_handle.data().version.get() as RenderQueueKey)
-                << RENDER_QUEUE_KEY_MATERIAL_VERSION.mask_shift)
-            | ((renderer_mesh_handle.data().index as RenderQueueKey)
-                << RENDER_QUEUE_KEY_MESH_INDEX.mask_shift)
-            | ((renderer_mesh_handle.data().version.get() as RenderQueueKey)
-                << RENDER_QUEUE_KEY_MESH_VERSION.mask_shift);
-
-        Ok(render_queue_key)
+        Ok(
+            ((RENDER_QUEUE_KEY_ORDER.max - material.rendering_order as RenderQueueKey)
+                << RENDER_QUEUE_KEY_ORDER.mask_shift)
+                | ((renderer_shader_handle.data().index as RenderQueueKey)
+                    << RENDER_QUEUE_KEY_SHADER_INDEX.mask_shift)
+                | ((renderer_shader_handle.data().version.get() as RenderQueueKey)
+                    << RENDER_QUEUE_KEY_SHADER_VERSION.mask_shift)
+                | ((renderer_material_handle.data().index as RenderQueueKey)
+                    << RENDER_QUEUE_KEY_MATERIAL_INDEX.mask_shift)
+                | ((renderer_material_handle.data().version.get() as RenderQueueKey)
+                    << RENDER_QUEUE_KEY_MATERIAL_VERSION.mask_shift)
+                | ((renderer_mesh_handle.data().index as RenderQueueKey)
+                    << RENDER_QUEUE_KEY_MESH_INDEX.mask_shift)
+                | ((renderer_mesh_handle.data().version.get() as RenderQueueKey)
+                    << RENDER_QUEUE_KEY_MESH_VERSION.mask_shift),
+        )
     }
 }
 
@@ -174,8 +148,7 @@ pub fn compose_pbr_render_queue_key(
         let renderer_mesh_handle =
             resource_manager.get_resource_handle::<RendererMesh>(&mesh.name)?;
 
-        let render_queue_key: RenderQueueKey = ((renderer_shader_handle.data().index
-            as RenderQueueKey)
+        Ok(((renderer_shader_handle.data().index as RenderQueueKey)
             << RENDER_QUEUE_KEY_SHADER_INDEX.mask_shift)
             | ((renderer_shader_handle.data().version.get() as RenderQueueKey)
                 << RENDER_QUEUE_KEY_SHADER_VERSION.mask_shift)
@@ -186,11 +159,11 @@ pub fn compose_pbr_render_queue_key(
             | ((renderer_mesh_handle.data().index as RenderQueueKey)
                 << RENDER_QUEUE_KEY_MESH_INDEX.mask_shift)
             | ((renderer_mesh_handle.data().version.get() as RenderQueueKey)
-                << RENDER_QUEUE_KEY_MESH_VERSION.mask_shift);
-
-        Ok(render_queue_key)
+                << RENDER_QUEUE_KEY_MESH_VERSION.mask_shift))
     }
 }
+
+// --- Decompose ---
 
 pub struct RenderQueueKeyFields {
     pub order: u8,
@@ -202,85 +175,20 @@ pub struct RenderQueueKeyFields {
     pub mesh_version: u8,
 }
 
-/// Decomposes pill engine render queue key into separate fields
-pub fn decompose_render_queue_key(render_queue_key: RenderQueueKey) -> RenderQueueKeyFields {
-    let order: u8 = ((render_queue_key & RENDER_QUEUE_KEY_ORDER.mask as RenderQueueKey)
-        >> RENDER_QUEUE_KEY_ORDER.mask_shift as RenderQueueKey) as u8;
-    let shader_index: u8 = ((render_queue_key & RENDER_QUEUE_KEY_SHADER_INDEX.mask)
-        >> RENDER_QUEUE_KEY_SHADER_INDEX.mask_shift) as u8;
-    let shader_version: u8 = ((render_queue_key & RENDER_QUEUE_KEY_SHADER_VERSION.mask)
-        >> RENDER_QUEUE_KEY_SHADER_VERSION.mask_shift) as u8;
-    let material_index: u8 = ((render_queue_key & RENDER_QUEUE_KEY_MATERIAL_INDEX.mask)
-        >> RENDER_QUEUE_KEY_MATERIAL_INDEX.mask_shift) as u8;
-    let material_version: u8 = ((render_queue_key & RENDER_QUEUE_KEY_MATERIAL_VERSION.mask)
-        >> RENDER_QUEUE_KEY_MATERIAL_VERSION.mask_shift) as u8;
-    let mesh_index: u8 = ((render_queue_key & RENDER_QUEUE_KEY_MESH_INDEX.mask)
-        >> RENDER_QUEUE_KEY_MESH_INDEX.mask_shift) as u8;
-    let mesh_version: u8 = ((render_queue_key & RENDER_QUEUE_KEY_MESH_VERSION.mask)
-        >> RENDER_QUEUE_KEY_MESH_VERSION.mask_shift) as u8;
-
+pub fn decompose_render_queue_key(key: RenderQueueKey) -> RenderQueueKeyFields {
     RenderQueueKeyFields {
-        order,
-        shader_index,
-        shader_version,
-        material_index,
-        material_version,
-        mesh_index,
-        mesh_version,
+        order: ((key & RENDER_QUEUE_KEY_ORDER.mask) >> RENDER_QUEUE_KEY_ORDER.mask_shift) as u8,
+        shader_index: ((key & RENDER_QUEUE_KEY_SHADER_INDEX.mask)
+            >> RENDER_QUEUE_KEY_SHADER_INDEX.mask_shift) as u8,
+        shader_version: ((key & RENDER_QUEUE_KEY_SHADER_VERSION.mask)
+            >> RENDER_QUEUE_KEY_SHADER_VERSION.mask_shift) as u8,
+        material_index: ((key & RENDER_QUEUE_KEY_MATERIAL_INDEX.mask)
+            >> RENDER_QUEUE_KEY_MATERIAL_INDEX.mask_shift) as u8,
+        material_version: ((key & RENDER_QUEUE_KEY_MATERIAL_VERSION.mask)
+            >> RENDER_QUEUE_KEY_MATERIAL_VERSION.mask_shift) as u8,
+        mesh_index: ((key & RENDER_QUEUE_KEY_MESH_INDEX.mask)
+            >> RENDER_QUEUE_KEY_MESH_INDEX.mask_shift) as u8,
+        mesh_version: ((key & RENDER_QUEUE_KEY_MESH_VERSION.mask)
+            >> RENDER_QUEUE_KEY_MESH_VERSION.mask_shift) as u8,
     }
-}
-
-// --- Render queue fields config ---
-
-pub type RenderQueueKey = crate::config::RenderQueueKeyType;
-
-impl Pow for RenderQueueKey {
-    fn pow(self, exp: Self) -> Self {
-        RenderQueueKey::pow(self, exp.try_into().unwrap())
-    }
-}
-
-fn get_render_queue_key_item_range(render_queue_item_index: u8) -> Range<RenderQueueKey> {
-    let mut start: RenderQueueKey = 0;
-    let mut end: RenderQueueKey = 0;
-    for i in 0..render_queue_item_index + 1 {
-        start += if i.ne(&0) {
-            RENDER_QUEUE_KEY_ITEMS_LENGTH[i as usize - 1]
-        } else {
-            0
-        };
-        end += RENDER_QUEUE_KEY_ITEMS_LENGTH[i as usize];
-    }
-    start..(end - 1)
-}
-
-lazy_static! {
-    pub static ref RENDER_QUEUE_KEY_ORDER: RenderQueueField<RenderQueueKey> =
-        RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(
-            RENDER_QUEUE_KEY_RENDERING_ORDER_IDX
-        ));
-    pub static ref RENDER_QUEUE_KEY_SHADER_INDEX: RenderQueueField<RenderQueueKey> =
-        RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(
-            RENDER_QUEUE_KEY_SHADER_INDEX_IDX
-        ));
-    pub static ref RENDER_QUEUE_KEY_SHADER_VERSION: RenderQueueField<RenderQueueKey> =
-        RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(
-            RENDER_QUEUE_KEY_SHADER_VERSION_IDX
-        ));
-    pub static ref RENDER_QUEUE_KEY_MATERIAL_INDEX: RenderQueueField<RenderQueueKey> =
-        RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(
-            RENDER_QUEUE_KEY_MATERIAL_INDEX_IDX
-        ));
-    pub static ref RENDER_QUEUE_KEY_MATERIAL_VERSION: RenderQueueField<RenderQueueKey> =
-        RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(
-            RENDER_QUEUE_KEY_MATERIAL_VERSION_IDX
-        ));
-    pub static ref RENDER_QUEUE_KEY_MESH_INDEX: RenderQueueField<RenderQueueKey> =
-        RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(
-            RENDER_QUEUE_KEY_MESH_INDEX_IDX
-        ));
-    pub static ref RENDER_QUEUE_KEY_MESH_VERSION: RenderQueueField<RenderQueueKey> =
-        RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(
-            RENDER_QUEUE_KEY_MESH_VERSION_IDX
-        ));
 }
