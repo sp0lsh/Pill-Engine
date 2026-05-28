@@ -177,185 +177,9 @@ impl Pass for PassPBRStatic {
     }
 
     fn init(&mut self, renderer: &mut dyn PillRenderer) -> Result<()> {
-        let vertex_wgsl = r#"
-            struct Camera {
-              position: vec4<f32>,
-              viewProjection: mat4x4<f32>,
-            };
-            @group(0) @binding(0) var<uniform> UCamera: Camera;
-            struct PerDraw { mvp: mat4x4<f32>, model: mat4x4<f32>, };
-            @group(3) @binding(0) var<uniform> UPerDraw: PerDraw;
-            struct VSIn {
-              @location(0) pos: vec3<f32>,
-              @location(4) uv: vec2<f32>,
-              @location(5) normal: vec3<f32>,
-            };
-            struct VSOut {
-              @builtin(position) pos: vec4<f32>,
-              @location(0) uv: vec2<f32>,
-              @location(1) worldPos: vec3<f32>,
-              @location(2) worldNormal: vec3<f32>,
-            };
-            @vertex fn main(input: VSIn) -> VSOut {
-              var out: VSOut;
-              let worldPos4 = UPerDraw.model * vec4<f32>(input.pos, 1.0);
-              // TODO: Use a proper normal matrix (inverse-transpose of model) if non-uniform scaling is used.
-              let n = normalize((UPerDraw.model * vec4<f32>(input.normal, 0.0)).xyz);
-              out.pos = UPerDraw.mvp * vec4<f32>(input.pos, 1.0);
-              out.uv = input.uv;
-              out.worldPos = worldPos4.xyz;
-              out.worldNormal = n;
-              return out;
-            }
-        "#;
+        let vertex_wgsl = include_str!("../../res/shaders/pbr_static_vertex.wgsl");
 
-        let fragment_wgsl = r#"
-            // PBR material textures (set 1) — bindings match DEFAULT_LIT_SHADER layout (0-3).
-            @group(1) @binding(0) var texBaseColor: texture_2d<f32>;
-            @group(1) @binding(1) var smpBaseColor: sampler;
-            @group(1) @binding(2) var texNormal: texture_2d<f32>;
-            @group(1) @binding(3) var smpNormal: sampler;
-            // PBR params UBO (set 2) — 32 bytes matching default lit shader parameter layout:
-            // offset 0: baseColorFactor (vec3 + pad), offset 16: roughnessFactor (f32 + pad).
-            struct MaterialParams {
-              baseColorFactor: vec3<f32>, _pad0: f32,
-              roughnessFactor: f32, _pad1: f32, _pad2: vec2<f32>,
-            }
-            @group(2) @binding(0) var<uniform> UMaterial: MaterialParams;
-            struct Camera {
-              position: vec4<f32>,
-              viewProjection: mat4x4<f32>,
-            };
-            @group(0) @binding(0) var<uniform> UCamera: Camera;
-            // IBL resources in globals (set 0)
-            @group(0) @binding(1) var texIrradiance: texture_2d<f32>;
-            @group(0) @binding(2) var smpIrradiance: sampler;
-            @group(0) @binding(3) var texPrefilter: texture_2d<f32>;
-            @group(0) @binding(4) var smpPrefilter: sampler;
-            @group(0) @binding(5) var texBrdfLut: texture_2d<f32>;
-            @group(0) @binding(6) var smpBrdfLut: sampler;
-
-            const PI: f32 = 3.14159265359;
-
-            // Old renderer used a point light at (-10,10,-10); the resulting direction from light
-            // to scene (z≈12) is approximately (0.38,-0.38,0.84) — behind and above the camera.
-            // This strongly illuminates the camera-facing surface (normal≈(0,0,-1), NdotL≈0.84).
-            const LIGHT_DIR0: vec3<f32> = vec3<f32>( 0.38, -0.38,  0.84); // key: behind-camera, upper-left
-            const LIGHT_DIR1: vec3<f32> = vec3<f32>(-0.50,  0.50, -0.71); // rim: front upper-right
-            const LIGHT_DIR2: vec3<f32> = vec3<f32>( 0.00, -1.00,  0.00); // bounce: from below
-            const LIGHT_COL0: vec4<f32> = vec4<f32>(1.0, 0.90, 0.80,  8.0); // warm key
-            const LIGHT_COL1: vec4<f32> = vec4<f32>(0.5, 0.55, 1.00,  2.5); // cool rim
-            const LIGHT_COL2: vec4<f32> = vec4<f32>(0.8, 0.80, 0.80,  0.8); // neutral bounce
-
-            fn DistributionGGX(N: vec3<f32>, H: vec3<f32>, roughness: f32) -> f32 {
-              // Add epsilon to avoid singularities at very low roughness.
-              let a = max(roughness * roughness, 0.0025);
-              let a2 = a * a;
-              let NdotH = max(dot(N, H), 0.0);
-              let NdotH2 = NdotH * NdotH;
-              let denom = (NdotH2 * (a2 - 1.0) + 1.0);
-              return a2 / (PI * denom * denom + 1e-7);
-            }
-
-            fn GeometrySchlickGGX(NdotV: f32, roughness: f32) -> f32 {
-              // Heitz's k for direct lighting approximation.
-              let r = roughness + 1.0;
-              let k = (r * r) / 8.0;
-              let denom = NdotV * (1.0 - k) + k;
-              return NdotV / denom;
-            }
-
-            fn GeometrySmith(N: vec3<f32>, V: vec3<f32>, L: vec3<f32>, roughness: f32) -> f32 {
-              let NdotV = max(dot(N, V), 0.0);
-              let NdotL = max(dot(N, L), 0.0);
-              let ggx2 = GeometrySchlickGGX(NdotV, roughness);
-              let ggx1 = GeometrySchlickGGX(NdotL, roughness);
-              return ggx1 * ggx2;
-            }
-
-            fn fresnelSchlick(cosTheta: f32, F0: vec3<f32>) -> vec3<f32> {
-              return F0 + (vec3<f32>(1.0, 1.0, 1.0) - F0) * pow(1.0 - cosTheta, 5.0);
-            }
-
-            fn fresnelSchlickRoughness(cosTheta: f32, F0: vec3<f32>, roughness: f32) -> vec3<f32> {
-              return F0 + (max(vec3<f32>(1.0, 1.0, 1.0) * (1.0 - roughness), F0) - F0) * pow(1.0 - cosTheta, 5.0);
-            }
-
-            fn dir_to_equirect_uv(dir: vec3<f32>) -> vec2<f32> {
-              let d = normalize(dir);
-              let u = 0.5 + atan2(d.x, -d.z) / (2.0 * PI);
-              let v = 0.5 - asin(clamp(d.y, -1.0, 1.0)) / PI;
-              return vec2<f32>(fract(u), clamp(v, 0.0, 1.0));
-            }
-
-            fn accumulateDirLight(
-              N: vec3<f32>, V: vec3<f32>, F0: vec3<f32>,
-              albedo: vec3<f32>, roughness: f32, metallic: f32,
-              lightDir: vec3<f32>, lightColor: vec4<f32>
-            ) -> vec3<f32> {
-              // lightDir is direction from light to surface; incoming L is opposite.
-              let L = normalize(-lightDir.xyz);
-              let H = normalize(V + L);
-              let radiance = lightColor.w * lightColor.xyz;
-              let NDF = DistributionGGX(N, H, roughness);
-              let G   = GeometrySmith(N, V, L, roughness);
-              let F   = fresnelSchlick(max(dot(H, V), 0.0), F0);
-              let kS = F;
-              var kD = vec3<f32>(1.0, 1.0, 1.0) - kS;
-              kD = kD * (1.0 - metallic);
-              let numerator = NDF * G * F;
-              let denominator = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0) + 0.0001;
-              let specular = numerator / vec3<f32>(denominator, denominator, denominator);
-              let NdotL = max(dot(N, L), 0.0);
-              return (kD * (albedo / PI) + specular) * radiance * NdotL;
-            }
-
-            struct FSOut {
-              @location(0) color: vec4<f32>,
-            };
-
-            @fragment fn main(
-              @location(0) uv: vec2<f32>,
-              @location(1) WorldPos: vec3<f32>,
-              @location(2) NormalIn: vec3<f32>,
-            ) -> FSOut {
-              var albedo = textureSample(texBaseColor, smpBaseColor, uv).rgb * UMaterial.baseColorFactor;
-              // roughnessFactor maps to specularity slot (offset 16 in current material layout).
-              // metallic is not stored yet — default to 0.0 (dielectric).
-              var roughness = clamp(UMaterial.roughnessFactor, 0.045, 0.99);
-              let metallic = 0.0;
-              // TODO: Support normal mapping (tangent space) and AO texture.
-              let N = normalize(NormalIn);
-              let V = normalize(UCamera.position.xyz - WorldPos);
-              var F0 = vec3<f32>(0.04, 0.04, 0.04);
-              F0 = mix(F0, albedo, vec3<f32>(metallic, metallic, metallic));
-              var Lo = vec3<f32>(0.0, 0.0, 0.0);
-              Lo = Lo + accumulateDirLight(N, V, F0, albedo, roughness, metallic, LIGHT_DIR0, LIGHT_COL0);
-              Lo = Lo + accumulateDirLight(N, V, F0, albedo, roughness, metallic, LIGHT_DIR1, LIGHT_COL1);
-              Lo = Lo + accumulateDirLight(N, V, F0, albedo, roughness, metallic, LIGHT_DIR2, LIGHT_COL2);
-              var color = Lo;
-              // Diffuse IBL ambient.
-              let kS = fresnelSchlick(max(dot(N, V), 0.0), F0);
-              let kD = (vec3<f32>(1.0, 1.0, 1.0) - kS) * (1.0 - metallic);
-              let uvIrr = dir_to_equirect_uv(N);
-              let irradiance = textureSample(texIrradiance, smpIrradiance, uvIrr).rgb;
-              let ambient_diffuse = kD * irradiance * albedo;
-              // Specular IBL.
-              let R = reflect(-V, N);
-              let MAX_REFLECTION_LOD: f32 = 4.0;
-              let prefilteredColor = textureSampleLevel(
-                texPrefilter, smpPrefilter, dir_to_equirect_uv(R), roughness * MAX_REFLECTION_LOD
-              ).rgb;
-              let envBRDF = textureSample(texBrdfLut, smpBrdfLut, vec2<f32>(max(dot(N, V), 0.0), roughness)).rg;
-              let F = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
-              let specular = prefilteredColor * (F * envBRDF.x + envBRDF.y);
-              let ambient = vec3<f32>(0.04, 0.04, 0.04) * albedo;
-              color = color + ambient_diffuse + specular + ambient;
-              var out: FSOut;
-              out.color = vec4<f32>(color, 1.0);
-              return out;
-            }
-        "#;
+        let fragment_wgsl = include_str!("../../res/shaders/pbr_static_fragment.wgsl");
 
         let surface_format = renderer.get_surface_format();
         let bind_groups: Vec<Vec<wgpu::BindGroupLayoutEntry>> = vec![
@@ -486,11 +310,11 @@ impl Pass for PassPBRStatic {
             label: Some("pass_pbr_static_pipeline"),
             vs: ShaderDesc {
                 source: vertex_wgsl,
-                entry_func: "main",
+                entry_func: "vs_main",
             },
             ps: ShaderDesc {
                 source: fragment_wgsl,
-                entry_func: "main",
+                entry_func: "fs_main",
             },
             vertex_buffers: &[
                 <crate::renderer::resources::RendererMesh as crate::renderer::resources::Vertex>::data_layout_descriptor(),
