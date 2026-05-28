@@ -3,8 +3,6 @@
 #[cfg(feature = "headless")]
 mod dummy_renderer;
 #[cfg(feature = "debug_ui")]
-mod egui;
-#[cfg(feature = "debug_ui")]
 mod pass_egui;
 mod pass_mesh;
 mod pass_pbr_static;
@@ -21,8 +19,6 @@ pub use renderer::{
 
 #[cfg(feature = "headless")]
 pub use self::dummy_renderer::DummyRenderer;
-#[cfg(feature = "debug_ui")]
-pub use egui::EguiUI;
 #[cfg(feature = "debug_ui")]
 pub use pass_egui::PassEgui;
 pub use pass_mesh::PassMesh;
