@@ -3,9 +3,7 @@ use crate::{
     app_config::EngineConfig,
     ecs::{CameraComponent, ComponentStorage, EguiClient, EntityHandle, TransformComponent},
     graphics::RenderQueueItem,
-    resources::{
-        ResourceManager, ShaderParameterSlot, ShaderTextureSlot, TextureType,
-    },
+    resources::{ResourceManager, ShaderParameterSlot, ShaderTextureSlot, TextureType},
 };
 
 use pill_core::Timer;
@@ -183,11 +181,7 @@ pub trait PillRenderer {
     fn create_depth_texture(&mut self, label: &str) -> Result<RendererTextureHandle>;
 
     /// Returns the texture view for a previously created render target, or `None` if not found.
-    fn get_render_target_view(
-        &self,
-        handle: RendererTextureHandle,
-    ) -> Option<&wgpu::TextureView>;
-
+    fn get_render_target_view(&self, handle: RendererTextureHandle) -> Option<&wgpu::TextureView>;
 }
 
 pub type Renderer = Box<dyn PillRenderer>;

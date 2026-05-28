@@ -118,8 +118,7 @@ impl Resource for PBRMaterial {
                 let h = engine
                     .resource_manager
                     .get_resource_handle::<RendererTexture>(&tex_name)?;
-                resolved_textures
-                    .insert(DEFAULT_LIT_SHADER_COLOR_TEXTURE_SLOT_NAME.to_string(), h);
+                resolved_textures.insert(DEFAULT_LIT_SHADER_COLOR_TEXTURE_SLOT_NAME.to_string(), h);
             }
 
             if let Some(texture_handle) = self.normal_texture {
@@ -315,8 +314,6 @@ impl Material {
 
         Ok(())
     }
-
-
 
     pub fn set_rendering_order(&mut self, order: u8) -> Result<()> {
         let error = EngineError::WrongRenderingOrder(
@@ -619,7 +616,8 @@ impl Resource for Material {
                         let renderer_shader = engine
                             .resource_manager
                             .get_resource::<RendererShader>(&renderer_mat.shader_handle)?;
-                        let mut resolved: HashMap<String, crate::graphics::RendererTextureHandle> = HashMap::new();
+                        let mut resolved: HashMap<String, crate::graphics::RendererTextureHandle> =
+                            HashMap::new();
                         for (slot_name, mat_tex) in &self.textures {
                             let tex = engine
                                 .resource_manager

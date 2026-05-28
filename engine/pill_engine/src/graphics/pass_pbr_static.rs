@@ -10,7 +10,6 @@ use glam::{Mat3, Mat4, Quat, Vec3};
 use pill_core::{PillSlotMapKey, Result};
 use std::num::NonZeroU32;
 
-
 /// Camera uniform layout: position (vec4) + view-projection matrix (mat4x4).
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -553,10 +552,8 @@ impl Pass for PassPBRStatic {
                         buffer: &per_draw_buffer,
                         offset: 0,
                         size: Some(
-                            std::num::NonZeroU64::new(
-                                std::mem::size_of::<PerDrawStd140>() as u64,
-                            )
-                            .unwrap(),
+                            std::num::NonZeroU64::new(std::mem::size_of::<PerDrawStd140>() as u64)
+                                .unwrap(),
                         ),
                     }),
                 }],
@@ -568,7 +565,11 @@ impl Pass for PassPBRStatic {
             let device = renderer.get_device();
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("ibl_fallback"),
-                size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -590,7 +591,11 @@ impl Pass for PassPBRStatic {
                 bytes_per_row: Some(4),
                 rows_per_image: Some(1),
             },
-            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
         );
         let ibl_fallback_view =
             ibl_fallback_texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -805,11 +810,17 @@ impl Pass for PassPBRStatic {
                 .iter_mut()
                 .find(|batch| batch.mesh_handle == visible.mesh_handle)
             {
-                batch.instances.push(PerDrawStd140 { mvp: visible.mvp, model: visible.model });
+                batch.instances.push(PerDrawStd140 {
+                    mvp: visible.mvp,
+                    model: visible.model,
+                });
             } else {
                 group.batches.push(MeshBatch {
                     mesh_handle: visible.mesh_handle,
-                    instances: vec![PerDrawStd140 { mvp: visible.mvp, model: visible.model }],
+                    instances: vec![PerDrawStd140 {
+                        mvp: visible.mvp,
+                        model: visible.model,
+                    }],
                     base_offset_u32: 0,
                 });
             }
@@ -820,7 +831,11 @@ impl Pass for PassPBRStatic {
             .groups_buffer
             .iter()
             .map(|group| {
-                group.batches.iter().map(|batch| batch.instances.len() as u64).sum::<u64>()
+                group
+                    .batches
+                    .iter()
+                    .map(|batch| batch.instances.len() as u64)
+                    .sum::<u64>()
             })
             .sum();
         if self.per_draw_capacity < needed {
@@ -836,18 +851,17 @@ impl Pass for PassPBRStatic {
             for batch in group.batches.iter_mut() {
                 batch.base_offset_u32 = next_offset_u32;
                 for per_draw in &batch.instances {
-                    self.staging_buffer.extend_from_slice(bytemuck::bytes_of(per_draw));
+                    self.staging_buffer
+                        .extend_from_slice(bytemuck::bytes_of(per_draw));
                     let pad =
                         (self.per_draw_stride as usize) - std::mem::size_of::<PerDrawStd140>();
                     self.staging_buffer.extend(std::iter::repeat(0u8).take(pad));
-                    next_offset_u32 =
-                        next_offset_u32.wrapping_add(self.per_draw_stride as u32);
+                    next_offset_u32 = next_offset_u32.wrapping_add(self.per_draw_stride as u32);
                 }
             }
         }
         {
-            let state_ref: &PassPBRStaticState =
-                unsafe { self.state.as_ref().unwrap_unchecked() };
+            let state_ref: &PassPBRStaticState = unsafe { self.state.as_ref().unwrap_unchecked() };
             renderer
                 .get_queue()
                 .write_buffer(&state_ref.per_draw_buffer, 0, &self.staging_buffer);
@@ -885,8 +899,7 @@ impl Pass for PassPBRStatic {
         });
 
         // Record draw commands: bind pipeline → globals → material → per-draw per instance.
-        let state_ref: &PassPBRStaticState =
-            unsafe { self.state.as_ref().unwrap_unchecked() };
+        let state_ref: &PassPBRStaticState = unsafe { self.state.as_ref().unwrap_unchecked() };
         for group in &self.groups_buffer {
             render_pass.set_pipeline(unsafe { &*group.pipeline });
             render_pass.set_bind_group(
@@ -901,9 +914,10 @@ impl Pass for PassPBRStatic {
                 .unwrap();
 
             // Skip materials that don't have PBR-compatible bind groups.
-            let (Some(textures_bg), Some(params_bg)) =
-                (mat.textures_bind_group.as_ref(), mat.parameters_bind_group.as_ref())
-            else {
+            let (Some(textures_bg), Some(params_bg)) = (
+                mat.textures_bind_group.as_ref(),
+                mat.parameters_bind_group.as_ref(),
+            ) else {
                 continue;
             };
             render_pass.set_bind_group(MATERIAL_BIND_GROUP_TEXTURES as u32, textures_bg, &[]);
@@ -915,10 +929,8 @@ impl Pass for PassPBRStatic {
                     .get_resource::<RendererMesh>(&batch.mesh_handle)
                     .unwrap();
                 render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                render_pass.set_index_buffer(
-                    mesh.index_buffer.slice(..),
-                    wgpu::IndexFormat::Uint32,
-                );
+                render_pass
+                    .set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 for instance_index in 0..batch.instances.len() {
                     let offset = batch
                         .base_offset_u32

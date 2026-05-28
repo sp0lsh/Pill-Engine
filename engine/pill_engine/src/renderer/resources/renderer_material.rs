@@ -1,17 +1,17 @@
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports, unused_variables))]
 
-use pill_core::{debug, LogContext, PillStyle, PillTypeMapKey, RendererError, Result};
+use crate::graphics::RendererShaderHandle;
+use crate::graphics::RendererTextureHandle;
 use crate::{
     config::{DEFAULT_COLOR_TEXTURE_NAME, DEFAULT_NORMAL_TEXTURE_NAME},
     graphics::RendererMaterialHandle,
-    renderer::resources::{RendererTexture, RendererShader},
+    renderer::resources::{RendererShader, RendererTexture},
     resources::{
-        MaterialParameter, Resource, ResourceManager, ResourceStorage,
-        ShaderParameterSlot, ShaderParameterType, ShaderTextureSlot,
+        MaterialParameter, Resource, ResourceManager, ResourceStorage, ShaderParameterSlot,
+        ShaderParameterType, ShaderTextureSlot,
     },
 };
-use crate::graphics::RendererShaderHandle;
-use crate::graphics::RendererTextureHandle;
+use pill_core::{debug, LogContext, PillStyle, PillTypeMapKey, RendererError, Result};
 
 use std::collections::HashMap;
 
@@ -38,7 +38,9 @@ impl RendererMaterial {
 
         let shader = resource_manager
             .get_resource::<RendererShader>(&shader_handle)
-            .map_err(|_| -> pill_core::PillError { pill_core::PillError::from(RendererError::RendererResourceNotFound) })?;
+            .map_err(|_| -> pill_core::PillError {
+                pill_core::PillError::from(RendererError::RendererResourceNotFound)
+            })?;
 
         let parameter_slots = &shader.parameter_slots;
         let texture_slots = &shader.texture_slots;
@@ -171,7 +173,9 @@ impl RendererMaterial {
                     };
                     resource_manager
                         .get_resource_handle::<RendererTexture>(default_name)
-                        .map_err(|_| -> pill_core::PillError { pill_core::PillError::from(RendererError::RendererResourceNotFound) })?
+                        .map_err(|_| -> pill_core::PillError {
+                            pill_core::PillError::from(RendererError::RendererResourceNotFound)
+                        })?
                 }
             };
             slot_handles.push((slot.texture_binding, slot.sampler_binding, handle));
@@ -181,7 +185,9 @@ impl RendererMaterial {
         for (texture_binding, sampler_binding, handle) in &slot_handles {
             let texture = resource_manager
                 .get_resource::<RendererTexture>(handle)
-                .map_err(|_| -> pill_core::PillError { pill_core::PillError::from(RendererError::RendererResourceNotFound) })?;
+                .map_err(|_| -> pill_core::PillError {
+                    pill_core::PillError::from(RendererError::RendererResourceNotFound)
+                })?;
             entries.push(wgpu::BindGroupEntry {
                 binding: *texture_binding,
                 resource: wgpu::BindingResource::TextureView(&texture.texture_view),

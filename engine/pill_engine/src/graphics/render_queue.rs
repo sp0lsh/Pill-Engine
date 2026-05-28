@@ -132,13 +132,21 @@ pub fn compose_render_queue_key(
         let renderer_mesh_handle =
             resource_manager.get_resource_handle::<RendererMesh>(&mesh.name)?;
 
-        let render_queue_key: RenderQueueKey = ((RENDER_QUEUE_KEY_ORDER.max - material.rendering_order as RenderQueueKey) << RENDER_QUEUE_KEY_ORDER.mask_shift)
-            | ((renderer_shader_handle.data().index as RenderQueueKey) << RENDER_QUEUE_KEY_SHADER_INDEX.mask_shift)
-            | ((renderer_shader_handle.data().version.get() as RenderQueueKey) << RENDER_QUEUE_KEY_SHADER_VERSION.mask_shift)
-            | ((renderer_material_handle.data().index as RenderQueueKey) << RENDER_QUEUE_KEY_MATERIAL_INDEX.mask_shift)
-            | ((renderer_material_handle.data().version.get() as RenderQueueKey) << RENDER_QUEUE_KEY_MATERIAL_VERSION.mask_shift)
-            | ((renderer_mesh_handle.data().index as RenderQueueKey) << RENDER_QUEUE_KEY_MESH_INDEX.mask_shift)
-            | ((renderer_mesh_handle.data().version.get() as RenderQueueKey) << RENDER_QUEUE_KEY_MESH_VERSION.mask_shift);
+        let render_queue_key: RenderQueueKey = ((RENDER_QUEUE_KEY_ORDER.max
+            - material.rendering_order as RenderQueueKey)
+            << RENDER_QUEUE_KEY_ORDER.mask_shift)
+            | ((renderer_shader_handle.data().index as RenderQueueKey)
+                << RENDER_QUEUE_KEY_SHADER_INDEX.mask_shift)
+            | ((renderer_shader_handle.data().version.get() as RenderQueueKey)
+                << RENDER_QUEUE_KEY_SHADER_VERSION.mask_shift)
+            | ((renderer_material_handle.data().index as RenderQueueKey)
+                << RENDER_QUEUE_KEY_MATERIAL_INDEX.mask_shift)
+            | ((renderer_material_handle.data().version.get() as RenderQueueKey)
+                << RENDER_QUEUE_KEY_MATERIAL_VERSION.mask_shift)
+            | ((renderer_mesh_handle.data().index as RenderQueueKey)
+                << RENDER_QUEUE_KEY_MESH_INDEX.mask_shift)
+            | ((renderer_mesh_handle.data().version.get() as RenderQueueKey)
+                << RENDER_QUEUE_KEY_MESH_VERSION.mask_shift);
 
         Ok(render_queue_key)
     }
@@ -165,13 +173,19 @@ pub fn compose_pbr_render_queue_key(
         let renderer_mesh_handle =
             resource_manager.get_resource_handle::<RendererMesh>(&mesh.name)?;
 
-        let render_queue_key: RenderQueueKey =
-            ((renderer_shader_handle.data().index as RenderQueueKey) << RENDER_QUEUE_KEY_SHADER_INDEX.mask_shift)
-            | ((renderer_shader_handle.data().version.get() as RenderQueueKey) << RENDER_QUEUE_KEY_SHADER_VERSION.mask_shift)
-            | ((renderer_material_handle.data().index as RenderQueueKey) << RENDER_QUEUE_KEY_MATERIAL_INDEX.mask_shift)
-            | ((renderer_material_handle.data().version.get() as RenderQueueKey) << RENDER_QUEUE_KEY_MATERIAL_VERSION.mask_shift)
-            | ((renderer_mesh_handle.data().index as RenderQueueKey) << RENDER_QUEUE_KEY_MESH_INDEX.mask_shift)
-            | ((renderer_mesh_handle.data().version.get() as RenderQueueKey) << RENDER_QUEUE_KEY_MESH_VERSION.mask_shift);
+        let render_queue_key: RenderQueueKey = ((renderer_shader_handle.data().index
+            as RenderQueueKey)
+            << RENDER_QUEUE_KEY_SHADER_INDEX.mask_shift)
+            | ((renderer_shader_handle.data().version.get() as RenderQueueKey)
+                << RENDER_QUEUE_KEY_SHADER_VERSION.mask_shift)
+            | ((renderer_material_handle.data().index as RenderQueueKey)
+                << RENDER_QUEUE_KEY_MATERIAL_INDEX.mask_shift)
+            | ((renderer_material_handle.data().version.get() as RenderQueueKey)
+                << RENDER_QUEUE_KEY_MATERIAL_VERSION.mask_shift)
+            | ((renderer_mesh_handle.data().index as RenderQueueKey)
+                << RENDER_QUEUE_KEY_MESH_INDEX.mask_shift)
+            | ((renderer_mesh_handle.data().version.get() as RenderQueueKey)
+                << RENDER_QUEUE_KEY_MESH_VERSION.mask_shift);
 
         Ok(render_queue_key)
     }
@@ -240,11 +254,32 @@ fn get_render_queue_key_item_range(render_queue_item_index: u8) -> Range<RenderQ
 }
 
 lazy_static! {
-    pub static ref RENDER_QUEUE_KEY_ORDER: RenderQueueField<RenderQueueKey> = RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(RENDER_QUEUE_KEY_RENDERING_ORDER_IDX));
-    pub static ref RENDER_QUEUE_KEY_SHADER_INDEX: RenderQueueField<RenderQueueKey> = RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(RENDER_QUEUE_KEY_SHADER_INDEX_IDX));
-    pub static ref RENDER_QUEUE_KEY_SHADER_VERSION: RenderQueueField<RenderQueueKey> = RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(RENDER_QUEUE_KEY_SHADER_VERSION_IDX));
-    pub static ref RENDER_QUEUE_KEY_MATERIAL_INDEX: RenderQueueField<RenderQueueKey> = RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(RENDER_QUEUE_KEY_MATERIAL_INDEX_IDX));
-    pub static ref RENDER_QUEUE_KEY_MATERIAL_VERSION: RenderQueueField<RenderQueueKey> = RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(RENDER_QUEUE_KEY_MATERIAL_VERSION_IDX));
-    pub static ref RENDER_QUEUE_KEY_MESH_INDEX: RenderQueueField<RenderQueueKey> = RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(RENDER_QUEUE_KEY_MESH_INDEX_IDX));
-    pub static ref RENDER_QUEUE_KEY_MESH_VERSION: RenderQueueField<RenderQueueKey> = RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(RENDER_QUEUE_KEY_MESH_VERSION_IDX));
+    pub static ref RENDER_QUEUE_KEY_ORDER: RenderQueueField<RenderQueueKey> =
+        RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(
+            RENDER_QUEUE_KEY_RENDERING_ORDER_IDX
+        ));
+    pub static ref RENDER_QUEUE_KEY_SHADER_INDEX: RenderQueueField<RenderQueueKey> =
+        RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(
+            RENDER_QUEUE_KEY_SHADER_INDEX_IDX
+        ));
+    pub static ref RENDER_QUEUE_KEY_SHADER_VERSION: RenderQueueField<RenderQueueKey> =
+        RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(
+            RENDER_QUEUE_KEY_SHADER_VERSION_IDX
+        ));
+    pub static ref RENDER_QUEUE_KEY_MATERIAL_INDEX: RenderQueueField<RenderQueueKey> =
+        RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(
+            RENDER_QUEUE_KEY_MATERIAL_INDEX_IDX
+        ));
+    pub static ref RENDER_QUEUE_KEY_MATERIAL_VERSION: RenderQueueField<RenderQueueKey> =
+        RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(
+            RENDER_QUEUE_KEY_MATERIAL_VERSION_IDX
+        ));
+    pub static ref RENDER_QUEUE_KEY_MESH_INDEX: RenderQueueField<RenderQueueKey> =
+        RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(
+            RENDER_QUEUE_KEY_MESH_INDEX_IDX
+        ));
+    pub static ref RENDER_QUEUE_KEY_MESH_VERSION: RenderQueueField<RenderQueueKey> =
+        RenderQueueField::<RenderQueueKey>::new(get_render_queue_key_item_range(
+            RENDER_QUEUE_KEY_MESH_VERSION_IDX
+        ));
 }

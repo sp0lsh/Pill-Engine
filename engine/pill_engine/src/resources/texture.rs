@@ -212,12 +212,13 @@ impl Resource for Texture {
                 let renderer_shader = engine
                     .resource_manager
                     .get_resource::<crate::renderer::resources::RendererShader>(
-                        &renderer_mat.shader_handle,
-                    )?;
+                    &renderer_mat.shader_handle,
+                )?;
                 let material = engine
                     .resource_manager
                     .get_resource_by_name::<Material>(mat_name)?;
-                let mut resolved: HashMap<String, crate::graphics::RendererTextureHandle> = HashMap::new();
+                let mut resolved: HashMap<String, crate::graphics::RendererTextureHandle> =
+                    HashMap::new();
                 for (slot_name, mat_tex) in &material.textures {
                     let tex = engine
                         .resource_manager

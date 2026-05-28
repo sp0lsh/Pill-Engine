@@ -12,7 +12,7 @@ use crate::renderer::{
 use crate::{
     ecs::ComponentStorage,
     graphics::{RenderQueueItem, RendererMaterialHandle, RendererMeshHandle, RendererShaderHandle},
-    internal::{TransformComponent, decompose_render_queue_key},
+    internal::{decompose_render_queue_key, TransformComponent},
     resources::ResourceManager,
 };
 use pill_core::{debug, LogContext, PillStyle, RendererError, Timer};
@@ -261,8 +261,7 @@ impl MeshDrawer {
             current_drawing_context.accumulated_instance_count = 0;
 
             for (j, render_queue_item) in instance_batch.iter().enumerate() {
-                let render_queue_key_fields =
-                    decompose_render_queue_key(render_queue_item.key);
+                let render_queue_key_fields = decompose_render_queue_key(render_queue_item.key);
 
                 let renderer_shader_handle = RendererShaderHandle::new(
                     render_queue_key_fields.shader_index.into(),

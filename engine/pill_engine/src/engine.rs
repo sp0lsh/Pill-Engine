@@ -1,4 +1,11 @@
-use crate::{app_config::EngineConfig, config::*, ecs::*, graphics::*, renderer::resources::{RendererMaterial, RendererMesh, RendererShader, RendererTexture}, resources::*};
+use crate::{
+    app_config::EngineConfig,
+    config::*,
+    ecs::*,
+    graphics::*,
+    renderer::resources::{RendererMaterial, RendererMesh, RendererShader, RendererTexture},
+    resources::*,
+};
 
 use pill_core::{
     debug, error, get_game_error_message, get_type_name, info, EngineError, LogContext,

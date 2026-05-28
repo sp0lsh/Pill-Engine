@@ -2,8 +2,8 @@ use crate::{
     app_config::EngineConfig,
     ecs::{CameraComponent, ComponentStorage, EguiClient, EntityHandle, TransformComponent},
     graphics::{
-        BufferDesc, Pass, PillRenderer, PipelineV2, PipelineV2Desc, RendererTargetDesc,
-        RenderQueueItem, RendererCameraHandle, RendererTextureHandle, WorldQuery,
+        BufferDesc, Pass, PillRenderer, PipelineV2, PipelineV2Desc, RenderQueueItem,
+        RendererCameraHandle, RendererTargetDesc, RendererTextureHandle, WorldQuery,
     },
     resources::{ResourceManager, ShaderParameterSlot, ShaderTextureSlot},
 };
@@ -38,8 +38,6 @@ impl PillRenderer for DummyRenderer {
     fn create_camera(&mut self) -> Result<RendererCameraHandle> {
         Ok(RendererCameraHandle::default())
     }
-
-
 
     // --- Destroy ---
 
@@ -99,10 +97,7 @@ impl PillRenderer for DummyRenderer {
         unimplemented!("DummyRenderer has no wgpu Device")
     }
 
-    fn create_render_target(
-        &mut self,
-        _desc: RendererTargetDesc,
-    ) -> Result<RendererTextureHandle> {
+    fn create_render_target(&mut self, _desc: RendererTargetDesc) -> Result<RendererTextureHandle> {
         Ok(RendererTextureHandle::default())
     }
 
@@ -110,11 +105,7 @@ impl PillRenderer for DummyRenderer {
         Ok(RendererTextureHandle::default())
     }
 
-    fn get_render_target_view(
-        &self,
-        _handle: RendererTextureHandle,
-    ) -> Option<&wgpu::TextureView> {
+    fn get_render_target_view(&self, _handle: RendererTextureHandle) -> Option<&wgpu::TextureView> {
         None
     }
-
 }

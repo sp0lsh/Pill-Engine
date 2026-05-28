@@ -1,7 +1,7 @@
 use crate::renderer::resources::Vertex;
 
-use pill_core::Matrix3f;
 use crate::ecs::TransformComponent;
+use pill_core::Matrix3f;
 
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]

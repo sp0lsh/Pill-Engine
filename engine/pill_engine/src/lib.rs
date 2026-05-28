@@ -93,6 +93,8 @@ pub mod game {
 #[cfg(not(target_arch = "wasm32"))]
 mod internal_mod {
     pub use crate::app_config::EngineConfig;
+    #[cfg(feature = "debug_ui")]
+    pub use crate::ecs::EguiManagerComponent;
     pub use crate::{
         config::*,
         ecs::{
@@ -100,8 +102,8 @@ mod internal_mod {
             get_renderer_resource_handle_from_camera_component, networking_system_client,
             networking_system_server, update_transform_matrices, AudioListenerComponent,
             AudioManagerComponent, AudioSourceComponent, CameraAspectRatio, CameraComponent,
-            ComponentStorage, EguiClient, EntityHandle, EntityUpdate,
-            InputComponent, MeshRenderingComponent, NetworkEntityAction, NetworkEntityState,
+            ComponentStorage, EguiClient, EntityHandle, EntityUpdate, InputComponent,
+            MeshRenderingComponent, NetworkEntityAction, NetworkEntityState,
             NetworkManagerComponent, NetworkSide, NetworkStateComponent, NetworkUpdatePayload,
             RenderStateComponent, Scene, TimeComponent, TransformComponent,
         },
@@ -114,26 +116,26 @@ mod internal_mod {
         },
         resources::{
             Material, MaterialHandle, MaterialParameter, MaterialTexture, Mesh, MeshData,
-            MeshHandle, MeshVertex, PBRMaterial, PBRMaterialHandle, ResourceLoader, ResourceManager,
-            ShaderParameterSlot, ShaderParameterType, ShaderTextureSlot, Texture, TextureHandle,
-            TextureType,
+            MeshHandle, MeshVertex, PBRMaterial, PBRMaterialHandle, ResourceLoader,
+            ResourceManager, ShaderParameterSlot, ShaderParameterType, ShaderTextureSlot, Texture,
+            TextureHandle, TextureType,
         },
     };
-    #[cfg(feature = "debug_ui")]
-    pub use crate::ecs::EguiManagerComponent;
 }
 
 #[cfg(target_arch = "wasm32")]
 mod internal_mod {
     pub use crate::app_config::EngineConfig;
+    #[cfg(feature = "debug_ui")]
+    pub use crate::ecs::EguiManagerComponent;
     pub use crate::{
         config::*,
         ecs::{
             get_model_matrix, get_normal_matrix,
             get_renderer_resource_handle_from_camera_component, update_transform_matrices,
-            CameraAspectRatio, CameraComponent, ComponentStorage, EguiClient,
-            EntityHandle, InputComponent, MeshRenderingComponent, RenderStateComponent, Scene,
-            TimeComponent, TransformComponent,
+            CameraAspectRatio, CameraComponent, ComponentStorage, EguiClient, EntityHandle,
+            InputComponent, MeshRenderingComponent, RenderStateComponent, Scene, TimeComponent,
+            TransformComponent,
         },
         engine::{Engine, PillGame},
         graphics::{
@@ -144,13 +146,11 @@ mod internal_mod {
         },
         resources::{
             Material, MaterialHandle, MaterialParameter, MaterialTexture, Mesh, MeshData,
-            MeshHandle, MeshVertex, PBRMaterial, PBRMaterialHandle, ResourceLoader, ResourceManager,
-            ShaderParameterSlot, ShaderParameterType, ShaderTextureSlot, Texture, TextureHandle,
-            TextureType,
+            MeshHandle, MeshVertex, PBRMaterial, PBRMaterialHandle, ResourceLoader,
+            ResourceManager, ShaderParameterSlot, ShaderParameterType, ShaderTextureSlot, Texture,
+            TextureHandle, TextureType,
         },
     };
-    #[cfg(feature = "debug_ui")]
-    pub use crate::ecs::EguiManagerComponent;
 }
 
 #[cfg(feature = "internal")]

@@ -61,7 +61,9 @@ impl Pass for PassEgui {
 
         let ui_fn = self.client.take_ui();
         let run_ui: Box<dyn FnMut(&egui::Context)> = match ui_fn {
-            Some(ui_function) => Box::new(move |egui_context: &egui::Context| ui_function(egui_context)),
+            Some(ui_function) => {
+                Box::new(move |egui_context: &egui::Context| ui_function(egui_context))
+            }
             None => Box::new(|_egui_context: &egui::Context| {}),
         };
 

@@ -1,8 +1,8 @@
 use crate::{
     config::RENDERING_SYSTEM,
     ecs::{
-        CameraAspectRatio, CameraComponent, EntityHandle,
-        MeshRenderingComponent, RenderStateComponent, TransformComponent,
+        CameraAspectRatio, CameraComponent, EntityHandle, MeshRenderingComponent,
+        RenderStateComponent, TransformComponent,
     },
     engine::Engine,
     graphics::RenderQueueItem,
@@ -57,8 +57,10 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
         }
     }
 
-    let active_camera_entity_handle = active_camera_entity_handle_result
-        .ok_or_else(|| -> pill_core::PillError { pill_core::PillError::from(EngineError::NoActiveCamera) })?;
+    let active_camera_entity_handle =
+        active_camera_entity_handle_result.ok_or_else(|| -> pill_core::PillError {
+            pill_core::PillError::from(EngineError::NoActiveCamera)
+        })?;
 
     timer.record("Clear render queue");
 
@@ -158,23 +160,21 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
             )?;
             Ok(())
         }
-        Err(e) => {
-            match e.downcast_ref::<RendererError>() {
-                Some(RendererError::SurfaceLost) => {
-                    timer.end_context()?;
-                    engine.system_manager.update_system_timer(
-                        RENDERING_SYSTEM.name,
-                        RENDERING_SYSTEM.update_phase,
-                        timer,
-                    )?;
-                    engine.renderer.resize(engine.window_size);
-                    Ok(())
-                }
-                Some(RendererError::SurfaceOutOfMemory) => {
-                    panic!("Critical: Renderer error, system out of memory");
-                }
-                _ => Err(e),
+        Err(e) => match e.downcast_ref::<RendererError>() {
+            Some(RendererError::SurfaceLost) => {
+                timer.end_context()?;
+                engine.system_manager.update_system_timer(
+                    RENDERING_SYSTEM.name,
+                    RENDERING_SYSTEM.update_phase,
+                    timer,
+                )?;
+                engine.renderer.resize(engine.window_size);
+                Ok(())
             }
-        }
+            Some(RendererError::SurfaceOutOfMemory) => {
+                panic!("Critical: Renderer error, system out of memory");
+            }
+            _ => Err(e),
+        },
     }
 }

@@ -19,8 +19,10 @@ use crate::{
     resources::ResourceManager,
 };
 
-use pill_core::{debug, info, LogContext, PillSlotMap, PillSlotMapKey, PillStyle, RendererError, Timer};
 use pill_core::Result;
+use pill_core::{
+    debug, info, LogContext, PillSlotMap, PillSlotMapKey, PillStyle, RendererError, Timer,
+};
 use std::{collections::HashMap, sync::Arc};
 
 pub struct Renderer {
@@ -145,12 +147,12 @@ impl PillRenderer for Renderer {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut encoder = self
-            .state
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("render_encoder"),
-            });
+        let mut encoder =
+            self.state
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("render_encoder"),
+                });
 
         let world = WorldQuery {
             active_camera: active_camera_entity_handle,
@@ -267,30 +269,30 @@ impl PillRenderer for Renderer {
                 source: wgpu::ShaderSource::Wgsl(desc.ps.source.into()),
             });
 
-        let pipeline =
-            self.state
-                .device
-                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: desc.label,
-                    layout: Some(&pipeline_layout),
-                    vertex: wgpu::VertexState {
-                        module: &vs_module,
-                        entry_point: Some(desc.vs.entry_func),
-                        buffers: desc.vertex_buffers,
-                        compilation_options: Default::default(),
-                    },
-                    fragment: Some(wgpu::FragmentState {
-                        module: &fs_module,
-                        entry_point: Some(desc.ps.entry_func),
-                        targets: desc.targets,
-                        compilation_options: Default::default(),
-                    }),
-                    primitive: desc.primitive,
-                    depth_stencil: desc.depth_stencil,
-                    multisample: desc.multisample,
-                    multiview: None,
-                    cache: None,
-                });
+        let pipeline = self
+            .state
+            .device
+            .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: desc.label,
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &vs_module,
+                    entry_point: Some(desc.vs.entry_func),
+                    buffers: desc.vertex_buffers,
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &fs_module,
+                    entry_point: Some(desc.ps.entry_func),
+                    targets: desc.targets,
+                    compilation_options: Default::default(),
+                }),
+                primitive: desc.primitive,
+                depth_stencil: desc.depth_stencil,
+                multisample: desc.multisample,
+                multiview: None,
+                cache: None,
+            });
 
         Ok(PipelineV2 {
             pipeline,
@@ -320,16 +322,12 @@ impl PillRenderer for Renderer {
         Ok(handle)
     }
 
-    fn get_render_target_view(
-        &self,
-        handle: RendererTextureHandle,
-    ) -> Option<&wgpu::TextureView> {
+    fn get_render_target_view(&self, handle: RendererTextureHandle) -> Option<&wgpu::TextureView> {
         self.state
             .pass_textures
             .get(handle)
             .map(|t| &t.texture_view)
     }
-
 }
 
 pub struct State {
@@ -373,9 +371,11 @@ impl State {
                 flags: wgpu::InstanceFlags::from_build_config().with_env(),
                 backend_options: wgpu::BackendOptions::default(),
             });
-            let surface = instance
-                .create_surface(window.clone())
-                .map_err(|error| -> pill_core::PillError { pill_core::PillError::from(format!("Failed to create surface: {}", error)) })?;
+            let surface = instance.create_surface(window.clone()).map_err(
+                |error| -> pill_core::PillError {
+                    pill_core::PillError::from(format!("Failed to create surface: {}", error))
+                },
+            )?;
             (instance, surface)
         };
 
@@ -387,7 +387,9 @@ impl State {
                 force_fallback_adapter: false,
             })
             .await
-            .map_err(|error| -> pill_core::PillError { pill_core::PillError::from(format!("Failed to request adapter: {}", error)) })?;
+            .map_err(|error| -> pill_core::PillError {
+                pill_core::PillError::from(format!("Failed to request adapter: {}", error))
+            })?;
 
         let info = adapter.get_info();
         info!(LogContext::Rendering => "Using GPU: {} ({:?})", info.name, info.backend);
@@ -407,7 +409,9 @@ impl State {
                     trace: wgpu::Trace::default(),
                 })
                 .await
-                .map_err(|error| -> pill_core::PillError { pill_core::PillError::from(format!("Failed to request device: {}", error)) })?
+                .map_err(|error| -> pill_core::PillError {
+                    pill_core::PillError::from(format!("Failed to request device: {}", error))
+                })?
         };
 
         // Configure swap chain format, present mode, and depth texture
@@ -466,7 +470,9 @@ impl State {
 
         let depth_texture =
             RendererTexture::new_depth_texture(&device, &surface_configuration, "depth_texture")
-                .map_err(|error| -> pill_core::PillError { pill_core::PillError::from(format!("Failed to create depth texture: {}", error)) })?;
+                .map_err(|error| -> pill_core::PillError {
+                    pill_core::PillError::from(format!("Failed to create depth texture: {}", error))
+                })?;
 
         let camera_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {

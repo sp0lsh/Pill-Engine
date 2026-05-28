@@ -114,7 +114,10 @@ impl Timer {
     }
 
     pub fn get_counter(&self, label: &str) -> Option<u64> {
-        self.counters.iter().find(|(k, _)| k == label).map(|(_, v)| *v)
+        self.counters
+            .iter()
+            .find(|(k, _)| k == label)
+            .map(|(_, v)| *v)
     }
 
     pub fn counters(&self) -> &Vec<(String, u64)> {

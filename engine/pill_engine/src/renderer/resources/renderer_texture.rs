@@ -22,7 +22,6 @@ impl RendererTexture {
         height: u32,
         texture_type: TextureType,
     ) -> Result<Self> {
-
         let size = wgpu::Extent3d {
             width,
             height,
