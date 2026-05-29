@@ -10,3 +10,7 @@ engine/target_*
 
 *.log
 *.wgsl
+
+*.cooked_mesh
+*.cooked_tex
+examples/pbr_helmet/res/models/DamagedHelmet.glb

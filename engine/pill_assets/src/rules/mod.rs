@@ -1,9 +1,11 @@
 use crate::Rule;
 
+pub mod glb_to_cooked_mesh;
 pub mod hlsl_to_wgsl;
 pub mod obj_to_cooked_mesh;
 pub mod png_to_cooked_tex;
 
+pub use glb_to_cooked_mesh::GlbToCookedMesh;
 pub use hlsl_to_wgsl::HlslToWgsl;
 pub use obj_to_cooked_mesh::ObjToCookedMesh;
 pub use png_to_cooked_tex::PngToCookedTex;
@@ -14,5 +16,6 @@ pub fn default_rules() -> Vec<Box<dyn Rule>> {
         Box::new(HlslToWgsl),
         Box::new(PngToCookedTex),
         Box::new(ObjToCookedMesh),
+        Box::new(GlbToCookedMesh),
     ]
 }
