@@ -15,32 +15,37 @@ struct Camera {
 [[vk::binding(5, 0)]] Texture2D    texBrdfLut;
 [[vk::binding(6, 0)]] SamplerState smpBrdfLut;
 
-// PBR material textures (set 1) — bindings match DEFAULT_LIT_SHADER layout (0-3).
+// PBR material textures (set 1) — bindings match DEFAULT_LIT_SHADER layout (0-5).
 [[vk::binding(0, 1)]] Texture2D    texBaseColor;
 [[vk::binding(1, 1)]] SamplerState smpBaseColor;
 [[vk::binding(2, 1)]] Texture2D    texNormal;
 [[vk::binding(3, 1)]] SamplerState smpNormal;
+[[vk::binding(4, 1)]] Texture2D    texMetallicRoughness;
+[[vk::binding(5, 1)]] SamplerState smpMetallicRoughness;
 
-// PBR params UBO (set 2) — 32 bytes: baseColorFactor (vec3 + pad), roughnessFactor (f32 + pad + vec2 pad).
+// PBR params UBO (set 2) — 48 bytes: 3 × 16-byte slots.
+// Each scalar slot uses float+float+float2 padding to stay 16 bytes without float3 alignment gaps.
 struct MaterialParams {
     float3 baseColorFactor;
     float  _pad0;
     float  roughnessFactor;
     float  _pad1;
     float2 _pad2;
+    float  metallicFactor;
+    float  _pad3;
+    float2 _pad4;
 };
 [[vk::binding(0, 2)]] ConstantBuffer<MaterialParams> UMaterial;
 
 static const float  PI         = 3.14159265359;
 
-// Old renderer used a point light at (-10,10,-10); the resulting direction from light
-// to scene (z≈12) is approximately (0.38,-0.38,0.84) — behind and above the camera.
-static const float3 LIGHT_DIR0 = float3( 0.38, -0.38,  0.84); // key: behind-camera, upper-left
-static const float3 LIGHT_DIR1 = float3(-0.50,  0.50, -0.71); // rim: front upper-right
+// Camera at +Z looking -Z (glTF default). Z components flipped vs. -Z camera setup.
+static const float3 LIGHT_DIR0 = float3( 0.38, -0.38, -0.84); // key: behind-camera, upper-left
+static const float3 LIGHT_DIR1 = float3(-0.50,  0.50,  0.71); // rim: front upper-right
 static const float3 LIGHT_DIR2 = float3( 0.00, -1.00,  0.00); // bounce: from below
-static const float4 LIGHT_COL0 = float4(1.0, 0.90, 0.80,  8.0); // warm key
-static const float4 LIGHT_COL1 = float4(0.5, 0.55, 1.00,  2.5); // cool rim
-static const float4 LIGHT_COL2 = float4(0.8, 0.80, 0.80,  0.8); // neutral bounce
+static const float4 LIGHT_COL0 = float4(1.0, 0.98, 0.95,  2.2); // near-neutral key
+static const float4 LIGHT_COL1 = float4(0.6, 0.65, 1.00,  0.8); // cool rim
+static const float4 LIGHT_COL2 = float4(0.8, 0.80, 0.80,  0.3); // neutral bounce
 
 float DistributionGGX(float3 N, float3 H, float roughness) {
     // Add epsilon to avoid singularities at very low roughness.
@@ -74,7 +79,7 @@ float3 fresnelSchlickRoughness(float cosTheta, float3 F0, float roughness) {
 
 float2 dir_to_equirect_uv(float3 dir) {
     float3 d = normalize(dir);
-    float  u = 0.5 + atan2(d.x, -d.z) / (2.0 * PI);
+    float  u = 0.5 + atan2(d.z, d.x) / (2.0 * PI); // match bake convention: atan2(z,x)
     float  v = 0.5 - asin(clamp(d.y, -1.0, 1.0)) / PI;
     return float2(frac(u), clamp(v, 0.0, 1.0));
 }
@@ -104,10 +109,10 @@ float4 fs_main(
     [[vk::location(2)]] float3 NormalIn: TEXCOORD2
 ) : SV_TARGET {
     float3 albedo    = texBaseColor.Sample(smpBaseColor, uv).rgb * UMaterial.baseColorFactor;
-    // roughnessFactor maps to specularity slot (offset 16 in current material layout).
-    // metallic is not stored yet — default to 0.0 (dielectric).
-    float  roughness = clamp(UMaterial.roughnessFactor, 0.045, 0.99);
-    float  metallic  = 0.0;
+    float2 mr        = texMetallicRoughness.Sample(smpMetallicRoughness, uv).gb;
+    // mr.x = G channel (roughness 0=smooth, 1=rough); mr.y = B channel (metallic 0=dielectric, 1=metal)
+    float  roughness = clamp(mr.x * (1.0 - UMaterial.roughnessFactor), 0.045, 0.99);
+    float  metallic  = mr.y * UMaterial.metallicFactor;
     // TODO: Support normal mapping (tangent space) and AO texture.
     float3 N  = normalize(NormalIn);
     float3 V  = normalize(UCamera.position.xyz - WorldPos);
@@ -128,7 +133,6 @@ float4 fs_main(
     float2 envBRDF            = texBrdfLut.Sample(smpBrdfLut, float2(max(dot(N, V), 0.0), roughness)).rg;
     float3 F                  = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
     float3 specularIBL        = prefilteredColor * (F * envBRDF.x + envBRDF.y);
-    float3 ambient            = float3(0.04, 0.04, 0.04) * albedo;
-    float3 color              = Lo + ambientDiffuse + specularIBL + ambient;
+    float3 color = Lo + ambientDiffuse + specularIBL;
     return float4(color, 1.0);
 }

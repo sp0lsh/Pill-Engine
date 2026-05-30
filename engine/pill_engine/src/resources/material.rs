@@ -76,8 +76,18 @@ impl PBRMaterial {
         self
     }
 
+    pub fn metallic(mut self, metallic: f32) -> Self {
+        self.metallic = metallic.clamp(0.0, 1.0);
+        self
+    }
+
     pub fn normal_texture(mut self, handle: TextureHandle) -> Self {
         self.normal_texture = Some(handle);
+        self
+    }
+
+    pub fn metallic_roughness_texture(mut self, handle: TextureHandle) -> Self {
+        self.metallic_roughness_texture = Some(handle);
         self
     }
 }
@@ -104,6 +114,10 @@ impl Resource for PBRMaterial {
             parameters.insert(
                 DEFAULT_LIT_SHADER_SPECULARITY_PARAMETER_SLOT_NAME.to_string(),
                 MaterialParameter::Scalar(1.0 - self.roughness),
+            );
+            parameters.insert(
+                DEFAULT_LIT_SHADER_METALLIC_FACTOR_PARAMETER_SLOT_NAME.to_string(),
+                MaterialParameter::Scalar(self.metallic),
             );
 
             let mut resolved_textures: HashMap<String, crate::graphics::RendererTextureHandle> =
@@ -132,6 +146,21 @@ impl Resource for PBRMaterial {
                     .get_resource_handle::<RendererTexture>(&tex_name)?;
                 resolved_textures
                     .insert(DEFAULT_LIT_SHADER_NORMAL_TEXTURE_SLOT_NAME.to_string(), h);
+            }
+
+            if let Some(texture_handle) = self.metallic_roughness_texture {
+                let tex_name = engine
+                    .resource_manager
+                    .get_resource::<Texture>(&texture_handle)?
+                    .name
+                    .clone();
+                let h = engine
+                    .resource_manager
+                    .get_resource_handle::<RendererTexture>(&tex_name)?;
+                resolved_textures.insert(
+                    DEFAULT_LIT_SHADER_METALLIC_ROUGHNESS_TEXTURE_SLOT_NAME.to_string(),
+                    h,
+                );
             }
 
             let renderer_shader_handle = engine

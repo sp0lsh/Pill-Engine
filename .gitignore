@@ -14,3 +14,4 @@ engine/target_*
 *.cooked_mesh
 *.cooked_tex
 examples/pbr_helmet/res/models/DamagedHelmet.glb
+examples/pbr_balls/res/models/MetalRoughSpheres.glb

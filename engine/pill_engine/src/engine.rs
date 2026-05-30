@@ -165,6 +165,10 @@ impl Engine {
                     DEFAULT_LIT_SHADER_SPECULARITY_PARAMETER_SLOT_NAME.to_string(),
                     ShaderParameterSlot::new(ShaderParameterType::Scalar),
                 ),
+                (
+                    DEFAULT_LIT_SHADER_METALLIC_FACTOR_PARAMETER_SLOT_NAME.to_string(),
+                    ShaderParameterSlot::new(ShaderParameterType::Scalar),
+                ),
             ]
             .into_iter()
             .collect(),
@@ -181,6 +185,13 @@ impl Engine {
                     ShaderTextureSlot::new(
                         TextureType::Normal,
                         DEFAULT_LIT_SHADER_NORMAL_TEXTURE_SLOT_BINDINGS,
+                    ),
+                ),
+                (
+                    DEFAULT_LIT_SHADER_METALLIC_ROUGHNESS_TEXTURE_SLOT_NAME.to_string(),
+                    ShaderTextureSlot::new(
+                        TextureType::MetallicRoughness,
+                        DEFAULT_LIT_SHADER_METALLIC_ROUGHNESS_TEXTURE_SLOT_BINDINGS,
                     ),
                 ),
             ]
@@ -237,6 +248,15 @@ impl Engine {
         ))?;
 
         debug!(LogContext::Engine => "Default normal texture {} created", DEFAULT_NORMAL_TEXTURE_NAME.name_style());
+        debug!(LogContext::Engine => "Creating default metallic_roughness texture {}...", DEFAULT_METALLIC_ROUGHNESS_TEXTURE_NAME.name_style());
+
+        let default_mr_texture_handle = self.add_default_resource(Texture::new(
+            DEFAULT_METALLIC_ROUGHNESS_TEXTURE_NAME,
+            TextureType::MetallicRoughness,
+            ResourceLoader::Bytes(Box::new(DEFAULT_METALLIC_ROUGHNESS_TEXTURE_BYTES)),
+        ))?;
+
+        debug!(LogContext::Engine => "Default metallic_roughness texture {} created", DEFAULT_METALLIC_ROUGHNESS_TEXTURE_NAME.name_style());
         debug!(LogContext::Engine => "Creating default material {}...", DEFAULT_LIT_MATERIAL_NAME.name_style());
 
         // Create default lit material
@@ -248,6 +268,7 @@ impl Engine {
                     Color::new(1.0, 1.0, 1.0),
                 )?
                 .scalar_parameter(DEFAULT_LIT_SHADER_SPECULARITY_PARAMETER_SLOT_NAME, 0.5)?
+                .scalar_parameter(DEFAULT_LIT_SHADER_METALLIC_FACTOR_PARAMETER_SLOT_NAME, 0.0)?
                 .texture(
                     DEFAULT_LIT_SHADER_COLOR_TEXTURE_SLOT_NAME,
                     default_color_texture_handle,
@@ -255,6 +276,10 @@ impl Engine {
                 .texture(
                     DEFAULT_LIT_SHADER_NORMAL_TEXTURE_SLOT_NAME,
                     default_normal_texture_handle,
+                )?
+                .texture(
+                    DEFAULT_LIT_SHADER_METALLIC_ROUGHNESS_TEXTURE_SLOT_NAME,
+                    default_mr_texture_handle,
                 )?
                 .build(),
         )?;

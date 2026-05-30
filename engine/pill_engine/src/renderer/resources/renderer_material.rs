@@ -3,7 +3,10 @@
 use crate::graphics::RendererShaderHandle;
 use crate::graphics::RendererTextureHandle;
 use crate::{
-    config::{DEFAULT_COLOR_TEXTURE_NAME, DEFAULT_NORMAL_TEXTURE_NAME},
+    config::{
+        DEFAULT_COLOR_TEXTURE_NAME, DEFAULT_METALLIC_ROUGHNESS_TEXTURE_NAME,
+        DEFAULT_NORMAL_TEXTURE_NAME,
+    },
     graphics::RendererMaterialHandle,
     renderer::resources::{RendererShader, RendererTexture},
     resources::{
@@ -171,6 +174,9 @@ impl RendererMaterial {
                     let default_name = match slot.texture_type {
                         crate::resources::TextureType::Color => DEFAULT_COLOR_TEXTURE_NAME,
                         crate::resources::TextureType::Normal => DEFAULT_NORMAL_TEXTURE_NAME,
+                        crate::resources::TextureType::MetallicRoughness => {
+                            DEFAULT_METALLIC_ROUGHNESS_TEXTURE_NAME
+                        }
                     };
                     resource_manager
                         .get_resource_handle::<RendererTexture>(default_name)

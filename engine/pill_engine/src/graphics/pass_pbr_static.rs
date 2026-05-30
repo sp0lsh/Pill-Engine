@@ -39,22 +39,23 @@ impl CameraUniform {
             0.0,
         ];
 
-        // View matrix: engine uses +Z forward convention; look_to_lh preserves right-handed winding
-        // by computing right = up × (-dir) = +X, avoiding the NDC x-flip that look_to_rh produces.
-        let roll_matrix = Mat3::from_rotation_z(transform_component.rotation.z.to_radians());
-        let yaw_matrix = Mat3::from_rotation_y(transform_component.rotation.y.to_radians());
-        let pitch_matrix = Mat3::from_rotation_x(transform_component.rotation.x.to_radians());
-        let rotation_matrix = yaw_matrix * pitch_matrix * roll_matrix;
-        let direction = rotation_matrix * Vec3::Z;
         let eye = Vec3::new(
             transform_component.position.x,
             transform_component.position.y,
             transform_component.position.z,
         );
-        let view = Mat4::look_to_lh(eye, direction, Vec3::Y);
+        let view = if let Some(t) = camera_component.look_at {
+            Mat4::look_at_rh(eye, Vec3::new(t.x, t.y, t.z), Vec3::Y)
+        } else {
+            let roll_matrix = Mat3::from_rotation_z(transform_component.rotation.z.to_radians());
+            let yaw_matrix = Mat3::from_rotation_y(transform_component.rotation.y.to_radians());
+            let pitch_matrix = Mat3::from_rotation_x(transform_component.rotation.x.to_radians());
+            let rotation_matrix = yaw_matrix * pitch_matrix * roll_matrix;
+            let direction = rotation_matrix * Vec3::Z;
+            Mat4::look_to_rh(eye, direction, Vec3::Y)
+        };
 
-        // Projection: perspective_lh maps view-z ∈ [z_near, z_far] to NDC depth [0,1] for +Z forward.
-        let proj = Mat4::perspective_lh(
+        let proj = Mat4::perspective_rh(
             camera_component.fov.to_radians(),
             camera_component.aspect.get_value(),
             camera_component.range.start,
@@ -118,9 +119,12 @@ struct PassPBRStaticState {
     globals_bind_group: wgpu::BindGroup,
     pipeline: PipelineV2,
     ibl_sampler: wgpu::Sampler,
-    // 1×1 white fallback used when no IBL textures are provided.
     ibl_fallback_texture: wgpu::Texture,
     ibl_fallback_view: wgpu::TextureView,
+    // Studio IBL textures loaded from embedded cooked assets.
+    _ibl_irradiance_texture: wgpu::Texture,
+    _ibl_prefilter_texture: wgpu::Texture,
+    _ibl_brdf_lut_texture: wgpu::Texture,
     per_draw_buffer: wgpu::Buffer,
     per_draw_bind_group: wgpu::BindGroup,
 }
@@ -128,6 +132,7 @@ struct PassPBRStaticState {
 /// Default PBR pass: full GGX shading with optional IBL, per-draw dynamic UBO ring.
 /// No MeshDrawer — each entity is drawn with a direct indexed draw call.
 pub struct PassPBRStatic {
+    color_target: Option<RendererTextureHandle>,
     ibl_irradiance_tex: Option<RendererTextureHandle>,
     ibl_prefilter_tex: Option<RendererTextureHandle>,
     ibl_brdf_lut_tex: Option<RendererTextureHandle>,
@@ -143,11 +148,13 @@ pub struct PassPBRStatic {
 impl PassPBRStatic {
     /// Creates the pass with optional IBL textures; `Pass::init` must run before the first frame.
     pub fn new(
+        color_target: Option<RendererTextureHandle>,
         ibl_irradiance_tex: Option<RendererTextureHandle>,
         ibl_prefilter_tex: Option<RendererTextureHandle>,
         ibl_brdf_lut_tex: Option<RendererTextureHandle>,
     ) -> Self {
         Self {
+            color_target,
             ibl_irradiance_tex,
             ibl_prefilter_tex,
             ibl_brdf_lut_tex,
@@ -162,6 +169,85 @@ impl PassPBRStatic {
             state: None,
         }
     }
+}
+
+/// Decode an RTEX header: returns (rgba_bytes, width, height).
+fn decode_rtex(bytes: &[u8]) -> (&[u8], u32, u32, u32, u32) {
+    let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+    let w = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    let h = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
+    if version == 3 || version == 4 {
+        let mip_count = u32::from_le_bytes(bytes[16..20].try_into().unwrap());
+        (&bytes[20..], w, h, mip_count, version)
+    } else {
+        (&bytes[16..], w, h, 1, version)
+    }
+}
+
+/// Upload an RTEX blob as a 2D texture.
+/// v1/v3 = Rgba8UnormSrgb (LDR); v4 = Rgba32Float HDR mip chain.
+fn load_ibl_texture(
+    renderer: &dyn PillRenderer,
+    label: &str,
+    bytes: &[u8],
+    is_srgb: bool,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let (data, w, h, mip_count, version) = decode_rtex(bytes);
+    let size = wgpu::Extent3d {
+        width: w,
+        height: h,
+        depth_or_array_layers: 1,
+    };
+    let (format, bytes_per_texel) = if version == 4 {
+        (wgpu::TextureFormat::Rgba32Float, 16usize) // 4 × f32
+    } else if is_srgb {
+        (wgpu::TextureFormat::Rgba8UnormSrgb, 4usize)
+    } else {
+        (wgpu::TextureFormat::Rgba8Unorm, 4usize)
+    };
+    let tex = renderer
+        .get_device()
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size,
+            mip_level_count: mip_count,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+    let mut offset = 0usize;
+    for mip in 0..mip_count {
+        let mip_w = (w >> mip).max(1);
+        let mip_h = (h >> mip).max(1);
+        let mip_bytes = (mip_w * mip_h) as usize * bytes_per_texel;
+        renderer.get_queue().write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &tex,
+                mip_level: mip,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &data[offset..offset + mip_bytes],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(mip_w * bytes_per_texel as u32),
+                rows_per_image: Some(mip_h),
+            },
+            wgpu::Extent3d {
+                width: mip_w,
+                height: mip_h,
+                depth_or_array_layers: 1,
+            },
+        );
+        offset += mip_bytes;
+    }
+    let view = tex.create_view(&wgpu::TextureViewDescriptor {
+        mip_level_count: Some(mip_count),
+        ..Default::default()
+    });
+    (tex, view)
 }
 
 /// Returns the initialized pass state; panics in debug if `init` was not called.
@@ -181,7 +267,6 @@ impl Pass for PassPBRStatic {
 
         let fragment_wgsl = include_str!("../../res/shaders/pbr_static_fragment.wgsl");
 
-        let surface_format = renderer.get_surface_format();
         let bind_groups: Vec<Vec<wgpu::BindGroupLayoutEntry>> = vec![
             // 0: globals (camera + IBL irradiance + prefilter + BRDF LUT)
             vec![
@@ -244,7 +329,7 @@ impl Pass for PassPBRStatic {
                     count: None,
                 },
             ],
-            // 1: material textures (base_color, normal, metallic_roughness, emissive)
+            // 1: material textures (base_color, normal, metallic_roughness)
             vec![
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -274,6 +359,22 @@ impl Pass for PassPBRStatic {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
@@ -321,7 +422,7 @@ impl Pass for PassPBRStatic {
             ],
             bind_groups,
             targets: &[Some(wgpu::ColorTargetState {
-                format: surface_format,
+                format: wgpu::TextureFormat::Rgba16Float,
                 blend: Some(wgpu::BlendState::REPLACE),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -337,8 +438,7 @@ impl Pass for PassPBRStatic {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
-                // Pill mesh uses CW exterior winding; disable culling to match old renderer behavior.
-                cull_mode: None,
+                cull_mode: Some(wgpu::Face::Back),
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
                 unclipped_depth: false,
@@ -437,19 +537,19 @@ impl Pass for PassPBRStatic {
             })
         };
 
-        // Resolve IBL texture views; fall back to the 1×1 white texture when not provided.
-        let irradiance_view = self
-            .ibl_irradiance_tex
-            .and_then(|handle| renderer.get_render_target_view(handle))
-            .unwrap_or(&ibl_fallback_view);
-        let prefilter_view = self
-            .ibl_prefilter_tex
-            .and_then(|handle| renderer.get_render_target_view(handle))
-            .unwrap_or(&ibl_fallback_view);
-        let brdf_lut_view = self
-            .ibl_brdf_lut_tex
-            .and_then(|handle| renderer.get_render_target_view(handle))
-            .unwrap_or(&ibl_fallback_view);
+        // Load studio IBL textures from embedded cooked assets.
+        static DIFFUSE_IBL: &[u8] =
+            include_bytes!("../../res/textures/studio_diffuse_ibl.cooked_tex");
+        static SPECULAR_IBL: &[u8] =
+            include_bytes!("../../res/textures/studio_specular_ibl.cooked_tex");
+        static BRDF_LUT: &[u8] = include_bytes!("../../res/textures/brdf_lut.cooked_tex");
+
+        let (ibl_irradiance_texture, irradiance_view) =
+            load_ibl_texture(renderer, "studio_diffuse_ibl", DIFFUSE_IBL, true);
+        let (ibl_prefilter_texture, prefilter_view) =
+            load_ibl_texture(renderer, "studio_specular_ibl", SPECULAR_IBL, true);
+        let (ibl_brdf_lut_texture, brdf_lut_view) =
+            load_ibl_texture(renderer, "brdf_lut", BRDF_LUT, false); // linear
 
         let prefilter_sampler = {
             let device = renderer.get_device();
@@ -480,7 +580,7 @@ impl Pass for PassPBRStatic {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(irradiance_view),
+                        resource: wgpu::BindingResource::TextureView(&irradiance_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
@@ -488,7 +588,7 @@ impl Pass for PassPBRStatic {
                     },
                     wgpu::BindGroupEntry {
                         binding: 3,
-                        resource: wgpu::BindingResource::TextureView(prefilter_view),
+                        resource: wgpu::BindingResource::TextureView(&prefilter_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 4,
@@ -496,7 +596,7 @@ impl Pass for PassPBRStatic {
                     },
                     wgpu::BindGroupEntry {
                         binding: 5,
-                        resource: wgpu::BindingResource::TextureView(brdf_lut_view),
+                        resource: wgpu::BindingResource::TextureView(&brdf_lut_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 6,
@@ -516,6 +616,9 @@ impl Pass for PassPBRStatic {
             ibl_sampler,
             ibl_fallback_texture,
             ibl_fallback_view,
+            _ibl_irradiance_texture: ibl_irradiance_texture,
+            _ibl_prefilter_texture: ibl_prefilter_texture,
+            _ibl_brdf_lut_texture: ibl_brdf_lut_texture,
             per_draw_buffer,
             per_draw_bind_group,
         });
@@ -562,7 +665,7 @@ impl Pass for PassPBRStatic {
             Mat4::from_cols_array_2d(&state.camera_uniform.view_projection_matrix)
         };
 
-        let clear_color = active_camera_component.clear_color;
+        let _clear_color = active_camera_component.clear_color;
 
         // Build visible set from the render queue.
         self.visible_pre_draw_buffer.clear();
@@ -697,19 +800,18 @@ impl Pass for PassPBRStatic {
         let depth_view = renderer
             .get_render_target_view(self.depth_texture.unwrap())
             .unwrap();
+        let color_view = self
+            .color_target
+            .and_then(|h| renderer.get_render_target_view(h))
+            .unwrap_or(view);
 
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("pass_pbr_static_render_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view,
+                view: color_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: clear_color.x as f64,
-                        g: clear_color.y as f64,
-                        b: clear_color.z as f64,
-                        a: 1.0,
-                    }),
+                    load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
             })],

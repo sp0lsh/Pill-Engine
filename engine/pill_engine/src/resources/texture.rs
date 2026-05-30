@@ -14,6 +14,7 @@ pill_core::define_new_pill_slotmap_key! {
 pub enum TextureType {
     Color,
     Normal,
+    MetallicRoughness,
 }
 
 #[readonly::make]

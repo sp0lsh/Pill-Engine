@@ -43,71 +43,114 @@ impl Rule for GlbToCookedMesh {
             gltf::import_slice(&bytes).with_context(|| format!("parse GLB {input:?}"))?;
 
         // --- Mesh ---
+        // Walk the scene node hierarchy. For each node that references a mesh, apply the
+        // node's world transform to vertex positions and normals before cooked output.
+        // This bakes the root-node transform (scale, rotation, etc.) into the geometry so
+        // game code needs no compensating transform on the mesh entity.
 
-        let mesh = doc
-            .meshes()
-            .next()
-            .with_context(|| format!("{input:?}: no meshes in GLB"))?;
-        let prim = mesh
-            .primitives()
-            .next()
-            .with_context(|| format!("{input:?}: mesh has no primitives"))?;
-        let reader = prim.reader(|b| Some(&*buffers[b.index()]));
+        let mut all_vertices: Vec<Vertex> = Vec::new();
+        let mut all_indices: Vec<u32> = Vec::new();
 
-        let positions: Vec<[f32; 3]> = reader
-            .read_positions()
-            .with_context(|| format!("{input:?}: missing positions"))?
-            .collect();
-        let normals: Vec<[f32; 3]> = reader
-            .read_normals()
-            .with_context(|| format!("{input:?}: missing normals"))?
-            .collect();
-        let uvs: Vec<[f32; 2]> = reader
-            .read_tex_coords(0)
-            .with_context(|| format!("{input:?}: missing UV set 0"))?
-            .into_f32()
-            .collect();
-        let tangents_glb: Vec<[f32; 4]> = reader
-            .read_tangents()
-            .map(|t| t.collect())
-            .unwrap_or_default();
-        let indices: Vec<u32> = reader
-            .read_indices()
-            .with_context(|| format!("{input:?}: missing indices"))?
-            .into_u32()
-            .collect();
-
-        let mut vertices: Vec<Vertex> = (0..positions.len())
-            .map(|i| {
-                let n = normals[i];
-                let (tx, ty, tz, sign) = tangents_glb
-                    .get(i)
-                    .map(|t| (t[0], t[1], t[2], t[3]))
-                    .unwrap_or((1.0, 0.0, 0.0, 1.0));
-                let bx = (n[1] * tz - n[2] * ty) * sign;
-                let by = (n[2] * tx - n[0] * tz) * sign;
-                let bz = (n[0] * ty - n[1] * tx) * sign;
-                Vertex {
-                    position: positions[i],
-                    texture_coordinates: uvs[i],
-                    normal: n,
-                    tangent: [tx, ty, tz],
-                    bitangent: [bx, by, bz],
+        // Collect (mesh_index, world_transform_4x4) pairs by traversing the scene graph.
+        let mut mesh_instances: Vec<(usize, [[f32; 4]; 4])> = Vec::new();
+        let identity = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0f32],
+        ];
+        let default_scene = doc.default_scene().or_else(|| doc.scenes().next());
+        if let Some(scene) = default_scene {
+            let mut stack: Vec<(gltf::Node, [[f32; 4]; 4])> =
+                scene.nodes().map(|n| (n, identity)).collect();
+            while let Some((node, parent_transform)) = stack.pop() {
+                let local = node_transform(node.transform());
+                let world = mat4_mul(parent_transform, local);
+                if let Some(mesh) = node.mesh() {
+                    mesh_instances.push((mesh.index(), world));
                 }
-            })
-            .collect();
-
-        if tangents_glb.is_empty() {
-            compute_tangents(&mut vertices, &indices);
+                for child in node.children() {
+                    stack.push((child, world));
+                }
+            }
+        } else {
+            // No scene: fall back to processing every mesh with identity transform.
+            for (i, _) in doc.meshes().enumerate() {
+                mesh_instances.push((i, identity));
+            }
         }
 
-        let vertex_bytes: &[u8] = bytemuck::cast_slice(&vertices);
-        let index_bytes: &[u8] = bytemuck::cast_slice(&indices);
+        if mesh_instances.is_empty() {
+            anyhow::bail!("{input:?}: no meshes in GLB");
+        }
+
+        let meshes: Vec<gltf::Mesh> = doc.meshes().collect();
+        for (mesh_idx, world) in mesh_instances {
+            let mesh = &meshes[mesh_idx];
+            for prim in mesh.primitives() {
+                let reader = prim.reader(|b| Some(&*buffers[b.index()]));
+                let vertex_offset = all_vertices.len() as u32;
+
+                let positions: Vec<[f32; 3]> = reader
+                    .read_positions()
+                    .with_context(|| format!("{input:?}: missing positions"))?
+                    .collect();
+                let normals: Vec<[f32; 3]> = reader
+                    .read_normals()
+                    .with_context(|| format!("{input:?}: missing normals"))?
+                    .collect();
+                let uvs: Vec<[f32; 2]> = reader
+                    .read_tex_coords(0)
+                    .with_context(|| format!("{input:?}: missing UV set 0"))?
+                    .into_f32()
+                    .collect();
+                let tangents_glb: Vec<[f32; 4]> = reader
+                    .read_tangents()
+                    .map(|t| t.collect())
+                    .unwrap_or_default();
+                let prim_indices: Vec<u32> = reader
+                    .read_indices()
+                    .with_context(|| format!("{input:?}: missing indices"))?
+                    .into_u32()
+                    .collect();
+
+                let mut vertices: Vec<Vertex> = (0..positions.len())
+                    .map(|i| {
+                        let n = transform_normal(world, normals[i]);
+                        let (tx, ty, tz, sign) = tangents_glb
+                            .get(i)
+                            .map(|t| (t[0], t[1], t[2], t[3]))
+                            .unwrap_or((1.0, 0.0, 0.0, 1.0));
+                        let t_world = transform_normal(world, [tx, ty, tz]);
+                        let bx = (n[1] * t_world[2] - n[2] * t_world[1]) * sign;
+                        let by = (n[2] * t_world[0] - n[0] * t_world[2]) * sign;
+                        let bz = (n[0] * t_world[1] - n[1] * t_world[0]) * sign;
+                        Vertex {
+                            position: transform_point(world, positions[i]),
+                            texture_coordinates: uvs[i],
+                            normal: n,
+                            tangent: t_world,
+                            bitangent: [bx, by, bz],
+                        }
+                    })
+                    .collect();
+
+                if tangents_glb.is_empty() {
+                    compute_tangents(&mut vertices, &prim_indices);
+                }
+
+                all_indices.extend(prim_indices.iter().map(|&i| i + vertex_offset));
+                all_vertices.extend(vertices);
+            }
+        }
+
+        let vertex_bytes: &[u8] = bytemuck::cast_slice(&all_vertices);
+        let index_bytes: &[u8] = bytemuck::cast_slice(&all_indices);
         let mut out = Vec::with_capacity(16 + vertex_bytes.len() + index_bytes.len());
         out.extend_from_slice(b"RMSH");
         out.extend_from_slice(&1u32.to_le_bytes());
-        out.extend_from_slice(&(vertices.len() as u32).to_le_bytes());
-        out.extend_from_slice(&(indices.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(all_vertices.len() as u32).to_le_bytes());
+        out.extend_from_slice(&(all_indices.len() as u32).to_le_bytes());
         out.extend_from_slice(vertex_bytes);
         out.extend_from_slice(index_bytes);
         std::fs::write(output, &out).with_context(|| format!("write {output:?}"))?;
@@ -123,22 +166,40 @@ impl Rule for GlbToCookedMesh {
             .parent()
             .with_context(|| "output has no parent directory")?;
 
-        if let Some(mat) = doc.materials().next() {
-            if let Some(info) = mat.pbr_metallic_roughness().base_color_texture() {
-                let idx = info.texture().source().index();
-                if let Some(img) = images.get(idx) {
+        for mat in doc.materials() {
+            let mat_idx = mat.index();
+            let suffix = |base: &str| -> String {
+                match mat_idx {
+                    None | Some(0) => format!("{stem}_{base}.cooked_tex"),
+                    Some(i) => format!("{stem}_mat{i}_{base}.cooked_tex"),
+                }
+            };
+            let pbr = mat.pbr_metallic_roughness();
+
+            if let Some(info) = pbr.base_color_texture() {
+                let img_idx = info.texture().source().index();
+                if let Some(img) = images.get(img_idx) {
                     let rtex = image_to_rtex(img)
                         .with_context(|| format!("{input:?}: base color texture"))?;
-                    std::fs::write(dir.join(format!("{stem}_albedo.cooked_tex")), &rtex)?;
+                    std::fs::write(dir.join(suffix("albedo")), &rtex)?;
                 }
             }
 
             if let Some(info) = mat.normal_texture() {
-                let idx = info.texture().source().index();
-                if let Some(img) = images.get(idx) {
+                let img_idx = info.texture().source().index();
+                if let Some(img) = images.get(img_idx) {
                     let rtex =
                         image_to_rtex(img).with_context(|| format!("{input:?}: normal texture"))?;
-                    std::fs::write(dir.join(format!("{stem}_normal.cooked_tex")), &rtex)?;
+                    std::fs::write(dir.join(suffix("normal")), &rtex)?;
+                }
+            }
+
+            if let Some(info) = pbr.metallic_roughness_texture() {
+                let img_idx = info.texture().source().index();
+                if let Some(img) = images.get(img_idx) {
+                    let rtex = image_to_rtex(img)
+                        .with_context(|| format!("{input:?}: metallic_roughness texture"))?;
+                    std::fs::write(dir.join(suffix("metallic_roughness")), &rtex)?;
                 }
             }
         }
@@ -160,6 +221,7 @@ fn image_to_rtex(img: &gltf::image::Data) -> Result<Vec<u8>> {
         fmt => bail!("unsupported GLB image format: {fmt:?}"),
     };
 
+    // glTF UV origin (0,0) is top-left, matching wgpu/Vulkan — no row flip needed.
     let mut out = Vec::with_capacity(16 + rgba.len());
     out.extend_from_slice(b"RTEX");
     out.extend_from_slice(&1u32.to_le_bytes());
@@ -229,4 +291,46 @@ fn normalize3(a: [f32; 3]) -> [f32; 3] {
     } else {
         [a[0] / len, a[1] / len, a[2] / len]
     }
+}
+
+fn mat4_mul(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
+    let mut c = [[0.0f32; 4]; 4];
+    for i in 0..4 {
+        for j in 0..4 {
+            for k in 0..4 {
+                c[i][j] += a[i][k] * b[k][j];
+            }
+        }
+    }
+    c
+}
+
+fn node_transform(t: gltf::scene::Transform) -> [[f32; 4]; 4] {
+    let m = t.matrix();
+    // gltf gives column-major; convert to row-major [[f32;4];4]
+    [
+        [m[0][0], m[1][0], m[2][0], m[3][0]],
+        [m[0][1], m[1][1], m[2][1], m[3][1]],
+        [m[0][2], m[1][2], m[2][2], m[3][2]],
+        [m[0][3], m[1][3], m[2][3], m[3][3]],
+    ]
+}
+
+fn transform_point(m: [[f32; 4]; 4], p: [f32; 3]) -> [f32; 3] {
+    [
+        m[0][0] * p[0] + m[0][1] * p[1] + m[0][2] * p[2] + m[0][3],
+        m[1][0] * p[0] + m[1][1] * p[1] + m[1][2] * p[2] + m[1][3],
+        m[2][0] * p[0] + m[2][1] * p[1] + m[2][2] * p[2] + m[2][3],
+    ]
+}
+
+fn transform_normal(m: [[f32; 4]; 4], n: [f32; 3]) -> [f32; 3] {
+    // Normals transform by the inverse-transpose of the upper-left 3x3.
+    // For uniform or orthogonal scaling this equals the 3x3 itself (re-normalized).
+    let r = [
+        m[0][0] * n[0] + m[0][1] * n[1] + m[0][2] * n[2],
+        m[1][0] * n[0] + m[1][1] * n[1] + m[1][2] * n[2],
+        m[2][0] * n[0] + m[2][1] * n[1] + m[2][2] * n[2],
+    ];
+    normalize3(r)
 }

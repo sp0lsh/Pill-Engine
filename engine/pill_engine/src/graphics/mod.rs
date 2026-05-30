@@ -2,10 +2,12 @@
 
 #[cfg(feature = "headless")]
 mod dummy_renderer;
+mod pass_background;
 #[cfg(feature = "debug_ui")]
 mod pass_egui;
 mod pass_mesh;
 mod pass_pbr_static;
+mod pass_tonemap;
 mod render_queue;
 mod renderer;
 
@@ -19,10 +21,12 @@ pub use renderer::{
 
 #[cfg(feature = "headless")]
 pub use self::dummy_renderer::DummyRenderer;
+pub use pass_background::PassBackground;
 #[cfg(feature = "debug_ui")]
 pub use pass_egui::PassEgui;
 pub use pass_mesh::PassMesh;
 pub use pass_pbr_static::PassPBRStatic;
+pub use pass_tonemap::PassTonemap;
 
 pub use render_queue::{
     compose_pbr_render_queue_key, compose_render_queue_key, decompose_render_queue_key,

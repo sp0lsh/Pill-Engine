@@ -143,7 +143,7 @@ impl PillRenderer for Renderer {
             },
         };
 
-        let view = frame
+        let swapchain_view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -167,7 +167,7 @@ impl PillRenderer for Renderer {
 
         let mut passes = std::mem::take(&mut self.state.passes);
         for pass in &mut passes {
-            pass.draw(&mut encoder, self, &frame, &view, &world)?;
+            pass.draw(&mut encoder, self, &frame, &swapchain_view, &world)?;
         }
         self.state.passes = passes;
 
@@ -175,7 +175,60 @@ impl PillRenderer for Renderer {
 
         timer.record("Submit commands and present frame");
 
+        self.state.frame_counter += 1;
+        let capture = self.state.screenshot.as_ref().and_then(|(target, path)| {
+            if self.state.frame_counter == *target {
+                Some(path.clone())
+            } else {
+                None
+            }
+        });
+
+        let screenshot_buf = if let Some(ref _path) = capture {
+            let w = self.state.surface_configuration.width;
+            let h = self.state.surface_configuration.height;
+            let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+            let bytes_per_row = (4 * w + align - 1) / align * align;
+            let buf = self.state.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("screenshot_readback"),
+                size: (bytes_per_row * h) as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+            encoder.copy_texture_to_buffer(
+                frame.texture.as_image_copy(),
+                wgpu::TexelCopyBufferInfo {
+                    buffer: &buf,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(bytes_per_row),
+                        rows_per_image: Some(h),
+                    },
+                },
+                wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+            );
+            Some((buf, w, h, bytes_per_row))
+        } else {
+            None
+        };
+
         self.state.queue.submit(std::iter::once(encoder.finish()));
+
+        if let (Some((buf, w, h, bytes_per_row)), Some(path)) = (screenshot_buf, capture) {
+            let slice = buf.slice(..);
+            slice.map_async(wgpu::MapMode::Read, |_| {});
+            self.state.device.poll(wgpu::MaintainBase::Wait);
+            let data = slice.get_mapped_range();
+            save_screenshot(&path, &data, w, h, bytes_per_row, self.state.color_format);
+            drop(data);
+            buf.unmap();
+            self.state.screenshot = None;
+        }
+
         frame.present();
 
         Ok(())
@@ -193,17 +246,34 @@ impl PillRenderer for Renderer {
 
     /// Installs the default pass chain (scene + optional egui) on first frame bootstrap.
     fn init_default_passes(&mut self, egui_client: Arc<EguiClient>) -> Result<()> {
+        use crate::graphics::{PassBackground, PassTonemap};
         self.state.egui_client = Some(egui_client.clone());
+
+        let w = self.state.surface_configuration.width;
+        let h = self.state.surface_configuration.height;
+        let hdr = self.create_render_target(RendererTargetDesc {
+            name: "hdr_target".to_string(),
+            format: wgpu::TextureFormat::Rgba16Float,
+            width: w,
+            height: h,
+        })?;
+
         #[cfg(feature = "debug_ui")]
         {
             use crate::graphics::PassEgui;
             self.set_passes(vec![
-                Box::new(PassPBRStatic::new(None, None, None)),
+                Box::new(PassBackground::new(hdr)),
+                Box::new(PassPBRStatic::new(Some(hdr), None, None, None)),
+                Box::new(PassTonemap::new(hdr)),
                 Box::new(PassEgui::new(self.state.window.clone(), egui_client)),
             ])
         }
         #[cfg(not(feature = "debug_ui"))]
-        self.set_passes(vec![Box::new(PassPBRStatic::new(None, None, None))])
+        self.set_passes(vec![
+            Box::new(PassBackground::new(hdr)),
+            Box::new(PassPBRStatic::new(Some(hdr), None, None, None)),
+            Box::new(PassTonemap::new(hdr)),
+        ])
     }
 
     fn get_device(&self) -> &wgpu::Device {
@@ -355,6 +425,9 @@ pub struct State {
     egui_client: Option<Arc<EguiClient>>,
     camera_bind_group_layout: wgpu::BindGroupLayout,
     window: Arc<winit::window::Window>,
+    // Optional frame capture: (target_frame, output_path). Set via PILL_SCREENSHOT env var.
+    screenshot: Option<(u32, String)>,
+    frame_counter: u32,
 }
 
 impl State {
@@ -405,7 +478,8 @@ impl State {
         let (device, queue) = {
             let wanted = wgpu::Features::DEPTH_CLIP_CONTROL
                 | wgpu::Features::TIMESTAMP_QUERY
-                | wgpu::Features::PIPELINE_STATISTICS_QUERY;
+                | wgpu::Features::PIPELINE_STATISTICS_QUERY
+                | wgpu::Features::FLOAT32_FILTERABLE;
             let features = wanted & adapter.features();
 
             adapter
@@ -461,7 +535,7 @@ impl State {
             };
 
             let surface_configuration = wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
                 format,
                 width: window_size.width,
                 height: window_size.height,
@@ -501,6 +575,14 @@ impl State {
         let cameras = PillSlotMap::with_capacity_and_key(10);
         let pass_textures = PillSlotMap::with_capacity_and_key(10);
 
+        let screenshot = std::env::var("PILL_SCREENSHOT").ok().map(|s| {
+            let frame = std::env::var("PILL_SCREENSHOT_FRAME")
+                .ok()
+                .and_then(|f| f.parse::<u32>().ok())
+                .unwrap_or(10);
+            (frame, s)
+        });
+
         Ok(Self {
             cameras,
             engine_parameters,
@@ -517,6 +599,8 @@ impl State {
             egui_client: None,
             camera_bind_group_layout,
             window,
+            screenshot,
+            frame_counter: 0,
         })
     }
 
@@ -534,5 +618,49 @@ impl State {
             )
             .unwrap();
         }
+    }
+}
+
+fn save_screenshot(
+    path: &str,
+    data: &[u8],
+    width: u32,
+    height: u32,
+    bytes_per_row: u32,
+    format: wgpu::TextureFormat,
+) {
+    use std::io::BufWriter;
+
+    let is_bgra = matches!(
+        format,
+        wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+    );
+
+    let mut rgba: Vec<u8> = Vec::with_capacity((width * height * 4) as usize);
+    for row in 0..height {
+        let start = (row * bytes_per_row) as usize;
+        let row_data = &data[start..start + (width * 4) as usize];
+        for pixel in row_data.chunks(4) {
+            if is_bgra {
+                rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+            } else {
+                rgba.extend_from_slice(pixel);
+            }
+        }
+    }
+
+    let file = match std::fs::File::create(path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("screenshot: cannot create {path}: {e}");
+            return;
+        }
+    };
+    let mut enc = png::Encoder::new(BufWriter::new(file), width, height);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    if let Ok(mut writer) = enc.write_header() {
+        let _ = writer.write_image_data(&rgba);
+        println!("screenshot saved: {path}");
     }
 }

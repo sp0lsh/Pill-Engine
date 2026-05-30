@@ -188,6 +188,17 @@ pub(crate) fn modify_file<A: FnMut(String) -> String>(
     Ok(())
 }
 
+fn codesign_adhoc(path: &PathBuf) -> Result<()> {
+    let status = Command::new("codesign")
+        .args(["--force", "--sign", "-", path.to_str().unwrap_or("")])
+        .status()
+        .with_context(|| format!("codesign failed for {}", path.display()))?;
+    if !status.success() {
+        bail!("codesign returned non-zero for {}", path.display());
+    }
+    Ok(())
+}
+
 fn copy_if_newer(source: &PathBuf, destination: &PathBuf) -> Result<bool> {
     // returns true if copied
     if !source.exists() {
@@ -899,11 +910,13 @@ fn build_game_project(
     if *compile_mode != CompileMode::HotReload || !hot_reload_child {
         if copy_if_newer(&game_src, &data_dir.join(dylib("pill_game")))? {
             println!("Copied game dylib");
+            codesign_adhoc(&data_dir.join(dylib("pill_game")))?;
         } else {
             println!("Skipping copying of game dylib");
         }
         if copy_if_newer(&runtime_src, &data_dir.join(dylib("pill_runtime")))? {
             println!("Copied runtime dylib");
+            codesign_adhoc(&data_dir.join(dylib("pill_runtime")))?;
         } else {
             println!("Skipping copying of runtime dylib");
         }
