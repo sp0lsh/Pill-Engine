@@ -1,5 +1,10 @@
 use pill_engine::{define_component, game::*};
 
+const EQUIRECT: &[u8] = include_bytes!("../res/textures/studio_equirect.cooked_tex");
+const DIFFUSE_IBL: &[u8] = include_bytes!("../res/textures/studio_diffuse_ibl.cooked_tex");
+const SPECULAR_IBL: &[u8] = include_bytes!("../res/textures/studio_specular_ibl.cooked_tex");
+const BRDF_LUT: &[u8] = include_bytes!("../res/textures/brdf_lut.cooked_tex");
+
 define_component!(OrbitCamera {
     yaw: f32,
     pitch: f32,
@@ -10,6 +15,13 @@ pub struct Game {}
 
 impl PillGame for Game {
     fn start(&self, engine: &mut Engine) -> Result<()> {
+        engine.set_background_texture(EQUIRECT.to_vec())?;
+        engine.set_ibl_textures(
+            DIFFUSE_IBL.to_vec(),
+            SPECULAR_IBL.to_vec(),
+            BRDF_LUT.to_vec(),
+        )?;
+
         let scene = engine.create_scene("pbr_balls")?;
         engine.set_active_scene(scene)?;
 

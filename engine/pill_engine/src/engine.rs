@@ -602,6 +602,26 @@ impl Engine {
 
 /// Pill Engine game API
 impl Engine {
+    // --- Renderer API ---
+
+    /// Provides equirect background texture bytes; used by PassBackground on first-frame init.
+    /// Must be called before the first rendered frame (i.e. from `start()`).
+    pub fn set_background_texture(&mut self, bytes: Vec<u8>) -> Result<()> {
+        self.renderer.set_background_texture(bytes)
+    }
+
+    /// Provides IBL map bytes (diffuse irradiance, specular prefilter, BRDF LUT);
+    /// used by PassPBRStatic on first-frame init.
+    /// Must be called before the first rendered frame (i.e. from `start()`).
+    pub fn set_ibl_textures(
+        &mut self,
+        diffuse: Vec<u8>,
+        specular: Vec<u8>,
+        brdf_lut: Vec<u8>,
+    ) -> Result<()> {
+        self.renderer.set_ibl_textures(diffuse, specular, brdf_lut)
+    }
+
     // --- UI API ---
 
     /// Sets a game-defined egui overlay; called every frame before the engine debug window.

@@ -11,10 +11,9 @@ use pill_core::{PillSlotMapKey, Result};
 static VS: &str = include_str!("../../res/shaders/background_vertex.wgsl");
 static FS: &str = include_str!("../../res/shaders/background_fragment.wgsl");
 
-static EQUIRECT_BYTES: &[u8] = include_bytes!("../../res/textures/studio_equirect.cooked_tex");
-
 pub struct PassBackground {
     hdr_target: RendererTextureHandle,
+    equirect_bytes: Option<Vec<u8>>,
     state: Option<BgState>,
 }
 
@@ -41,8 +40,14 @@ impl PassBackground {
     pub fn new(hdr_target: RendererTextureHandle) -> Self {
         Self {
             hdr_target,
+            equirect_bytes: None,
             state: None,
         }
+    }
+
+    pub fn with_equirect_bytes(mut self, bytes: Vec<u8>) -> Self {
+        self.equirect_bytes = Some(bytes);
+        self
     }
 }
 
@@ -118,44 +123,91 @@ impl Pass for PassBackground {
             },
         })?;
 
-        let (raw, w, h, version) = decode_rtex(EQUIRECT_BYTES);
-        let size = wgpu::Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
+        let (texture, view) = match &self.equirect_bytes {
+            Some(bytes) => {
+                let (raw, w, h, version) = decode_rtex(bytes);
+                let size = wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                };
+                let (tex_format, bytes_per_channel) = if version == 2 {
+                    (wgpu::TextureFormat::Rgba32Float, 4u32)
+                } else {
+                    (wgpu::TextureFormat::Rgba8UnormSrgb, 1u32)
+                };
+                let texture = renderer
+                    .get_device()
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some("studio_equirect"),
+                        size,
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: tex_format,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                        view_formats: &[],
+                    });
+                renderer.get_queue().write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    raw,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4 * bytes_per_channel * w),
+                        rows_per_image: Some(h),
+                    },
+                    size,
+                );
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                (texture, view)
+            }
+            None => {
+                // 1×1 Rgba32Float black fallback — no embedded asset
+                let texture = renderer
+                    .get_device()
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some("equirect_fallback"),
+                        size: wgpu::Extent3d {
+                            width: 1,
+                            height: 1,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: wgpu::TextureFormat::Rgba32Float,
+                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                        view_formats: &[],
+                    });
+                // pixel: [0.0, 0.0, 0.0, 1.0] as f32 LE bytes
+                renderer.get_queue().write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63],
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(16),
+                        rows_per_image: Some(1),
+                    },
+                    wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                (texture, view)
+            }
         };
-        let (tex_format, bytes_per_channel) = if version == 2 {
-            (wgpu::TextureFormat::Rgba32Float, 4u32)
-        } else {
-            (wgpu::TextureFormat::Rgba8UnormSrgb, 1u32)
-        };
-        let device = renderer.get_device();
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("studio_equirect"),
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: tex_format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        renderer.get_queue().write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            raw,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * bytes_per_channel * w),
-                rows_per_image: Some(h),
-            },
-            size,
-        );
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let sampler = renderer
             .get_device()

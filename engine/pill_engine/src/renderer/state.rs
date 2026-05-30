@@ -259,22 +259,40 @@ impl PillRenderer for Renderer {
             height: h,
         })?;
 
+        let bg = {
+            let mut p = PassBackground::new(hdr);
+            if let Some(bytes) = self.state.background_equirect.take() {
+                p = p.with_equirect_bytes(bytes);
+            }
+            p
+        };
+        let pbr = {
+            let d = self.state.ibl_diffuse.take();
+            let s = self.state.ibl_specular.take();
+            let b = self.state.ibl_brdf_lut.take();
+            let mut p = PassPBRStatic::new(Some(hdr));
+            if let (Some(d), Some(s), Some(b)) = (d, s, b) {
+                p = p.with_ibl(d, s, b);
+            }
+            p
+        };
+
         #[cfg(feature = "ui")]
         {
             use crate::graphics::PassEgui;
             let egui_client = EguiClient::new();
             self.state.egui_client = Some(egui_client.clone());
             return self.set_passes(vec![
-                Box::new(PassBackground::new(hdr)),
-                Box::new(PassPBRStatic::new(Some(hdr))),
+                Box::new(bg),
+                Box::new(pbr),
                 Box::new(PassTonemap::new(hdr)),
                 Box::new(PassEgui::new(self.state.window.clone(), egui_client)),
             ]);
         }
         #[cfg(not(feature = "ui"))]
         self.set_passes(vec![
-            Box::new(PassBackground::new(hdr)),
-            Box::new(PassPBRStatic::new(Some(hdr))),
+            Box::new(bg),
+            Box::new(pbr),
             Box::new(PassTonemap::new(hdr)),
         ])
     }
@@ -414,6 +432,23 @@ impl PillRenderer for Renderer {
             .get(handle)
             .map(|t| &t.texture_view)
     }
+
+    fn set_background_texture(&mut self, bytes: Vec<u8>) -> Result<()> {
+        self.state.background_equirect = Some(bytes);
+        Ok(())
+    }
+
+    fn set_ibl_textures(
+        &mut self,
+        diffuse: Vec<u8>,
+        specular: Vec<u8>,
+        brdf_lut: Vec<u8>,
+    ) -> Result<()> {
+        self.state.ibl_diffuse = Some(diffuse);
+        self.state.ibl_specular = Some(specular);
+        self.state.ibl_brdf_lut = Some(brdf_lut);
+        Ok(())
+    }
 }
 
 pub struct State {
@@ -435,6 +470,10 @@ pub struct State {
     // Optional frame capture: (target_frame, output_path). Set via PILL_SCREENSHOT env var.
     screenshot: Option<(u32, String)>,
     frame_counter: u32,
+    background_equirect: Option<Vec<u8>>,
+    ibl_diffuse: Option<Vec<u8>>,
+    ibl_specular: Option<Vec<u8>>,
+    ibl_brdf_lut: Option<Vec<u8>>,
 }
 
 impl State {
@@ -612,6 +651,10 @@ impl State {
             window,
             screenshot,
             frame_counter: 0,
+            background_equirect: None,
+            ibl_diffuse: None,
+            ibl_specular: None,
+            ibl_brdf_lut: None,
         })
     }
 

@@ -135,6 +135,9 @@ pub struct PassPBRStatic {
     visible_pre_draw_buffer: Vec<VisiblePreDraw>,
     groups_buffer: Vec<GroupCmd>,
     staging_buffer: Vec<u8>,
+    ibl_diffuse: Option<Vec<u8>>,
+    ibl_specular: Option<Vec<u8>>,
+    ibl_brdf_lut: Option<Vec<u8>>,
     state: Option<PassPBRStaticState>,
 }
 
@@ -149,8 +152,18 @@ impl PassPBRStatic {
             staging_buffer: Vec::with_capacity(
                 MAX_EXPECTED_PER_DRAW_INSTANCES * PER_DRAW_STRIDE_BYTES,
             ),
+            ibl_diffuse: None,
+            ibl_specular: None,
+            ibl_brdf_lut: None,
             state: None,
         }
+    }
+
+    pub fn with_ibl(mut self, diffuse: Vec<u8>, specular: Vec<u8>, brdf_lut: Vec<u8>) -> Self {
+        self.ibl_diffuse = Some(diffuse);
+        self.ibl_specular = Some(specular);
+        self.ibl_brdf_lut = Some(brdf_lut);
+        self
     }
 }
 
@@ -228,6 +241,53 @@ fn load_ibl_texture(
     }
     let view = tex.create_view(&wgpu::TextureViewDescriptor {
         mip_level_count: Some(mip_count),
+        ..Default::default()
+    });
+    (tex, view)
+}
+
+/// Creates a 1×1 Rgba8Unorm neutral-gray texture as a no-op IBL fallback.
+fn create_1px_ibl_fallback(
+    renderer: &dyn PillRenderer,
+    label: &str,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let tex = renderer
+        .get_device()
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+    renderer.get_queue().write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &tex,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &[128, 128, 128, 255],
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4),
+            rows_per_image: Some(1),
+        },
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = tex.create_view(&wgpu::TextureViewDescriptor {
+        mip_level_count: Some(1),
         ..Default::default()
     });
     (tex, view)
@@ -535,19 +595,18 @@ impl Pass for PassPBRStatic {
             })
         };
 
-        // Load studio IBL textures from embedded cooked assets.
-        static DIFFUSE_IBL: &[u8] =
-            include_bytes!("../../res/textures/studio_diffuse_ibl.cooked_tex");
-        static SPECULAR_IBL: &[u8] =
-            include_bytes!("../../res/textures/studio_specular_ibl.cooked_tex");
-        static BRDF_LUT: &[u8] = include_bytes!("../../res/textures/brdf_lut.cooked_tex");
-
-        let (ibl_irradiance_texture, irradiance_view) =
-            load_ibl_texture(renderer, "studio_diffuse_ibl", DIFFUSE_IBL, true);
-        let (ibl_prefilter_texture, prefilter_view) =
-            load_ibl_texture(renderer, "studio_specular_ibl", SPECULAR_IBL, true);
-        let (ibl_brdf_lut_texture, brdf_lut_view) =
-            load_ibl_texture(renderer, "brdf_lut", BRDF_LUT, false); // linear
+        let (ibl_irradiance_texture, irradiance_view) = match &self.ibl_diffuse {
+            Some(bytes) => load_ibl_texture(renderer, "diffuse_ibl", bytes, true),
+            None => create_1px_ibl_fallback(renderer, "diffuse_ibl_fallback"),
+        };
+        let (ibl_prefilter_texture, prefilter_view) = match &self.ibl_specular {
+            Some(bytes) => load_ibl_texture(renderer, "specular_ibl", bytes, true),
+            None => create_1px_ibl_fallback(renderer, "specular_ibl_fallback"),
+        };
+        let (ibl_brdf_lut_texture, brdf_lut_view) = match &self.ibl_brdf_lut {
+            Some(bytes) => load_ibl_texture(renderer, "brdf_lut", bytes, false), // linear
+            None => create_1px_ibl_fallback(renderer, "brdf_lut_fallback"),
+        };
 
         let prefilter_sampler = {
             let device = renderer.get_device();

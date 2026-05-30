@@ -194,6 +194,18 @@ pub trait PillRenderer {
 
     /// Returns the texture view for a previously created render target, or `None` if not found.
     fn get_render_target_view(&self, handle: RendererTextureHandle) -> Option<&wgpu::TextureView>;
+
+    /// Stores equirect background bytes; used by PassBackground on first-frame init.
+    fn set_background_texture(&mut self, bytes: Vec<u8>) -> Result<()>;
+
+    /// Stores IBL map bytes (diffuse irradiance, specular prefilter, BRDF LUT);
+    /// used by PassPBRStatic on first-frame init.
+    fn set_ibl_textures(
+        &mut self,
+        diffuse: Vec<u8>,
+        specular: Vec<u8>,
+        brdf_lut: Vec<u8>,
+    ) -> Result<()>;
 }
 
 pub type Renderer = Box<dyn PillRenderer>;
