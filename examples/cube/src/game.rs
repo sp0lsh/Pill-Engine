@@ -29,10 +29,8 @@ impl PillGame for WebGame {
         engine.register_component::<PbrRenderableComponent>(active_scene)?;
 
         let cube_mesh_handle = engine.add_resource(Mesh::cube("cube", 2.0))?;
-        let material_handle = engine.add_resource(
-            PBRMaterial::new("cube_material")
-                .albedo(Color::new(0.80, 0.80, 0.82)),
-        )?;
+        let material_handle = engine
+            .add_resource(PBRMaterial::new("cube_material").albedo(Color::new(0.80, 0.80, 0.82)))?;
 
         engine
             .build_entity(active_scene)

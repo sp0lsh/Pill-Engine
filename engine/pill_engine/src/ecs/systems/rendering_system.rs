@@ -23,11 +23,16 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
         .boot_done;
 
     if !boot_done {
-        let egui_client = engine
-            .get_global_component::<RenderStateComponent>()?
-            .egui_client
-            .clone();
-        engine.renderer.init_default_passes(egui_client)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let egui_client = engine
+                .get_global_component::<RenderStateComponent>()?
+                .egui_client
+                .clone();
+            engine.renderer.init_default_passes(egui_client)?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        engine.renderer.init_default_passes()?;
         engine
             .get_global_component_mut::<RenderStateComponent>()?
             .boot_done = true;

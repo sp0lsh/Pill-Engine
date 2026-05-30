@@ -369,7 +369,10 @@ impl Engine {
         #[cfg(not(feature = "headless"))]
         {
             self.add_global_component(InputComponent::new())?;
+            #[cfg(not(target_arch = "wasm32"))]
             self.add_global_component(RenderStateComponent::new(EguiClient::new()))?;
+            #[cfg(target_arch = "wasm32")]
+            self.add_global_component(RenderStateComponent::new())?;
         }
 
         #[cfg(all(not(feature = "headless"), not(target_arch = "wasm32")))]

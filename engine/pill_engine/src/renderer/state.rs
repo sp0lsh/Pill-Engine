@@ -1,7 +1,6 @@
 #![allow(clippy::too_many_arguments)]
 use crate::{
     app_config::EngineConfig,
-    ecs::EguiClient,
     graphics::{
         BufferDesc, Pass, PassPBRStatic, PillRenderer, PipelineV2, PipelineV2Desc,
         RendererCameraHandle, RendererTargetDesc, RendererTextureHandle, WorldQuery,
@@ -19,6 +18,8 @@ use crate::{
     resources::ResourceManager,
 };
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::ecs::EguiClient;
 use pill_core::Result;
 use pill_core::{
     debug, info, LogContext, PillSlotMap, PillSlotMapKey, PillStyle, RendererError, Timer,
@@ -188,7 +189,7 @@ impl PillRenderer for Renderer {
             let w = self.state.surface_configuration.width;
             let h = self.state.surface_configuration.height;
             let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-            let bytes_per_row = (4 * w + align - 1) / align * align;
+            let bytes_per_row = (4 * w).div_ceil(align) * align;
             let buf = self.state.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("screenshot_readback"),
                 size: (bytes_per_row * h) as u64,
@@ -246,6 +247,7 @@ impl PillRenderer for Renderer {
     }
 
     /// Installs the default pass chain (scene + optional egui) on first frame bootstrap.
+    #[cfg(not(target_arch = "wasm32"))]
     fn init_default_passes(&mut self, egui_client: Arc<EguiClient>) -> Result<()> {
         use crate::graphics::{PassBackground, PassTonemap};
         self.state.egui_client = Some(egui_client.clone());
@@ -270,6 +272,26 @@ impl PillRenderer for Renderer {
             ])
         }
         #[cfg(not(feature = "debug_ui"))]
+        self.set_passes(vec![
+            Box::new(PassBackground::new(hdr)),
+            Box::new(PassPBRStatic::new(Some(hdr))),
+            Box::new(PassTonemap::new(hdr)),
+        ])
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn init_default_passes(&mut self) -> Result<()> {
+        use crate::graphics::{PassBackground, PassTonemap};
+
+        let w = self.state.surface_configuration.width;
+        let h = self.state.surface_configuration.height;
+        let hdr = self.create_render_target(RendererTargetDesc {
+            name: "hdr_target".to_string(),
+            format: wgpu::TextureFormat::Rgba16Float,
+            width: w,
+            height: h,
+        })?;
+
         self.set_passes(vec![
             Box::new(PassBackground::new(hdr)),
             Box::new(PassPBRStatic::new(Some(hdr))),
@@ -421,6 +443,7 @@ pub struct State {
     depth_format: wgpu::TextureFormat,
     depth_texture: RendererTexture,
     passes: Vec<Box<dyn Pass>>,
+    #[cfg(not(target_arch = "wasm32"))]
     egui_client: Option<Arc<EguiClient>>,
     camera_bind_group_layout: wgpu::BindGroupLayout,
     window: Arc<winit::window::Window>,
@@ -598,6 +621,7 @@ impl State {
             depth_format,
             depth_texture,
             passes: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
             egui_client: None,
             camera_bind_group_layout,
             window,

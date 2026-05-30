@@ -34,6 +34,7 @@ pub use components::egui_manager_component::EguiManagerComponent;
 
 pub use components::render_state_component::RenderStateComponent;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use egui_client::EguiClient;
 
 pub use components::deferred_update_component::{

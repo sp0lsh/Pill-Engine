@@ -79,9 +79,8 @@ unsafe impl bytemuck::Pod for PerDrawStd140 {}
 // Preallocated dynamic-UBO ring: 256-byte stride to satisfy min UBO offset alignment.
 const MAX_EXPECTED_PER_DRAW_INSTANCES: usize = 100_000;
 const UNIFORM_OFFSET_ALIGNMENT: usize = 256;
-const PER_DRAW_STRIDE_BYTES: usize = ((std::mem::size_of::<PerDrawStd140>()
-    + (UNIFORM_OFFSET_ALIGNMENT - 1))
-    / UNIFORM_OFFSET_ALIGNMENT)
+const PER_DRAW_STRIDE_BYTES: usize = std::mem::size_of::<PerDrawStd140>()
+    .div_ceil(UNIFORM_OFFSET_ALIGNMENT)
     * UNIFORM_OFFSET_ALIGNMENT;
 
 pub const MATERIAL_BIND_GROUP_GLOBALS: usize = 0;
@@ -775,7 +774,7 @@ impl Pass for PassPBRStatic {
                     self.staging_buffer
                         .extend_from_slice(bytemuck::bytes_of(per_draw));
                     let pad = (PER_DRAW_STRIDE_BYTES) - std::mem::size_of::<PerDrawStd140>();
-                    self.staging_buffer.extend(std::iter::repeat(0u8).take(pad));
+                    self.staging_buffer.extend(std::iter::repeat_n(0u8, pad));
                     next_offset_u32 = next_offset_u32.wrapping_add(PER_DRAW_STRIDE_BYTES as u32);
                 }
             }

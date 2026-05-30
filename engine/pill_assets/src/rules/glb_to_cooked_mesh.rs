@@ -313,9 +313,7 @@ fn mat4_mul(a: [[f32; 4]; 4], b: [[f32; 4]; 4]) -> [[f32; 4]; 4] {
     let mut c = [[0.0f32; 4]; 4];
     for i in 0..4 {
         for j in 0..4 {
-            for k in 0..4 {
-                c[i][j] += a[i][k] * b[k][j];
-            }
+            c[i][j] = (0..4).map(|k| a[i][k] * b[k][j]).sum();
         }
     }
     c

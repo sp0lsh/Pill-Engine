@@ -188,6 +188,7 @@ pub(crate) fn modify_file<A: FnMut(String) -> String>(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 fn codesign_adhoc(path: &PathBuf) -> Result<()> {
     let status = Command::new("codesign")
         .args(["--force", "--sign", "-", path.to_str().unwrap_or("")])
@@ -952,12 +953,14 @@ fn build_game_project(
     if *compile_mode != CompileMode::HotReload || !hot_reload_child {
         if copy_if_newer(&game_src, &data_dir.join(dylib("pill_game")))? {
             println!("Copied game dylib");
+            #[cfg(target_os = "macos")]
             codesign_adhoc(&data_dir.join(dylib("pill_game")))?;
         } else {
             println!("Skipping copying of game dylib");
         }
         if copy_if_newer(&runtime_src, &data_dir.join(dylib("pill_runtime")))? {
             println!("Copied runtime dylib");
+            #[cfg(target_os = "macos")]
             codesign_adhoc(&data_dir.join(dylib("pill_runtime")))?;
         } else {
             println!("Skipping copying of runtime dylib");

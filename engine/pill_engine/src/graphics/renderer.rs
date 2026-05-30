@@ -1,7 +1,9 @@
 #![allow(clippy::too_many_arguments)]
+#[cfg(not(target_arch = "wasm32"))]
+use crate::ecs::EguiClient;
 use crate::{
     app_config::EngineConfig,
-    ecs::{CameraComponent, ComponentStorage, EguiClient, EntityHandle, TransformComponent},
+    ecs::{CameraComponent, ComponentStorage, EntityHandle, TransformComponent},
     graphics::RenderQueueItem,
     resources::{ResourceManager, ShaderParameterSlot, ShaderTextureSlot, TextureType},
 };
@@ -157,7 +159,10 @@ pub trait PillRenderer {
     fn set_passes(&mut self, passes: Vec<Box<dyn Pass>>) -> Result<()>;
 
     /// Installs the default pass chain (scene + optional egui) on first frame bootstrap.
+    #[cfg(not(target_arch = "wasm32"))]
     fn init_default_passes(&mut self, egui_client: Arc<EguiClient>) -> Result<()>;
+    #[cfg(target_arch = "wasm32")]
+    fn init_default_passes(&mut self) -> Result<()>;
 
     /// Returns the wgpu `Device`; required by passes that allocate their own GPU resources.
     fn get_device(&self) -> &wgpu::Device;

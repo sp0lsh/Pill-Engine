@@ -1,3 +1,5 @@
+#![cfg(not(target_arch = "wasm32"))]
+
 use std::sync::{Arc, Mutex};
 
 type UiFunction = Box<dyn Fn(&egui::Context) + Send>;
