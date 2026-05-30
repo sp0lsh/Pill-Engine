@@ -183,6 +183,8 @@ fn rewrite_scratch_manifest(scratch_pill_web_app_dir: &Path, game_dir: &Path) ->
             "panic = \"abort\"\n",
             "\n[package.metadata.wasm-pack.profile.release]\n",
             "wasm-opt = [\"-Oz\", \"--strip-debug\", \"--strip-producers\", \"--enable-nontrapping-float-to-int\", \"--enable-bulk-memory\", \"--enable-sign-ext\", \"--enable-mutable-globals\", \"--enable-reference-types\"]\n",
+            "\n[target.'cfg(target_arch = \"wasm32\")'.dependencies]\n",
+            "lol_alloc = \"0.4\"\n",
         ),
         pill_game = pill_game,
     )
