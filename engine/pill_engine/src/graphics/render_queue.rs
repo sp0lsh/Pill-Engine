@@ -87,6 +87,7 @@ pub const RENDER_QUEUE_KEY_MESH_VERSION: RenderQueueFieldDesc =
 
 // --- Compose ---
 
+#[cfg_attr(feature = "headless", allow(unused_variables))]
 pub fn compose_render_queue_key(
     resource_manager: &ResourceManager,
     material_handle: &MaterialHandle,
@@ -128,6 +129,7 @@ pub fn compose_render_queue_key(
 }
 
 /// PBR path: PBRMaterial always uses default lit shader
+#[cfg_attr(feature = "headless", allow(unused_variables))]
 pub fn compose_pbr_render_queue_key(
     resource_manager: &ResourceManager,
     material_handle: PBRMaterialHandle,

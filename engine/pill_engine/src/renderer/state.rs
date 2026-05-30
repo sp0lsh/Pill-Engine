@@ -223,6 +223,7 @@ impl PillRenderer for Renderer {
             slice.map_async(wgpu::MapMode::Read, |_| {});
             let _ = self.state.device.poll(wgpu::MaintainBase::Wait);
             let data = slice.get_mapped_range();
+            #[cfg(not(target_arch = "wasm32"))]
             save_screenshot(&path, &data, w, h, bytes_per_row, self.state.color_format);
             drop(data);
             buf.unmap();
@@ -621,6 +622,7 @@ impl State {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn save_screenshot(
     path: &str,
     data: &[u8],
