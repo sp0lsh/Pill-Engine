@@ -221,7 +221,7 @@ impl PillRenderer for Renderer {
         if let (Some((buf, w, h, bytes_per_row)), Some(path)) = (screenshot_buf, capture) {
             let slice = buf.slice(..);
             slice.map_async(wgpu::MapMode::Read, |_| {});
-            self.state.device.poll(wgpu::MaintainBase::Wait);
+            let _ = self.state.device.poll(wgpu::MaintainBase::Wait);
             let data = slice.get_mapped_range();
             save_screenshot(&path, &data, w, h, bytes_per_row, self.state.color_format);
             drop(data);
@@ -263,7 +263,7 @@ impl PillRenderer for Renderer {
             use crate::graphics::PassEgui;
             self.set_passes(vec![
                 Box::new(PassBackground::new(hdr)),
-                Box::new(PassPBRStatic::new(Some(hdr), None, None, None)),
+                Box::new(PassPBRStatic::new(Some(hdr))),
                 Box::new(PassTonemap::new(hdr)),
                 Box::new(PassEgui::new(self.state.window.clone(), egui_client)),
             ])
@@ -271,7 +271,7 @@ impl PillRenderer for Renderer {
         #[cfg(not(feature = "debug_ui"))]
         self.set_passes(vec![
             Box::new(PassBackground::new(hdr)),
-            Box::new(PassPBRStatic::new(Some(hdr), None, None, None)),
+            Box::new(PassPBRStatic::new(Some(hdr))),
             Box::new(PassTonemap::new(hdr)),
         ])
     }
@@ -416,8 +416,6 @@ pub struct State {
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface_configuration: wgpu::SurfaceConfiguration,
-    #[allow(dead_code)]
-    window_size: winit::dpi::PhysicalSize<u32>,
     color_format: wgpu::TextureFormat,
     depth_format: wgpu::TextureFormat,
     depth_texture: RendererTexture,
@@ -542,7 +540,11 @@ impl State {
                 desired_maximum_frame_latency: 2,
                 present_mode,
                 alpha_mode: wgpu::CompositeAlphaMode::Auto,
-                view_formats: vec![format],
+                view_formats: if format.is_srgb() {
+                    vec![]
+                } else {
+                    vec![format.add_srgb_suffix()]
+                },
             };
             surface.configure(&device, &surface_configuration);
             let color_format = surface_configuration.format;
@@ -591,7 +593,6 @@ impl State {
             device,
             queue,
             surface_configuration,
-            window_size,
             color_format,
             depth_format,
             depth_texture,
@@ -606,7 +607,6 @@ impl State {
 
     fn resize(&mut self, new_window_size: winit::dpi::PhysicalSize<u32>) {
         if new_window_size.width > 0 && new_window_size.height > 0 {
-            self.window_size = new_window_size;
             self.surface_configuration.width = new_window_size.width;
             self.surface_configuration.height = new_window_size.height;
             self.surface

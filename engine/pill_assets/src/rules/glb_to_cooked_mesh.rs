@@ -20,8 +20,10 @@ struct Vertex {
 ///
 /// Primary output: `{stem}.cooked_mesh` (RMSH format, same as ObjToCookedMesh).
 /// Side outputs written in the same directory when textures are present:
-///   `{stem}_albedo.cooked_tex`  — base color (RTEX RGBA8)
-///   `{stem}_normal.cooked_tex`  — normal map (RTEX RGBA8)
+///   `{stem}_albedo.cooked_tex`             — base color (RTEX RGBA8)
+///   `{stem}_normal.cooked_tex`             — normal map (RTEX RGBA8)
+///   `{stem}_metallic_roughness.cooked_tex` — G=roughness, B=metallic (RTEX RGBA8)
+///   `{stem}_emissive.cooked_tex`           — emissive color (RTEX RGBA8)
 pub struct GlbToCookedMesh;
 
 impl Rule for GlbToCookedMesh {
@@ -88,7 +90,7 @@ impl Rule for GlbToCookedMesh {
         for (mesh_idx, world) in mesh_instances {
             let mesh = &meshes[mesh_idx];
             for prim in mesh.primitives() {
-                let reader = prim.reader(|b| Some(&*buffers[b.index()]));
+                let reader = prim.reader(|buffer| Some(&*buffers[buffer.index()]));
                 let vertex_offset = all_vertices.len() as u32;
 
                 let positions: Vec<[f32; 3]> = reader
@@ -106,7 +108,7 @@ impl Rule for GlbToCookedMesh {
                     .collect();
                 let tangents_glb: Vec<[f32; 4]> = reader
                     .read_tangents()
-                    .map(|t| t.collect())
+                    .map(|tangents_iter| tangents_iter.collect())
                     .unwrap_or_default();
                 let prim_indices: Vec<u32> = reader
                     .read_indices()
@@ -119,7 +121,7 @@ impl Rule for GlbToCookedMesh {
                         let n = transform_normal(world, normals[i]);
                         let (tx, ty, tz, sign) = tangents_glb
                             .get(i)
-                            .map(|t| (t[0], t[1], t[2], t[3]))
+                            .map(|tangent| (tangent[0], tangent[1], tangent[2], tangent[3]))
                             .unwrap_or((1.0, 0.0, 0.0, 1.0));
                         let t_world = transform_normal(world, [tx, ty, tz]);
                         let bx = (n[1] * t_world[2] - n[2] * t_world[1]) * sign;
@@ -177,30 +179,40 @@ impl Rule for GlbToCookedMesh {
             let pbr = mat.pbr_metallic_roughness();
 
             if let Some(info) = pbr.base_color_texture() {
-                let img_idx = info.texture().source().index();
-                if let Some(img) = images.get(img_idx) {
-                    let rtex = image_to_rtex(img)
-                        .with_context(|| format!("{input:?}: base color texture"))?;
-                    std::fs::write(dir.join(suffix("albedo")), &rtex)?;
-                }
+                write_cooked_tex(
+                    &images,
+                    info.texture().source().index(),
+                    dir.join(suffix("albedo")),
+                    "base color texture",
+                    input,
+                )?;
             }
-
             if let Some(info) = mat.normal_texture() {
-                let img_idx = info.texture().source().index();
-                if let Some(img) = images.get(img_idx) {
-                    let rtex =
-                        image_to_rtex(img).with_context(|| format!("{input:?}: normal texture"))?;
-                    std::fs::write(dir.join(suffix("normal")), &rtex)?;
-                }
+                write_cooked_tex(
+                    &images,
+                    info.texture().source().index(),
+                    dir.join(suffix("normal")),
+                    "normal texture",
+                    input,
+                )?;
             }
-
             if let Some(info) = pbr.metallic_roughness_texture() {
-                let img_idx = info.texture().source().index();
-                if let Some(img) = images.get(img_idx) {
-                    let rtex = image_to_rtex(img)
-                        .with_context(|| format!("{input:?}: metallic_roughness texture"))?;
-                    std::fs::write(dir.join(suffix("metallic_roughness")), &rtex)?;
-                }
+                write_cooked_tex(
+                    &images,
+                    info.texture().source().index(),
+                    dir.join(suffix("metallic_roughness")),
+                    "metallic_roughness texture",
+                    input,
+                )?;
+            }
+            if let Some(info) = mat.emissive_texture() {
+                write_cooked_tex(
+                    &images,
+                    info.texture().source().index(),
+                    dir.join(suffix("emissive")),
+                    "emissive texture",
+                    input,
+                )?;
             }
         }
 
@@ -208,27 +220,31 @@ impl Rule for GlbToCookedMesh {
     }
 }
 
-fn image_to_rtex(img: &gltf::image::Data) -> Result<Vec<u8>> {
+fn write_cooked_tex(
+    images: &[gltf::image::Data],
+    img_idx: usize,
+    path: std::path::PathBuf,
+    label: &str,
+    input: &Path,
+) -> Result<()> {
     use gltf::image::Format;
-
-    let rgba: Vec<u8> = match img.format {
-        Format::R8G8B8A8 => img.pixels.clone(),
-        Format::R8G8B8 => img
-            .pixels
-            .chunks_exact(3)
-            .flat_map(|p| [p[0], p[1], p[2], 255u8])
-            .collect(),
-        fmt => bail!("unsupported GLB image format: {fmt:?}"),
+    use std::borrow::Cow;
+    let Some(img) = images.get(img_idx) else {
+        return Ok(());
     };
-
+    let rgba: Cow<[u8]> = match img.format {
+        Format::R8G8B8A8 => Cow::Borrowed(&img.pixels),
+        Format::R8G8B8 => Cow::Owned(
+            img.pixels
+                .chunks_exact(3)
+                .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255u8])
+                .collect(),
+        ),
+        format => bail!("{input:?}: {label}: unsupported GLB image format: {format:?}"),
+    };
     // glTF UV origin (0,0) is top-left, matching wgpu/Vulkan — no row flip needed.
-    let mut out = Vec::with_capacity(16 + rgba.len());
-    out.extend_from_slice(b"RTEX");
-    out.extend_from_slice(&1u32.to_le_bytes());
-    out.extend_from_slice(&img.width.to_le_bytes());
-    out.extend_from_slice(&img.height.to_le_bytes());
-    out.extend_from_slice(&rgba);
-    Ok(out)
+    super::studio_equirect::write_rtex(&path, img.width, img.height, &rgba)
+        .with_context(|| format!("{input:?}: {label}"))
 }
 
 fn compute_tangents(vertices: &mut [Vertex], indices: &[u32]) {

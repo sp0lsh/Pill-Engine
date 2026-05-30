@@ -10,14 +10,7 @@ struct SkyCam {
 [[vk::binding(1, 0)]] Texture2D    texEquirect;
 [[vk::binding(2, 0)]] SamplerState smpEquirect;
 
-static const float PI = 3.14159265359;
-
-float2 dir_to_equirect_uv(float3 dir) {
-    float3 d = normalize(dir);
-    float  u = 0.5 + atan2(d.z, d.x) / (2.0 * PI);
-    float  v = 0.5 - asin(clamp(d.y, -1.0, 1.0)) / PI;
-    return float2(frac(u), clamp(v, 0.0, 1.0));
-}
+#include "include/equirect.hlsl"
 
 [shader("fragment")]
 float4 fs_main(float2 ndc : TEXCOORD0) : SV_Target {

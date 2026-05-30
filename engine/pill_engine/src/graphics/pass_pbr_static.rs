@@ -107,7 +107,6 @@ pub(crate) struct MeshBatch {
 
 /// Draw group: one pipeline + one material, containing one or more mesh batches.
 pub(crate) struct GroupCmd {
-    pub(crate) pipeline: *const wgpu::RenderPipeline,
     pub(crate) material_handle: RendererMaterialHandle,
     pub(crate) batches: Vec<MeshBatch>,
 }
@@ -129,16 +128,11 @@ struct PassPBRStaticState {
     per_draw_bind_group: wgpu::BindGroup,
 }
 
-/// Default PBR pass: full GGX shading with optional IBL, per-draw dynamic UBO ring.
+/// Default PBR pass: full GGX shading with IBL, per-draw dynamic UBO ring.
 /// No MeshDrawer — each entity is drawn with a direct indexed draw call.
 pub struct PassPBRStatic {
     color_target: Option<RendererTextureHandle>,
-    ibl_irradiance_tex: Option<RendererTextureHandle>,
-    ibl_prefilter_tex: Option<RendererTextureHandle>,
-    ibl_brdf_lut_tex: Option<RendererTextureHandle>,
     depth_texture: Option<RendererTextureHandle>,
-    per_draw_stride: u64,
-    per_draw_capacity: u64,
     visible_pre_draw_buffer: Vec<VisiblePreDraw>,
     groups_buffer: Vec<GroupCmd>,
     staging_buffer: Vec<u8>,
@@ -146,21 +140,11 @@ pub struct PassPBRStatic {
 }
 
 impl PassPBRStatic {
-    /// Creates the pass with optional IBL textures; `Pass::init` must run before the first frame.
-    pub fn new(
-        color_target: Option<RendererTextureHandle>,
-        ibl_irradiance_tex: Option<RendererTextureHandle>,
-        ibl_prefilter_tex: Option<RendererTextureHandle>,
-        ibl_brdf_lut_tex: Option<RendererTextureHandle>,
-    ) -> Self {
+    /// Creates the pass; `Pass::init` must run before the first frame.
+    pub fn new(color_target: Option<RendererTextureHandle>) -> Self {
         Self {
             color_target,
-            ibl_irradiance_tex,
-            ibl_prefilter_tex,
-            ibl_brdf_lut_tex,
             depth_texture: None,
-            per_draw_stride: PER_DRAW_STRIDE_BYTES as u64,
-            per_draw_capacity: 0,
             visible_pre_draw_buffer: Vec::with_capacity(MAX_EXPECTED_PER_DRAW_INSTANCES),
             groups_buffer: Vec::with_capacity(2000),
             staging_buffer: Vec::with_capacity(
@@ -171,7 +155,7 @@ impl PassPBRStatic {
     }
 }
 
-/// Decode an RTEX header: returns (rgba_bytes, width, height).
+/// Decode an RTEX header: returns (rgba_bytes, width, height, mip_count, version).
 fn decode_rtex(bytes: &[u8]) -> (&[u8], u32, u32, u32, u32) {
     let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
     let w = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
@@ -253,8 +237,9 @@ fn load_ibl_texture(
 /// Returns the initialized pass state; panics in debug if `init` was not called.
 fn get_state(pass: &mut PassPBRStatic) -> &mut PassPBRStaticState {
     debug_assert!(pass.state.is_some());
-    // SAFETY: initialized once in init(), read every draw
-    unsafe { pass.state.as_mut().unwrap_unchecked() }
+    pass.state
+        .as_mut()
+        .expect("PassPBRStatic: state not initialized — call init() before draw()")
 }
 
 impl Pass for PassPBRStatic {
@@ -329,7 +314,7 @@ impl Pass for PassPBRStatic {
                     count: None,
                 },
             ],
-            // 1: material textures (base_color, normal, metallic_roughness)
+            // 1: material textures (base_color, normal, metallic_roughness, emissive)
             vec![
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -375,6 +360,22 @@ impl Pass for PassPBRStatic {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
@@ -457,19 +458,17 @@ impl Pass for PassPBRStatic {
             })
         };
 
-        self.per_draw_capacity = MAX_EXPECTED_PER_DRAW_INSTANCES as u64;
         let per_draw_buffer = renderer.create_buffer(BufferDesc {
             label: Some("pass_pbr_static_per_draw_ring"),
-            byte_size: self.per_draw_stride * self.per_draw_capacity,
+            byte_size: (PER_DRAW_STRIDE_BYTES * MAX_EXPECTED_PER_DRAW_INSTANCES) as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         })?;
         let per_draw_bind_group = {
-            let layout_ptr: *const wgpu::BindGroupLayout =
-                &pipeline.bind_group_layouts[MATERIAL_BIND_GROUP_PERDRAW] as *const _;
+            let layout = &pipeline.bind_group_layouts[MATERIAL_BIND_GROUP_PERDRAW];
             let device = renderer.get_device();
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("pass_pbr_static_per_draw_bind_group"),
-                layout: unsafe { &*layout_ptr },
+                layout,
                 entries: &[wgpu::BindGroupEntry {
                     binding: 0,
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
@@ -567,12 +566,11 @@ impl Pass for PassPBRStatic {
         };
 
         let globals_bind_group = {
-            let layout_ptr: *const wgpu::BindGroupLayout =
-                &pipeline.bind_group_layouts[MATERIAL_BIND_GROUP_GLOBALS] as *const _;
+            let layout = &pipeline.bind_group_layouts[MATERIAL_BIND_GROUP_GLOBALS];
             let device = renderer.get_device();
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("pass_pbr_static_globals_bind_group"),
-                layout: unsafe { &*layout_ptr },
+                layout,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
@@ -665,8 +663,6 @@ impl Pass for PassPBRStatic {
             Mat4::from_cols_array_2d(&state.camera_uniform.view_projection_matrix)
         };
 
-        let _clear_color = active_camera_component.clear_color;
-
         // Build visible set from the render queue.
         self.visible_pre_draw_buffer.clear();
         for render_queue_item in world.render_queue.iter() {
@@ -717,10 +713,6 @@ impl Pass for PassPBRStatic {
 
         // Build group/batch command list.
         self.groups_buffer.clear();
-        let pipeline_ptr: *const wgpu::RenderPipeline = {
-            let state = get_state(self);
-            &state.pipeline.pipeline as *const _
-        };
         for visible in &self.visible_pre_draw_buffer {
             let need_new_group = self
                 .groups_buffer
@@ -729,7 +721,6 @@ impl Pass for PassPBRStatic {
                 .unwrap_or(true);
             if need_new_group {
                 self.groups_buffer.push(GroupCmd {
-                    pipeline: pipeline_ptr,
                     material_handle: visible.material_handle,
                     batches: Vec::new(),
                 });
@@ -768,11 +759,11 @@ impl Pass for PassPBRStatic {
                     .sum::<u64>()
             })
             .sum();
-        if self.per_draw_capacity < needed {
+        if needed > MAX_EXPECTED_PER_DRAW_INSTANCES as u64 {
             log::error!(
                 "PassPBRStatic: per-draw capacity exceeded (needed={}, capacity={})",
                 needed,
-                self.per_draw_capacity
+                MAX_EXPECTED_PER_DRAW_INSTANCES
             );
         }
         self.staging_buffer.clear();
@@ -783,15 +774,17 @@ impl Pass for PassPBRStatic {
                 for per_draw in &batch.instances {
                     self.staging_buffer
                         .extend_from_slice(bytemuck::bytes_of(per_draw));
-                    let pad =
-                        (self.per_draw_stride as usize) - std::mem::size_of::<PerDrawStd140>();
+                    let pad = (PER_DRAW_STRIDE_BYTES) - std::mem::size_of::<PerDrawStd140>();
                     self.staging_buffer.extend(std::iter::repeat(0u8).take(pad));
-                    next_offset_u32 = next_offset_u32.wrapping_add(self.per_draw_stride as u32);
+                    next_offset_u32 = next_offset_u32.wrapping_add(PER_DRAW_STRIDE_BYTES as u32);
                 }
             }
         }
         {
-            let state_ref: &PassPBRStaticState = unsafe { self.state.as_ref().unwrap_unchecked() };
+            let state_ref = self
+                .state
+                .as_ref()
+                .expect("PassPBRStatic: state not initialized — call init() before draw()");
             renderer
                 .get_queue()
                 .write_buffer(&state_ref.per_draw_buffer, 0, &self.staging_buffer);
@@ -828,9 +821,12 @@ impl Pass for PassPBRStatic {
         });
 
         // Record draw commands: bind pipeline → globals → material → per-draw per instance.
-        let state_ref: &PassPBRStaticState = unsafe { self.state.as_ref().unwrap_unchecked() };
+        let state_ref = self
+            .state
+            .as_ref()
+            .expect("PassPBRStatic: state not initialized — call init() before draw()");
+        render_pass.set_pipeline(&state_ref.pipeline.pipeline);
         for group in &self.groups_buffer {
-            render_pass.set_pipeline(unsafe { &*group.pipeline });
             render_pass.set_bind_group(
                 MATERIAL_BIND_GROUP_GLOBALS as u32,
                 &state_ref.globals_bind_group,
@@ -840,7 +836,7 @@ impl Pass for PassPBRStatic {
             let mat = world
                 .resources
                 .get_resource::<RendererMaterial>(&group.material_handle)
-                .unwrap();
+                .expect("PassPBRStatic: RendererMaterial missing for draw group");
 
             // Skip materials that don't have PBR-compatible bind groups.
             let (Some(textures_bg), Some(params_bg)) = (
@@ -856,14 +852,14 @@ impl Pass for PassPBRStatic {
                 let mesh = world
                     .resources
                     .get_resource::<RendererMesh>(&batch.mesh_handle)
-                    .unwrap();
+                    .expect("PassPBRStatic: RendererMesh missing for batch");
                 render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
                 render_pass
                     .set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 for instance_index in 0..batch.instances.len() {
                     let offset = batch
                         .base_offset_u32
-                        .wrapping_add((instance_index as u32) * (self.per_draw_stride as u32));
+                        .wrapping_add((instance_index as u32) * (PER_DRAW_STRIDE_BYTES as u32));
                     render_pass.set_bind_group(
                         MATERIAL_BIND_GROUP_PERDRAW as u32,
                         &state_ref.per_draw_bind_group,

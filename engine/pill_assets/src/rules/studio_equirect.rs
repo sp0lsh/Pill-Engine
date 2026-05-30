@@ -82,31 +82,6 @@ fn generate_equirect(w: u32, h: u32) -> Vec<f32> {
     out
 }
 
-fn _generate_equirect_debug(w: u32, h: u32) -> Vec<f32> {
-    const TILES_U: u32 = 8;
-    const TILES_V: u32 = 4;
-    let mut out = Vec::with_capacity((w * h * 4) as usize);
-    for y in 0..h {
-        for x in 0..w {
-            let u = (x as f32 + 0.5) / w as f32;
-            let v = (y as f32 + 0.5) / h as f32;
-            let ti = (u * TILES_U as f32) as u32 % TILES_U;
-            let tj = (v * TILES_V as f32) as u32 % TILES_V;
-            let checker = (ti + tj) % 2 == 0;
-            let origin = ti == 0 && tj == 2;
-            let col: [f32; 4] = if origin {
-                [4.0, 0.0, 0.0, 1.0]
-            } else if checker {
-                [3.0, 3.0, 3.0, 1.0]
-            } else {
-                [0.05, 0.05, 0.05, 1.0]
-            };
-            out.extend_from_slice(&col);
-        }
-    }
-    out
-}
-
 // --- shared utilities ---
 
 // RTEX v2: Rgba32Float (4 bytes per channel, f32 LE), linear HDR.

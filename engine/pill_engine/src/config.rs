@@ -87,6 +87,7 @@ pub const DEFAULT_RESOURCE_PREFIX: &str = "pill_engine";
 pub const DEFAULT_COLOR_TEXTURE_NAME: &str = "pill_engine_default_color";
 pub const DEFAULT_NORMAL_TEXTURE_NAME: &str = "pill_engine_default_normal";
 pub const DEFAULT_METALLIC_ROUGHNESS_TEXTURE_NAME: &str = "pill_engine_default_metallic_roughness";
+pub const DEFAULT_EMISSIVE_TEXTURE_NAME: &str = "pill_engine_default_emissive";
 
 // RTEX layout: b"RTEX" | u32LE version=1 | u32LE width | u32LE height | raw RGBA bytes
 pub const DEFAULT_COLOR_TEXTURE_BYTES: [u8; 20] = [
@@ -101,6 +102,10 @@ pub const DEFAULT_NORMAL_TEXTURE_BYTES: [u8; 20] = [
 pub const DEFAULT_METALLIC_ROUGHNESS_TEXTURE_BYTES: [u8; 20] = [
     b'R', b'T', b'E', b'X', 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 255, 0, 255,
 ];
+// Black emissive: no emission by default
+pub const DEFAULT_EMISSIVE_TEXTURE_BYTES: [u8; 20] = [
+    b'R', b'T', b'E', b'X', 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 255,
+];
 
 // Default lit shader
 pub const DEFAULT_LIT_SHADER_NAME: &str = "pill_engine_default_lit_shader";
@@ -110,6 +115,8 @@ pub const DEFAULT_LIT_SHADER_NORMAL_TEXTURE_SLOT_NAME: &str = "normal";
 pub const DEFAULT_LIT_SHADER_NORMAL_TEXTURE_SLOT_BINDINGS: (u32, u32) = (2, 3);
 pub const DEFAULT_LIT_SHADER_METALLIC_ROUGHNESS_TEXTURE_SLOT_NAME: &str = "metallic_roughness";
 pub const DEFAULT_LIT_SHADER_METALLIC_ROUGHNESS_TEXTURE_SLOT_BINDINGS: (u32, u32) = (4, 5);
+pub const DEFAULT_LIT_SHADER_EMISSIVE_TEXTURE_SLOT_NAME: &str = "emissive";
+pub const DEFAULT_LIT_SHADER_EMISSIVE_TEXTURE_SLOT_BINDINGS: (u32, u32) = (6, 7);
 pub const DEFAULT_LIT_SHADER_TINT_PARAMETER_SLOT_NAME: &str = "tint";
 pub const DEFAULT_LIT_SHADER_SPECULARITY_PARAMETER_SLOT_NAME: &str = "specularity";
 pub const DEFAULT_LIT_SHADER_METALLIC_FACTOR_PARAMETER_SLOT_NAME: &str = "metallic_factor";
@@ -163,6 +170,17 @@ pub const DEFAULT_RENDERER_METALLIC_ROUGHNESS_TEXTURE_HANDLE: RendererTextureHan
         version: std::num::NonZeroU32::new(1).unwrap(),
     });
 
+// Default resource handle - Emissive texture
+pub const DEFAULT_EMISSIVE_TEXTURE_HANDLE: TextureHandle = TextureHandle(PillSlotMapKeyData {
+    index: 4,
+    version: std::num::NonZeroU32::new(1).unwrap(),
+});
+pub const DEFAULT_RENDERER_EMISSIVE_TEXTURE_HANDLE: RendererTextureHandle =
+    RendererTextureHandle(PillSlotMapKeyData {
+        index: 4,
+        version: std::num::NonZeroU32::new(1).unwrap(),
+    });
+
 pub fn get_default_texture_handles(
     texture_type: TextureType,
 ) -> (TextureHandle, RendererTextureHandle) {
@@ -178,6 +196,10 @@ pub fn get_default_texture_handles(
         TextureType::MetallicRoughness => (
             DEFAULT_METALLIC_ROUGHNESS_TEXTURE_HANDLE,
             DEFAULT_RENDERER_METALLIC_ROUGHNESS_TEXTURE_HANDLE,
+        ),
+        TextureType::Emissive => (
+            DEFAULT_EMISSIVE_TEXTURE_HANDLE,
+            DEFAULT_RENDERER_EMISSIVE_TEXTURE_HANDLE,
         ),
     }
 }

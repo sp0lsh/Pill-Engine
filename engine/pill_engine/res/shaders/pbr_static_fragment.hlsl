@@ -15,13 +15,15 @@ struct Camera {
 [[vk::binding(5, 0)]] Texture2D    texBrdfLut;
 [[vk::binding(6, 0)]] SamplerState smpBrdfLut;
 
-// PBR material textures (set 1) — bindings match DEFAULT_LIT_SHADER layout (0-5).
+// PBR material textures (set 1) — bindings match DEFAULT_LIT_SHADER layout (0-7).
 [[vk::binding(0, 1)]] Texture2D    texBaseColor;
 [[vk::binding(1, 1)]] SamplerState smpBaseColor;
 [[vk::binding(2, 1)]] Texture2D    texNormal;
 [[vk::binding(3, 1)]] SamplerState smpNormal;
 [[vk::binding(4, 1)]] Texture2D    texMetallicRoughness;
 [[vk::binding(5, 1)]] SamplerState smpMetallicRoughness;
+[[vk::binding(6, 1)]] Texture2D    texEmissive;
+[[vk::binding(7, 1)]] SamplerState smpEmissive;
 
 // PBR params UBO (set 2) — 48 bytes: 3 × 16-byte slots.
 // Each scalar slot uses float+float+float2 padding to stay 16 bytes without float3 alignment gaps.
@@ -38,6 +40,8 @@ struct MaterialParams {
 [[vk::binding(0, 2)]] ConstantBuffer<MaterialParams> UMaterial;
 
 static const float  PI         = 3.14159265359;
+
+#include "include/equirect.hlsl"
 
 // Camera at +Z looking -Z (glTF default). Z components flipped vs. -Z camera setup.
 static const float3 LIGHT_DIR0 = float3( 0.38, -0.38, -0.84); // key: behind-camera, upper-left
@@ -77,12 +81,6 @@ float3 fresnelSchlickRoughness(float cosTheta, float3 F0, float roughness) {
     return F0 + (max(float3(1.0 - roughness, 1.0 - roughness, 1.0 - roughness), F0) - F0) * pow(1.0 - cosTheta, 5.0);
 }
 
-float2 dir_to_equirect_uv(float3 dir) {
-    float3 d = normalize(dir);
-    float  u = 0.5 + atan2(d.z, d.x) / (2.0 * PI); // match bake convention: atan2(z,x)
-    float  v = 0.5 - asin(clamp(d.y, -1.0, 1.0)) / PI;
-    return float2(frac(u), clamp(v, 0.0, 1.0));
-}
 
 float3 accumulateDirLight(
     float3 N, float3 V, float3 F0,
@@ -133,6 +131,7 @@ float4 fs_main(
     float2 envBRDF            = texBrdfLut.Sample(smpBrdfLut, float2(max(dot(N, V), 0.0), roughness)).rg;
     float3 F                  = fresnelSchlickRoughness(max(dot(N, V), 0.0), F0, roughness);
     float3 specularIBL        = prefilteredColor * (F * envBRDF.x + envBRDF.y);
-    float3 color = Lo + ambientDiffuse + specularIBL;
+    float3 emissive = texEmissive.Sample(smpEmissive, uv).rgb;
+    float3 color = Lo + ambientDiffuse + specularIBL + emissive;
     return float4(color, 1.0);
 }

@@ -194,6 +194,13 @@ impl Engine {
                         DEFAULT_LIT_SHADER_METALLIC_ROUGHNESS_TEXTURE_SLOT_BINDINGS,
                     ),
                 ),
+                (
+                    DEFAULT_LIT_SHADER_EMISSIVE_TEXTURE_SLOT_NAME.to_string(),
+                    ShaderTextureSlot::new(
+                        TextureType::Emissive,
+                        DEFAULT_LIT_SHADER_EMISSIVE_TEXTURE_SLOT_BINDINGS,
+                    ),
+                ),
             ]
             .into_iter()
             .collect(),
@@ -257,6 +264,15 @@ impl Engine {
         ))?;
 
         debug!(LogContext::Engine => "Default metallic_roughness texture {} created", DEFAULT_METALLIC_ROUGHNESS_TEXTURE_NAME.name_style());
+        debug!(LogContext::Engine => "Creating default emissive texture {}...", DEFAULT_EMISSIVE_TEXTURE_NAME.name_style());
+
+        let default_emissive_texture_handle = self.add_default_resource(Texture::new(
+            DEFAULT_EMISSIVE_TEXTURE_NAME,
+            TextureType::Emissive,
+            ResourceLoader::Bytes(Box::new(DEFAULT_EMISSIVE_TEXTURE_BYTES)),
+        ))?;
+
+        debug!(LogContext::Engine => "Default emissive texture {} created", DEFAULT_EMISSIVE_TEXTURE_NAME.name_style());
         debug!(LogContext::Engine => "Creating default material {}...", DEFAULT_LIT_MATERIAL_NAME.name_style());
 
         // Create default lit material
@@ -280,6 +296,10 @@ impl Engine {
                 .texture(
                     DEFAULT_LIT_SHADER_METALLIC_ROUGHNESS_TEXTURE_SLOT_NAME,
                     default_mr_texture_handle,
+                )?
+                .texture(
+                    DEFAULT_LIT_SHADER_EMISSIVE_TEXTURE_SLOT_NAME,
+                    default_emissive_texture_handle,
                 )?
                 .build(),
         )?;

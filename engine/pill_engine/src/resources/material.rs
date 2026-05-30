@@ -90,6 +90,11 @@ impl PBRMaterial {
         self.metallic_roughness_texture = Some(handle);
         self
     }
+
+    pub fn emissive_texture(mut self, handle: TextureHandle) -> Self {
+        self.emissive_texture = Some(handle);
+        self
+    }
 }
 
 impl PillTypeMapKey for PBRMaterial {
@@ -123,44 +128,35 @@ impl Resource for PBRMaterial {
             let mut resolved_textures: HashMap<String, crate::graphics::RendererTextureHandle> =
                 HashMap::new();
 
-            if let Some(texture_handle) = self.albedo_texture {
-                let tex_name = engine
-                    .resource_manager
-                    .get_resource::<Texture>(&texture_handle)?
-                    .name
-                    .clone();
-                let h = engine
-                    .resource_manager
-                    .get_resource_handle::<RendererTexture>(&tex_name)?;
-                resolved_textures.insert(DEFAULT_LIT_SHADER_COLOR_TEXTURE_SLOT_NAME.to_string(), h);
-            }
-
-            if let Some(texture_handle) = self.normal_texture {
-                let tex_name = engine
-                    .resource_manager
-                    .get_resource::<Texture>(&texture_handle)?
-                    .name
-                    .clone();
-                let h = engine
-                    .resource_manager
-                    .get_resource_handle::<RendererTexture>(&tex_name)?;
-                resolved_textures
-                    .insert(DEFAULT_LIT_SHADER_NORMAL_TEXTURE_SLOT_NAME.to_string(), h);
-            }
-
-            if let Some(texture_handle) = self.metallic_roughness_texture {
-                let tex_name = engine
-                    .resource_manager
-                    .get_resource::<Texture>(&texture_handle)?
-                    .name
-                    .clone();
-                let h = engine
-                    .resource_manager
-                    .get_resource_handle::<RendererTexture>(&tex_name)?;
-                resolved_textures.insert(
-                    DEFAULT_LIT_SHADER_METALLIC_ROUGHNESS_TEXTURE_SLOT_NAME.to_string(),
-                    h,
-                );
+            for (opt_handle, slot_name) in [
+                (
+                    self.albedo_texture,
+                    DEFAULT_LIT_SHADER_COLOR_TEXTURE_SLOT_NAME,
+                ),
+                (
+                    self.normal_texture,
+                    DEFAULT_LIT_SHADER_NORMAL_TEXTURE_SLOT_NAME,
+                ),
+                (
+                    self.metallic_roughness_texture,
+                    DEFAULT_LIT_SHADER_METALLIC_ROUGHNESS_TEXTURE_SLOT_NAME,
+                ),
+                (
+                    self.emissive_texture,
+                    DEFAULT_LIT_SHADER_EMISSIVE_TEXTURE_SLOT_NAME,
+                ),
+            ] {
+                if let Some(texture_handle) = opt_handle {
+                    let tex_name = engine
+                        .resource_manager
+                        .get_resource::<Texture>(&texture_handle)?
+                        .name
+                        .clone();
+                    let renderer_texture_handle = engine
+                        .resource_manager
+                        .get_resource_handle::<RendererTexture>(&tex_name)?;
+                    resolved_textures.insert(slot_name.to_string(), renderer_texture_handle);
+                }
             }
 
             let renderer_shader_handle = engine

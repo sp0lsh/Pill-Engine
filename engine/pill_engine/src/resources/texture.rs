@@ -15,6 +15,7 @@ pub enum TextureType {
     Color,
     Normal,
     MetallicRoughness,
+    Emissive,
 }
 
 #[readonly::make]

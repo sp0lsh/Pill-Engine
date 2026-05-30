@@ -87,7 +87,6 @@ fn orbit_camera_system(engine: &mut Engine) -> Result<()> {
     let mouse_delta = input.get_mouse_delta();
     let scroll_delta = input.get_mouse_scroll_delta();
     let lmb = input.get_mouse_button(MouseButton::Left);
-    drop(input);
 
     for (_, tfm, orbit) in engine.iterate_two_components_mut::<TransformComponent, OrbitCamera>()? {
         if lmb {

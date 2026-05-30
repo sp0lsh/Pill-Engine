@@ -32,6 +32,7 @@ impl RendererTexture {
             TextureType::Color => wgpu::TextureFormat::Rgba8UnormSrgb,
             TextureType::Normal => wgpu::TextureFormat::Rgba8Unorm,
             TextureType::MetallicRoughness => wgpu::TextureFormat::Rgba8Unorm,
+            TextureType::Emissive => wgpu::TextureFormat::Rgba8UnormSrgb,
         };
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {

@@ -1,21 +1,37 @@
-use pill_engine::game::*;
+use pill_engine::{define_component, game::*};
+
+define_component!(OrbitCamera {
+    yaw: f32,
+    pitch: f32,
+    radius: f32,
+});
 
 pub struct Game {}
 
-const TARGET_FPS: f32 = 60.0;
+fn orbit_camera_system(engine: &mut Engine) -> Result<()> {
+    let input = engine.get_global_component_mut::<InputComponent>()?;
+    let mouse_delta = input.get_mouse_delta();
+    let scroll_delta = input.get_mouse_scroll_delta();
+    let left_mouse_button_held = input.get_mouse_button(MouseButton::Left);
 
-fn rotate_system(engine: &mut Engine) -> Result<()> {
-    let dt = engine
-        .get_global_component::<TimeComponent>()?
-        .delta_time
-        .min(1.0 / TARGET_FPS);
-
-    for (_entity, transform, _pbr) in
-        engine.iterate_two_components_mut::<TransformComponent, PbrRenderableComponent>()?
+    for (_, transform, orbit) in
+        engine.iterate_two_components_mut::<TransformComponent, OrbitCamera>()?
     {
-        transform.rotate_around_axis(2.0 * dt, Vector3f::new(0.0, 0.0, 1.0));
-    }
+        if left_mouse_button_held {
+            orbit.yaw -= mouse_delta.x * 0.3;
+            orbit.pitch = (orbit.pitch + mouse_delta.y * 0.3).clamp(-70.0, 70.0);
+        }
+        orbit.radius = (orbit.radius - scroll_delta.y * 0.5).clamp(1.0, 20.0);
 
+        let pitch_radians = orbit.pitch.to_radians();
+        let yaw_radians = orbit.yaw.to_radians();
+        let radius_cos_pitch = orbit.radius * pitch_radians.cos();
+        transform.set_position(Vector3f::new(
+            radius_cos_pitch * yaw_radians.sin(),
+            orbit.radius * pitch_radians.sin(),
+            radius_cos_pitch * yaw_radians.cos(),
+        ));
+    }
     Ok(())
 }
 
@@ -27,6 +43,7 @@ impl PillGame for Game {
         engine.register_component::<TransformComponent>(scene)?;
         engine.register_component::<CameraComponent>(scene)?;
         engine.register_component::<PbrRenderableComponent>(scene)?;
+        engine.register_component::<OrbitCamera>(scene)?;
 
         let mesh_handle = engine.add_resource(Mesh::new(
             "helmet_mesh",
@@ -45,33 +62,33 @@ impl PillGame for Game {
             ResourceLoader::Path("models/DamagedHelmet_normal.cooked_tex".into()),
         ))?;
 
+        let metallic_roughness_handle = engine.add_resource(Texture::new(
+            "helmet_metallic_roughness",
+            TextureType::MetallicRoughness,
+            ResourceLoader::Path("models/DamagedHelmet_metallic_roughness.cooked_tex".into()),
+        ))?;
+
+        let emissive_handle = engine.add_resource(Texture::new(
+            "helmet_emissive",
+            TextureType::Emissive,
+            ResourceLoader::Path("models/DamagedHelmet_emissive.cooked_tex".into()),
+        ))?;
+
         let material_handle = engine.add_resource(
             PBRMaterial::new("helmet_material")
                 .albedo_texture(albedo_handle)
-                .normal_texture(normal_handle),
+                .normal_texture(normal_handle)
+                .metallic_roughness_texture(metallic_roughness_handle)
+                .metallic(1.0)
+                .roughness(1.0)
+                .emissive_texture(emissive_handle),
         )?;
 
         engine
             .build_entity(scene)
             .with_component(
                 TransformComponent::builder()
-                    .position(Vector3f::new(0.0, 0.0, -3.0))
-                    .build(),
-            )
-            .with_component(
-                CameraComponent::builder()
-                    .enabled(true)
-                    .fov(60.0)
-                    .clear_color(Color::new(0.05, 0.05, 0.06))
-                    .build(),
-            )
-            .build();
-
-        engine
-            .build_entity(scene)
-            .with_component(
-                TransformComponent::builder()
-                    .rotation(Vector3f::new(90.0, 0.0, 0.0))
+                    .rotation(Vector3f::new(0.0, 0.0, 0.0))
                     .build(),
             )
             .with_component(
@@ -82,7 +99,29 @@ impl PillGame for Game {
             )
             .build();
 
-        engine.add_system("rotate", rotate_system)?;
+        engine
+            .build_entity(scene)
+            .with_component(
+                TransformComponent::builder()
+                    .position(Vector3f::new(0.0, 0.0, 2.0))
+                    .build(),
+            )
+            .with_component(
+                CameraComponent::builder()
+                    .enabled(true)
+                    .fov(60.0)
+                    .clear_color(Color::new(0.05, 0.05, 0.06))
+                    .look_at(Some(Vector3f::new(0.0, 0.0, 0.0)))
+                    .build(),
+            )
+            .with_component(OrbitCamera {
+                yaw: 0.0,
+                pitch: 0.0,
+                radius: 3.0,
+            })
+            .build();
+
+        engine.add_system("orbit_camera", orbit_camera_system)?;
 
         Ok(())
     }

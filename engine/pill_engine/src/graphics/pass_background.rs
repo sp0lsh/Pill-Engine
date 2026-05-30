@@ -178,27 +178,29 @@ impl Pass for PassBackground {
                 mapped_at_creation: false,
             });
 
-        let layout_ptr: *const wgpu::BindGroupLayout = &pipeline.bind_group_layouts[0] as *const _;
-        let bind_group = renderer
-            .get_device()
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("pass_background_bind_group"),
-                layout: unsafe { &*layout_ptr },
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: camera_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::Sampler(&sampler),
-                    },
-                ],
-            });
+        let bind_group = {
+            let layout = &pipeline.bind_group_layouts[0];
+            renderer
+                .get_device()
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("pass_background_bind_group"),
+                    layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: camera_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(&view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Sampler(&sampler),
+                        },
+                    ],
+                })
+        };
 
         self.state = Some(BgState {
             pipeline,

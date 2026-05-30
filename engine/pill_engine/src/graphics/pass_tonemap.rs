@@ -15,6 +15,8 @@ pub struct PassTonemap {
 struct TonemapState {
     pipeline: PipelineV2,
     sampler: wgpu::Sampler,
+    // sRGB view of the swapchain — GPU applies OETF on write even when surface format is linear (e.g. WebGPU/wasm32).
+    swapchain_view_format: wgpu::TextureFormat,
 }
 
 impl PassTonemap {
@@ -33,6 +35,11 @@ impl Pass for PassTonemap {
 
     fn init(&mut self, renderer: &mut dyn PillRenderer) -> Result<()> {
         let surface_format = renderer.get_surface_format();
+        let swapchain_view_format = if surface_format.is_srgb() {
+            surface_format
+        } else {
+            surface_format.add_srgb_suffix()
+        };
 
         let bind_groups = vec![vec![
             wgpu::BindGroupLayoutEntry {
@@ -66,7 +73,7 @@ impl Pass for PassTonemap {
             vertex_buffers: &[],
             bind_groups,
             targets: &[Some(wgpu::ColorTargetState {
-                format: surface_format,
+                format: swapchain_view_format,
                 blend: Some(wgpu::BlendState::REPLACE),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
@@ -95,7 +102,11 @@ impl Pass for PassTonemap {
                 ..Default::default()
             });
 
-        self.state = Some(TonemapState { pipeline, sampler });
+        self.state = Some(TonemapState {
+            pipeline,
+            sampler,
+            swapchain_view_format,
+        });
         Ok(())
     }
 
@@ -107,30 +118,37 @@ impl Pass for PassTonemap {
         _view: &wgpu::TextureView,
         _world: &WorldQuery<'_>,
     ) -> Result<()> {
-        let state = self.state.as_ref().unwrap();
-        let hdr_view = renderer.get_render_target_view(self.hdr_source).unwrap();
-        let swapchain_view = frame
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let state = self
+            .state
+            .as_ref()
+            .expect("PassTonemap: state not initialized — call init() before draw()");
+        let hdr_view = renderer
+            .get_render_target_view(self.hdr_source)
+            .expect("PassTonemap: HDR render target missing");
+        let swapchain_view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
+            format: Some(state.swapchain_view_format),
+            ..Default::default()
+        });
 
-        let layout_ptr: *const wgpu::BindGroupLayout =
-            &state.pipeline.bind_group_layouts[0] as *const _;
-        let bind_group = renderer
-            .get_device()
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("pass_tonemap_bind_group"),
-                layout: unsafe { &*layout_ptr },
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(hdr_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&state.sampler),
-                    },
-                ],
-            });
+        let bind_group = {
+            let layout = &state.pipeline.bind_group_layouts[0];
+            renderer
+                .get_device()
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("pass_tonemap_bind_group"),
+                    layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(hdr_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&state.sampler),
+                        },
+                    ],
+                })
+        };
 
         let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("pass_tonemap_render_pass"),
