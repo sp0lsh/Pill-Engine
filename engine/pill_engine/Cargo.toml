@@ -30,15 +30,17 @@ bitvec = "1.0.1"
 rand = "0.9.2"
 web-time = "1.1"
 
+# Optional deps activated by feature flags
+egui = { version = "0.32.1", optional = true }
+egui-wgpu = { version = "0.32.1", features = ["winit"], optional = true }
+egui-winit = { version = "0.32.1", default-features = false, optional = true }
+
 # Native-only dependencies (not available on WASM)
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 png = "0.17"
 rodio = { version = "0.20", features = ["wav", "mp3"] }
 gilrs = "0.11.0"
 pollster = "0.2"
-egui = "0.32.1"
-egui-wgpu = { version = "0.32.1", features = ["winit"] }
-egui-winit = { version = "0.32.1", features = ["clipboard"] }
 
 
 [build-dependencies]
@@ -50,6 +52,6 @@ game = []
 internal = []
 headless = []
 networking = []
-debug_ui = []
+ui = ["dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
 obj_loading = ["dep:tobj"]
 all = ["game", "internal", "networking"]

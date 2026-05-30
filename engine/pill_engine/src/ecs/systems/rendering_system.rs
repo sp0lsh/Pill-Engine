@@ -23,15 +23,6 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
         .boot_done;
 
     if !boot_done {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let egui_client = engine
-                .get_global_component::<RenderStateComponent>()?
-                .egui_client
-                .clone();
-            engine.renderer.init_default_passes(egui_client)?;
-        }
-        #[cfg(target_arch = "wasm32")]
         engine.renderer.init_default_passes()?;
         engine
             .get_global_component_mut::<RenderStateComponent>()?
@@ -113,15 +104,13 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
     timer.record("Get component storages");
 
     // Build egui UI and push to egui_client
-    #[cfg(feature = "debug_ui")]
+    #[cfg(feature = "ui")]
     {
         use crate::ecs::EguiManagerComponent;
         let egui_ui = EguiManagerComponent::get_ui(engine);
-        let egui_client = engine
-            .get_global_component::<RenderStateComponent>()?
-            .egui_client
-            .clone();
-        egui_client.set_ui(egui_ui);
+        if let Some(egui_client) = engine.renderer.get_egui_client() {
+            egui_client.set_ui(egui_ui);
+        }
     }
 
     let active_scene = engine.scene_manager.get_active_scene_mut()?;

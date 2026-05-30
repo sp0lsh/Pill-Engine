@@ -363,15 +363,12 @@ impl Engine {
         // Register global components
         self.add_global_component(TimeComponent::new())?;
         self.add_global_component(DeferredUpdateComponent::new())?;
-        #[cfg(feature = "debug_ui")]
+        #[cfg(feature = "ui")]
         self.add_global_component(EguiManagerComponent::new())?;
 
         #[cfg(not(feature = "headless"))]
         {
             self.add_global_component(InputComponent::new())?;
-            #[cfg(not(target_arch = "wasm32"))]
-            self.add_global_component(RenderStateComponent::new(EguiClient::new()))?;
-            #[cfg(target_arch = "wasm32")]
             self.add_global_component(RenderStateComponent::new())?;
         }
 
@@ -590,9 +587,9 @@ impl Engine {
     }
 
     pub fn pass_input_to_egui(&mut self, event: &winit::event::WindowEvent) {
-        #[cfg(feature = "debug_ui")]
+        #[cfg(feature = "ui")]
         self.renderer.pass_input_to_egui(event).unwrap();
-        #[cfg(not(feature = "debug_ui"))]
+        #[cfg(not(feature = "ui"))]
         let _ = event;
     }
 
@@ -605,6 +602,19 @@ impl Engine {
 
 /// Pill Engine game API
 impl Engine {
+    // --- UI API ---
+
+    /// Sets a game-defined egui overlay; called every frame before the engine debug window.
+    #[cfg(feature = "ui")]
+    pub fn set_game_overlay(
+        &mut self,
+        f: impl Fn(&egui::Context) + Send + Sync + 'static,
+    ) -> Result<()> {
+        self.get_global_component_mut::<crate::ecs::EguiManagerComponent>()?
+            .set_overlay(f);
+        Ok(())
+    }
+
     // --- System API ---
 
     /// Adds game-defined system to the game update phase

@@ -248,7 +248,7 @@ lazy_static! {
         ];
         #[cfg(not(target_arch = "wasm32"))]
         component_types.push(TypeId::of::<AudioManagerComponent>());
-        #[cfg(feature = "debug_ui")]
+        #[cfg(feature = "ui")]
         component_types.push(TypeId::of::<crate::ecs::EguiManagerComponent>());
         component_types
     };

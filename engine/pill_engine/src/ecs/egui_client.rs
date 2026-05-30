@@ -1,4 +1,4 @@
-#![cfg(not(target_arch = "wasm32"))]
+#![cfg(feature = "ui")]
 
 use std::sync::{Arc, Mutex};
 

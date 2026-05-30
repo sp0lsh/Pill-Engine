@@ -93,7 +93,9 @@ pub mod game {
 #[cfg(not(target_arch = "wasm32"))]
 mod internal_mod {
     pub use crate::app_config::EngineConfig;
-    #[cfg(feature = "debug_ui")]
+    #[cfg(feature = "ui")]
+    pub use crate::ecs::EguiClient;
+    #[cfg(feature = "ui")]
     pub use crate::ecs::EguiManagerComponent;
     pub use crate::{
         config::*,
@@ -102,9 +104,9 @@ mod internal_mod {
             get_renderer_resource_handle_from_camera_component, networking_system_client,
             networking_system_server, update_transform_matrices, AudioListenerComponent,
             AudioManagerComponent, AudioSourceComponent, CameraAspectRatio, CameraComponent,
-            ComponentStorage, EguiClient, EntityHandle, EntityUpdate, InputComponent,
-            MeshComponent, NetworkEntityAction, NetworkEntityState, NetworkManagerComponent,
-            NetworkSide, NetworkStateComponent, NetworkUpdatePayload, PbrRenderableComponent,
+            ComponentStorage, EntityHandle, EntityUpdate, InputComponent, MeshComponent,
+            NetworkEntityAction, NetworkEntityState, NetworkManagerComponent, NetworkSide,
+            NetworkStateComponent, NetworkUpdatePayload, PbrRenderableComponent,
             RenderStateComponent, Scene, TimeComponent, TransformComponent,
         },
         engine::{Engine, PillGame},
@@ -126,16 +128,18 @@ mod internal_mod {
 #[cfg(target_arch = "wasm32")]
 mod internal_mod {
     pub use crate::app_config::EngineConfig;
-    #[cfg(feature = "debug_ui")]
+    #[cfg(feature = "ui")]
+    pub use crate::ecs::EguiClient;
+    #[cfg(feature = "ui")]
     pub use crate::ecs::EguiManagerComponent;
     pub use crate::{
         config::*,
         ecs::{
             get_model_matrix, get_normal_matrix,
             get_renderer_resource_handle_from_camera_component, update_transform_matrices,
-            CameraAspectRatio, CameraComponent, ComponentStorage, EguiClient, EntityHandle,
-            InputComponent, MeshComponent, PbrRenderableComponent, RenderStateComponent, Scene,
-            TimeComponent, TransformComponent,
+            CameraAspectRatio, CameraComponent, ComponentStorage, EntityHandle, InputComponent,
+            MeshComponent, PbrRenderableComponent, RenderStateComponent, Scene, TimeComponent,
+            TransformComponent,
         },
         engine::{Engine, PillGame},
         graphics::{

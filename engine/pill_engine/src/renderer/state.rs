@@ -18,7 +18,7 @@ use crate::{
     resources::ResourceManager,
 };
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "ui")]
 use crate::ecs::EguiClient;
 use pill_core::Result;
 use pill_core::{
@@ -110,7 +110,7 @@ impl PillRenderer for Renderer {
         self.state.resize(new_window_size)
     }
 
-    #[cfg(feature = "debug_ui")]
+    #[cfg(feature = "ui")]
     fn pass_input_to_egui(&mut self, event: &winit::event::WindowEvent) -> Result<()> {
         if let Some(c) = &self.state.egui_client {
             c.handle_input(event.clone());
@@ -247,39 +247,6 @@ impl PillRenderer for Renderer {
     }
 
     /// Installs the default pass chain (scene + optional egui) on first frame bootstrap.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn init_default_passes(&mut self, egui_client: Arc<EguiClient>) -> Result<()> {
-        use crate::graphics::{PassBackground, PassTonemap};
-        self.state.egui_client = Some(egui_client.clone());
-
-        let w = self.state.surface_configuration.width;
-        let h = self.state.surface_configuration.height;
-        let hdr = self.create_render_target(RendererTargetDesc {
-            name: "hdr_target".to_string(),
-            format: wgpu::TextureFormat::Rgba16Float,
-            width: w,
-            height: h,
-        })?;
-
-        #[cfg(feature = "debug_ui")]
-        {
-            use crate::graphics::PassEgui;
-            self.set_passes(vec![
-                Box::new(PassBackground::new(hdr)),
-                Box::new(PassPBRStatic::new(Some(hdr))),
-                Box::new(PassTonemap::new(hdr)),
-                Box::new(PassEgui::new(self.state.window.clone(), egui_client)),
-            ])
-        }
-        #[cfg(not(feature = "debug_ui"))]
-        self.set_passes(vec![
-            Box::new(PassBackground::new(hdr)),
-            Box::new(PassPBRStatic::new(Some(hdr))),
-            Box::new(PassTonemap::new(hdr)),
-        ])
-    }
-
-    #[cfg(target_arch = "wasm32")]
     fn init_default_passes(&mut self) -> Result<()> {
         use crate::graphics::{PassBackground, PassTonemap};
 
@@ -292,11 +259,29 @@ impl PillRenderer for Renderer {
             height: h,
         })?;
 
+        #[cfg(feature = "ui")]
+        {
+            use crate::graphics::PassEgui;
+            let egui_client = EguiClient::new();
+            self.state.egui_client = Some(egui_client.clone());
+            return self.set_passes(vec![
+                Box::new(PassBackground::new(hdr)),
+                Box::new(PassPBRStatic::new(Some(hdr))),
+                Box::new(PassTonemap::new(hdr)),
+                Box::new(PassEgui::new(self.state.window.clone(), egui_client)),
+            ]);
+        }
+        #[cfg(not(feature = "ui"))]
         self.set_passes(vec![
             Box::new(PassBackground::new(hdr)),
             Box::new(PassPBRStatic::new(Some(hdr))),
             Box::new(PassTonemap::new(hdr)),
         ])
+    }
+
+    #[cfg(feature = "ui")]
+    fn get_egui_client(&self) -> Option<Arc<EguiClient>> {
+        self.state.egui_client.clone()
     }
 
     fn get_device(&self) -> &wgpu::Device {
@@ -443,7 +428,7 @@ pub struct State {
     depth_format: wgpu::TextureFormat,
     depth_texture: RendererTexture,
     passes: Vec<Box<dyn Pass>>,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(feature = "ui")]
     egui_client: Option<Arc<EguiClient>>,
     camera_bind_group_layout: wgpu::BindGroupLayout,
     window: Arc<winit::window::Window>,
@@ -621,7 +606,7 @@ impl State {
             depth_format,
             depth_texture,
             passes: Vec::new(),
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(feature = "ui")]
             egui_client: None,
             camera_bind_group_layout,
             window,

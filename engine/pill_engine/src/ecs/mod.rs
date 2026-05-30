@@ -29,12 +29,12 @@ pub use components::audio_listener_component::AudioListenerComponent;
 #[cfg(not(target_arch = "wasm32"))]
 pub use components::audio_source_component::AudioSourceComponent;
 
-#[cfg(feature = "debug_ui")]
+#[cfg(feature = "ui")]
 pub use components::egui_manager_component::EguiManagerComponent;
 
 pub use components::render_state_component::RenderStateComponent;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(feature = "ui")]
 pub use egui_client::EguiClient;
 
 pub use components::deferred_update_component::{

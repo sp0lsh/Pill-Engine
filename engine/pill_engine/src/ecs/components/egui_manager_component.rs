@@ -1,6 +1,6 @@
-#![cfg(feature = "debug_ui")]
+#![cfg(feature = "ui")]
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     ecs::{
@@ -17,6 +17,7 @@ use pill_core::{ErrorContext, Result};
 
 pub struct EguiManagerComponent {
     collapsing_state: HashMap<String, bool>,
+    game_overlay: Option<Arc<dyn Fn(&egui::Context) + Send + Sync>>,
 }
 
 impl Default for EguiManagerComponent {
@@ -29,10 +30,20 @@ impl EguiManagerComponent {
     pub fn new() -> Self {
         Self {
             collapsing_state: HashMap::new(),
+            game_overlay: None,
         }
     }
 
+    pub fn set_overlay(&mut self, f: impl Fn(&egui::Context) + Send + Sync + 'static) {
+        self.game_overlay = Some(Arc::new(f));
+    }
+
     pub fn get_ui(engine: &mut Engine) -> Box<dyn Fn(&egui::Context) + Send> {
+        let game_overlay = engine
+            .get_global_component::<EguiManagerComponent>()
+            .ok()
+            .and_then(|c| c.game_overlay.clone());
+
         let entity_count = engine
             .scene_manager
             .get_active_scene()
@@ -76,6 +87,9 @@ impl EguiManagerComponent {
         let frame_delta_time = engine.frame_delta_time;
 
         let ui: Box<dyn Fn(&egui::Context) + Send> = Box::new(move |ui: &egui::Context| {
+            if let Some(ref overlay) = game_overlay {
+                overlay(ui);
+            }
             egui::Window::new("Pill Engine")
                 .default_open(false)
                 .resizable(true)
