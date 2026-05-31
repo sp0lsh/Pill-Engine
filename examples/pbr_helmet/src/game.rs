@@ -39,7 +39,7 @@ fn orbit_camera_system(engine: &mut Engine) -> Result<()> {
 
 impl PillGame for Game {
     fn start(&self, engine: &mut Engine) -> Result<()> {
-        let (eq, eq_w, eq_h) = bake::generate();
+        let (eq, eq_w, eq_h) = bake::load_equirect();
         let (diffuse, specular_mips, brdf_lut) = bake::bake_all(&eq, eq_w, eq_h);
 
         let bg_h = engine.create_gpu_texture_f32("equirect", &eq, eq_w, eq_h)?;
@@ -136,7 +136,7 @@ impl PillGame for Game {
             .with_component(OrbitCamera {
                 yaw: 0.0,
                 pitch: 0.0,
-                radius: 3.0,
+                radius: 2.5,
             })
             .build();
 
