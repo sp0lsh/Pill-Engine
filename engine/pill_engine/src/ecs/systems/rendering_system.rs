@@ -5,7 +5,7 @@ use crate::{
         RenderStateComponent, TransformComponent,
     },
     engine::Engine,
-    graphics::{PassBackground, PassPBRStatic, PassTonemap, RenderQueueItem, RendererTargetDesc},
+    graphics::{PassPBRStatic, PassTonemap, RenderQueueItem, RendererTargetDesc},
 };
 
 use pill_core::{warn, EngineError, LogContext, PillSlotMapKey, PillStyle, RendererError, Timer};
@@ -45,12 +45,8 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
         #[cfg_attr(not(feature = "ui"), allow(unused_mut))]
         let mut passes: Vec<Box<dyn crate::graphics::Pass>> = vec![
             Box::new(
-                PassBackground::new(hdr)
-                    .with_equirect(bg)
-                    .with_bg_color(bg_color),
-            ),
-            Box::new(
                 PassPBRStatic::new(Some(hdr))
+                    .with_background(bg, bg_color)
                     .with_ibl(diff, spec, lut)
                     .with_fog(bg_color, fog_density),
             ),

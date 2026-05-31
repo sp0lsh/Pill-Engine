@@ -11,7 +11,7 @@ VOut vs_main(uint vi : SV_VertexID) {
         float2(-1.0,  1.0)
     };
     VOut o;
-    o.pos = float4(p[vi], 0.0, 1.0);
+    o.pos = float4(p[vi], 1.0, 1.0);  // NDC z/w = 1.0 = far plane (LessEqual depth test)
     o.ndc = p[vi];
     return o;
 }

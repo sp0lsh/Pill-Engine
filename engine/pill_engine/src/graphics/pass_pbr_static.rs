@@ -115,6 +115,28 @@ pub(crate) struct GroupCmd {
     pub(crate) batches: Vec<MeshBatch>,
 }
 
+/// Camera uniform for the background sub-draw (view direction basis + fov).
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct BgCameraUbo {
+    right: [f32; 3],
+    tan_half_fov: f32,
+    up: [f32; 3],
+    aspect: f32,
+    fwd: [f32; 3],
+    _pad: f32,
+    bg_color: [f32; 3],
+    _pad2: f32,
+}
+
+/// GPU-side state for the background sub-draw within the PBR render pass.
+struct BgSubState {
+    pipeline: PipelineV2,
+    camera_buf: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    _sampler: wgpu::Sampler,
+}
+
 /// GPU-side pass state initialized in `Pass::init`, read every `Pass::draw`.
 struct PassPBRStaticState {
     camera_uniform: CameraUniform,
@@ -124,6 +146,7 @@ struct PassPBRStaticState {
     ibl_sampler: wgpu::Sampler,
     per_draw_buffer: wgpu::Buffer,
     per_draw_bind_group: wgpu::BindGroup,
+    bg: Option<BgSubState>,
 }
 
 /// Default PBR pass: full GGX shading with IBL, per-draw dynamic UBO ring.
@@ -139,6 +162,8 @@ pub struct PassPBRStatic {
     ibl_brdf_lut: Option<RendererTextureHandle>,
     fog_color: [f32; 3],
     fog_density: f32,
+    bg_equirect: Option<RendererTextureHandle>,
+    bg_color: [f32; 3],
     state: Option<PassPBRStaticState>,
 }
 
@@ -158,6 +183,8 @@ impl PassPBRStatic {
             ibl_brdf_lut: None,
             fog_color: [1.0; 3],
             fog_density: 0.0,
+            bg_equirect: None,
+            bg_color: [1.0; 3],
             state: None,
         }
     }
@@ -177,6 +204,12 @@ impl PassPBRStatic {
     pub fn with_fog(mut self, color: [f32; 3], density: f32) -> Self {
         self.fog_color = color;
         self.fog_density = density;
+        self
+    }
+
+    pub fn with_background(mut self, equirect: RendererTextureHandle, color: [f32; 3]) -> Self {
+        self.bg_equirect = Some(equirect);
+        self.bg_color = color;
         self
     }
 }
@@ -538,6 +571,129 @@ impl Pass for PassPBRStatic {
 
         self.depth_texture = Some(renderer.create_depth_texture("pass_pbr_static_depth")?);
 
+        // Create background sub-draw state if an equirect handle was provided.
+        let bg = if let Some(equirect_h) = self.bg_equirect {
+            let bg_vs = include_str!("../../res/shaders/background_vertex.wgsl");
+            let bg_fs = include_str!("../../res/shaders/background_fragment.wgsl");
+            let bg_bind_groups = vec![vec![
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ]];
+            let bg_pipeline = renderer.create_pipeline_v2(PipelineV2Desc {
+                label: Some("pass_pbr_static_bg_pipeline"),
+                vs: ShaderDesc {
+                    source: bg_vs,
+                    entry_func: "vs_main",
+                },
+                ps: ShaderDesc {
+                    source: bg_fs,
+                    entry_func: "fs_main",
+                },
+                vertex_buffers: &[],
+                bind_groups: bg_bind_groups,
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: wgpu::TextureFormat::Rgba16Float,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                // LessEqual + write disabled: fills only pixels where depth == 1.0 (far plane).
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: wgpu::TextureFormat::Depth32Float,
+                    depth_write_enabled: false,
+                    depth_compare: wgpu::CompareFunction::LessEqual,
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                    unclipped_depth: false,
+                },
+            })?;
+            let equirect_view = renderer
+                .get_texture_view(equirect_h)
+                .expect("bg equirect handle invalid");
+            let bg_sampler = renderer
+                .get_device()
+                .create_sampler(&wgpu::SamplerDescriptor {
+                    address_mode_u: wgpu::AddressMode::Repeat, // equirect wraps in U
+                    address_mode_v: wgpu::AddressMode::ClampToEdge, // poles clamp in V
+                    address_mode_w: wgpu::AddressMode::ClampToEdge,
+                    mag_filter: wgpu::FilterMode::Linear,
+                    min_filter: wgpu::FilterMode::Linear,
+                    mipmap_filter: wgpu::FilterMode::Nearest,
+                    ..Default::default()
+                });
+            let bg_camera_buf = renderer
+                .get_device()
+                .create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("pass_pbr_static_bg_camera"),
+                    size: std::mem::size_of::<BgCameraUbo>() as u64,
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+            let bg_bind_group = {
+                let layout = &bg_pipeline.bind_group_layouts[0];
+                renderer
+                    .get_device()
+                    .create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("pass_pbr_static_bg_bind_group"),
+                        layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: bg_camera_buf.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::TextureView(&equirect_view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: wgpu::BindingResource::Sampler(&bg_sampler),
+                            },
+                        ],
+                    })
+            };
+            Some(BgSubState {
+                pipeline: bg_pipeline,
+                camera_buf: bg_camera_buf,
+                bind_group: bg_bind_group,
+                _sampler: bg_sampler,
+            })
+        } else {
+            None
+        };
+
         self.state = Some(PassPBRStaticState {
             camera_uniform: CameraUniform::new(),
             camera_buffer,
@@ -546,6 +702,7 @@ impl Pass for PassPBRStatic {
             ibl_sampler,
             per_draw_buffer,
             per_draw_bind_group,
+            bg,
         });
 
         Ok(())
@@ -735,7 +892,7 @@ impl Pass for PassPBRStatic {
                 view: color_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -799,6 +956,42 @@ impl Pass for PassPBRStatic {
                     render_pass.draw_indexed(0..mesh.index_count, 0, 0..1);
                 }
             }
+        }
+
+        // Background sub-draw: within the same render pass, after opaque geometry.
+        // LessEqual depth test + write_enabled=false: fills only pixels where depth == 1.0 (far plane = no geometry).
+        if let Some(bg) = &state_ref.bg {
+            let eye = Vec3::new(
+                active_camera_transform.position.x,
+                active_camera_transform.position.y,
+                active_camera_transform.position.z,
+            );
+            let fwd = if let Some(t) = active_camera_component.look_at {
+                (Vec3::new(t.x, t.y, t.z) - eye).normalize()
+            } else {
+                let roll = Mat3::from_rotation_z(active_camera_transform.rotation.z.to_radians());
+                let yaw = Mat3::from_rotation_y(active_camera_transform.rotation.y.to_radians());
+                let pitch = Mat3::from_rotation_x(active_camera_transform.rotation.x.to_radians());
+                (yaw * pitch * roll) * Vec3::Z
+            };
+            let right = fwd.cross(Vec3::Y).normalize();
+            let up = right.cross(fwd);
+            let ubo = BgCameraUbo {
+                right: right.to_array(),
+                tan_half_fov: (active_camera_component.fov.to_radians() / 2.0).tan(),
+                up: up.to_array(),
+                aspect: active_camera_component.aspect.get_value(),
+                fwd: fwd.to_array(),
+                _pad: 0.0,
+                bg_color: self.bg_color,
+                _pad2: 0.0,
+            };
+            renderer
+                .get_queue()
+                .write_buffer(&bg.camera_buf, 0, bytemuck::bytes_of(&ubo));
+            render_pass.set_pipeline(&bg.pipeline.pipeline);
+            render_pass.set_bind_group(0, &bg.bind_group, &[]);
+            render_pass.draw(0..3, 0..1);
         }
 
         Ok(())
