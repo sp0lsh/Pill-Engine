@@ -5,6 +5,8 @@
 struct Camera {
     float4                position;
     column_major float4x4 viewProjection;
+    float3                fog_color;
+    float                 fog_density;
 };
 [[vk::binding(0, 0)]] ConstantBuffer<Camera> UCamera;
 

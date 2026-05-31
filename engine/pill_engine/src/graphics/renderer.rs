@@ -137,9 +137,8 @@ pub trait PillRenderer {
     /// Reconfigures the swap chain and depth texture after a window resize.
     fn resize(&mut self, new_window_size: winit::dpi::PhysicalSize<u32>);
 
-    #[cfg(feature = "ui")]
-    /// Forwards a winit window event to the egui input handler.
-    fn pass_input_to_egui(&mut self, event: &winit::event::WindowEvent) -> Result<()>;
+    /// Returns the OS window the renderer is bound to.
+    fn get_window(&self) -> std::sync::Arc<winit::window::Window>;
 
     /// Drives the full frame: acquires the surface, runs all passes, and presents.
     fn render(
@@ -158,12 +157,8 @@ pub trait PillRenderer {
     /// Replaces the current pass chain; calls `Pass::init` on each new pass before storing it.
     fn set_passes(&mut self, passes: Vec<Box<dyn Pass>>) -> Result<()>;
 
-    /// Installs the default pass chain (scene + optional egui) on first frame bootstrap.
-    fn init_default_passes(&mut self) -> Result<()>;
-
-    /// Returns the shared egui client; available only when the `ui` feature is enabled.
-    #[cfg(feature = "ui")]
-    fn get_egui_client(&self) -> Option<std::sync::Arc<crate::ecs::EguiClient>>;
+    /// Returns the current surface dimensions `(width, height)` in pixels.
+    fn get_surface_size(&self) -> (u32, u32);
 
     /// Returns the wgpu `Device`; required by passes that allocate their own GPU resources.
     fn get_device(&self) -> &wgpu::Device;
@@ -195,17 +190,20 @@ pub trait PillRenderer {
     /// Returns the texture view for a previously created render target, or `None` if not found.
     fn get_render_target_view(&self, handle: RendererTextureHandle) -> Option<&wgpu::TextureView>;
 
-    /// Stores equirect background bytes; used by PassBackground on first-frame init.
-    fn set_background_texture(&mut self, bytes: Vec<u8>) -> Result<()>;
-
-    /// Stores IBL map bytes (diffuse irradiance, specular prefilter, BRDF LUT);
-    /// used by PassPBRStatic on first-frame init.
-    fn set_ibl_textures(
+    /// Uploads pixel data as a GPU texture and returns a handle stored in the renderer.
+    /// `mip_pixels[i]` is the raw byte slice for mip level `i`.
+    fn create_texture_from_pixels(
         &mut self,
-        diffuse: Vec<u8>,
-        specular: Vec<u8>,
-        brdf_lut: Vec<u8>,
-    ) -> Result<()>;
+        name: &str,
+        mip_pixels: &[&[u8]],
+        base_width: u32,
+        base_height: u32,
+        format: wgpu::TextureFormat,
+    ) -> RendererTextureHandle;
+
+    /// Creates a new `TextureView` for a previously registered texture handle.
+    /// Returns `None` if the handle is not found.
+    fn get_texture_view(&self, handle: RendererTextureHandle) -> Option<wgpu::TextureView>;
 }
 
 pub type Renderer = Box<dyn PillRenderer>;

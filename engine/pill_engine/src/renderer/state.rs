@@ -18,8 +18,6 @@ use crate::{
     resources::ResourceManager,
 };
 
-#[cfg(feature = "ui")]
-use crate::ecs::EguiClient;
 use pill_core::Result;
 use pill_core::{
     debug, info, LogContext, PillSlotMap, PillSlotMapKey, PillStyle, RendererError, Timer,
@@ -110,12 +108,8 @@ impl PillRenderer for Renderer {
         self.state.resize(new_window_size)
     }
 
-    #[cfg(feature = "ui")]
-    fn pass_input_to_egui(&mut self, event: &winit::event::WindowEvent) -> Result<()> {
-        if let Some(c) = &self.state.egui_client {
-            c.handle_input(event.clone());
-        }
-        Ok(())
+    fn get_window(&self) -> Arc<winit::window::Window> {
+        self.state.window.clone()
     }
 
     fn render(
@@ -246,60 +240,11 @@ impl PillRenderer for Renderer {
         Ok(())
     }
 
-    /// Installs the default pass chain (scene + optional egui) on first frame bootstrap.
-    fn init_default_passes(&mut self) -> Result<()> {
-        use crate::graphics::{PassBackground, PassTonemap};
-
-        let w = self.state.surface_configuration.width;
-        let h = self.state.surface_configuration.height;
-        let hdr = self.create_render_target(RendererTargetDesc {
-            name: "hdr_target".to_string(),
-            format: wgpu::TextureFormat::Rgba16Float,
-            width: w,
-            height: h,
-        })?;
-
-        let bg = {
-            let mut p = PassBackground::new(hdr);
-            if let Some(bytes) = self.state.background_equirect.take() {
-                p = p.with_equirect_bytes(bytes);
-            }
-            p
-        };
-        let pbr = {
-            let d = self.state.ibl_diffuse.take();
-            let s = self.state.ibl_specular.take();
-            let b = self.state.ibl_brdf_lut.take();
-            let mut p = PassPBRStatic::new(Some(hdr));
-            if let (Some(d), Some(s), Some(b)) = (d, s, b) {
-                p = p.with_ibl(d, s, b);
-            }
-            p
-        };
-
-        #[cfg(feature = "ui")]
-        {
-            use crate::graphics::PassEgui;
-            let egui_client = EguiClient::new();
-            self.state.egui_client = Some(egui_client.clone());
-            return self.set_passes(vec![
-                Box::new(bg),
-                Box::new(pbr),
-                Box::new(PassTonemap::new(hdr)),
-                Box::new(PassEgui::new(self.state.window.clone(), egui_client)),
-            ]);
-        }
-        #[cfg(not(feature = "ui"))]
-        self.set_passes(vec![
-            Box::new(bg),
-            Box::new(pbr),
-            Box::new(PassTonemap::new(hdr)),
-        ])
-    }
-
-    #[cfg(feature = "ui")]
-    fn get_egui_client(&self) -> Option<Arc<EguiClient>> {
-        self.state.egui_client.clone()
+    fn get_surface_size(&self) -> (u32, u32) {
+        (
+            self.state.surface_configuration.width,
+            self.state.surface_configuration.height,
+        )
     }
 
     fn get_device(&self) -> &wgpu::Device {
@@ -433,21 +378,32 @@ impl PillRenderer for Renderer {
             .map(|t| &t.texture_view)
     }
 
-    fn set_background_texture(&mut self, bytes: Vec<u8>) -> Result<()> {
-        self.state.background_equirect = Some(bytes);
-        Ok(())
+    fn create_texture_from_pixels(
+        &mut self,
+        name: &str,
+        mip_pixels: &[&[u8]],
+        base_width: u32,
+        base_height: u32,
+        format: wgpu::TextureFormat,
+    ) -> RendererTextureHandle {
+        let texture = RendererTexture::new_from_pixels(
+            &self.state.device,
+            &self.state.queue,
+            name,
+            mip_pixels,
+            base_width,
+            base_height,
+            format,
+        )
+        .expect("create_texture_from_pixels failed");
+        self.state.pass_textures.insert(texture)
     }
 
-    fn set_ibl_textures(
-        &mut self,
-        diffuse: Vec<u8>,
-        specular: Vec<u8>,
-        brdf_lut: Vec<u8>,
-    ) -> Result<()> {
-        self.state.ibl_diffuse = Some(diffuse);
-        self.state.ibl_specular = Some(specular);
-        self.state.ibl_brdf_lut = Some(brdf_lut);
-        Ok(())
+    fn get_texture_view(&self, handle: RendererTextureHandle) -> Option<wgpu::TextureView> {
+        self.state.pass_textures.get(handle).map(|t| {
+            t.texture
+                .create_view(&wgpu::TextureViewDescriptor::default())
+        })
     }
 }
 
@@ -463,17 +419,11 @@ pub struct State {
     depth_format: wgpu::TextureFormat,
     depth_texture: RendererTexture,
     passes: Vec<Box<dyn Pass>>,
-    #[cfg(feature = "ui")]
-    egui_client: Option<Arc<EguiClient>>,
     camera_bind_group_layout: wgpu::BindGroupLayout,
     window: Arc<winit::window::Window>,
     // Optional frame capture: (target_frame, output_path). Set via PILL_SCREENSHOT env var.
     screenshot: Option<(u32, String)>,
     frame_counter: u32,
-    background_equirect: Option<Vec<u8>>,
-    ibl_diffuse: Option<Vec<u8>>,
-    ibl_specular: Option<Vec<u8>>,
-    ibl_brdf_lut: Option<Vec<u8>>,
 }
 
 impl State {
@@ -645,16 +595,10 @@ impl State {
             depth_format,
             depth_texture,
             passes: Vec::new(),
-            #[cfg(feature = "ui")]
-            egui_client: None,
             camera_bind_group_layout,
             window,
             screenshot,
             frame_counter: 0,
-            background_equirect: None,
-            ibl_diffuse: None,
-            ibl_specular: None,
-            ibl_brdf_lut: None,
         })
     }
 

@@ -64,10 +64,11 @@ pub mod game {
         ecs::{
             CameraAspectRatio, CameraComponent, Component, ComponentStorage, EntityHandle,
             GamepadAxis, GamepadButton, GlobalComponent, GlobalComponentStorage, InputComponent,
-            MeshComponent, PbrRenderableComponent, PlayerId, SceneHandle, TimeComponent,
-            TransformComponent, UpdatePhase,
+            MeshComponent, PbrRenderableComponent, PlayerId, RenderStateComponent, SceneHandle,
+            TimeComponent, TransformComponent, UpdatePhase,
         },
         engine::{Engine, KeyboardKey, MouseButton, PillGame},
+        graphics::RendererTextureHandle,
         resources::{
             Material, MaterialHandle, Mesh, MeshHandle, PBRMaterial, PBRMaterialHandle, Resource,
             ResourceLoader, ResourceStorage, Shader, ShaderParameterSlot, ShaderParameterType,
@@ -96,7 +97,7 @@ mod internal_mod {
     #[cfg(feature = "ui")]
     pub use crate::ecs::EguiClient;
     #[cfg(feature = "ui")]
-    pub use crate::ecs::EguiManagerComponent;
+    pub use crate::ecs::EguiComponent;
     pub use crate::{
         config::*,
         ecs::{
@@ -131,7 +132,7 @@ mod internal_mod {
     #[cfg(feature = "ui")]
     pub use crate::ecs::EguiClient;
     #[cfg(feature = "ui")]
-    pub use crate::ecs::EguiManagerComponent;
+    pub use crate::ecs::EguiComponent;
     pub use crate::{
         config::*,
         ecs::{

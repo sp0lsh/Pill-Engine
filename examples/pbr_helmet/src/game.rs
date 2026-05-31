@@ -1,5 +1,7 @@
 use pill_engine::{define_component, game::*};
 
+use crate::bake;
+
 define_component!(OrbitCamera {
     yaw: f32,
     pitch: f32,
@@ -37,6 +39,23 @@ fn orbit_camera_system(engine: &mut Engine) -> Result<()> {
 
 impl PillGame for Game {
     fn start(&self, engine: &mut Engine) -> Result<()> {
+        let (eq, eq_w, eq_h) = bake::generate();
+        let (diffuse, specular_mips, brdf_lut) = bake::bake_all(&eq, eq_w, eq_h);
+
+        let bg_h = engine.create_gpu_texture_f32("equirect", &eq, eq_w, eq_h)?;
+        let diff_h = engine.create_gpu_texture_f32("diffuse_ibl", &diffuse, 32, 16)?;
+        let spec_h =
+            engine.create_gpu_mipped_texture_f32("specular_ibl", &specular_mips, 128, 64)?;
+        let lut_h = engine.create_gpu_texture_f32("brdf_lut", &brdf_lut, 256, 256)?;
+
+        {
+            let rs = engine.get_global_component_mut::<RenderStateComponent>()?;
+            rs.background = bg_h;
+            rs.ibl_diffuse = diff_h;
+            rs.ibl_specular = spec_h;
+            rs.ibl_brdf_lut = lut_h;
+        }
+
         let scene = engine.create_scene("helmet")?;
         engine.set_active_scene(scene)?;
 

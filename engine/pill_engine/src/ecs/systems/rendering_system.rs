@@ -5,10 +5,11 @@ use crate::{
         RenderStateComponent, TransformComponent,
     },
     engine::Engine,
-    graphics::RenderQueueItem,
+    graphics::{PassBackground, PassPBRStatic, PassTonemap, RenderQueueItem, RendererTargetDesc},
 };
 
 use pill_core::{warn, EngineError, LogContext, PillSlotMapKey, PillStyle, RendererError, Timer};
+use wgpu;
 
 use pill_core::{ErrorContext, Result};
 use web_time::Instant;
@@ -23,7 +24,49 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
         .boot_done;
 
     if !boot_done {
-        engine.renderer.init_default_passes()?;
+        let (bg, diff, spec, lut, bg_color, fog_density) = {
+            let rs = engine.get_global_component::<RenderStateComponent>()?;
+            (
+                rs.background,
+                rs.ibl_diffuse,
+                rs.ibl_specular,
+                rs.ibl_brdf_lut,
+                rs.bg_color,
+                rs.fog_density,
+            )
+        };
+        let (w, h) = engine.renderer.get_surface_size();
+        let hdr = engine.renderer.create_render_target(RendererTargetDesc {
+            name: "hdr_target".to_string(),
+            format: wgpu::TextureFormat::Rgba16Float,
+            width: w,
+            height: h,
+        })?;
+        #[cfg_attr(not(feature = "ui"), allow(unused_mut))]
+        let mut passes: Vec<Box<dyn crate::graphics::Pass>> = vec![
+            Box::new(
+                PassBackground::new(hdr)
+                    .with_equirect(bg)
+                    .with_bg_color(bg_color),
+            ),
+            Box::new(
+                PassPBRStatic::new(Some(hdr))
+                    .with_ibl(diff, spec, lut)
+                    .with_fog(bg_color, fog_density),
+            ),
+            Box::new(PassTonemap::new(hdr)),
+        ];
+        #[cfg(feature = "ui")]
+        {
+            use crate::{ecs::EguiComponent, graphics::PassEgui};
+            let client = engine
+                .get_global_component::<EguiComponent>()?
+                .egui_client
+                .clone();
+            let window = engine.renderer.get_window();
+            passes.push(Box::new(PassEgui::new(window, client)));
+        }
+        engine.renderer.set_passes(passes)?;
         engine
             .get_global_component_mut::<RenderStateComponent>()?
             .boot_done = true;
@@ -102,16 +145,6 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
     engine.render_queue.sort();
 
     timer.record("Get component storages");
-
-    // Build egui UI and push to egui_client
-    #[cfg(feature = "ui")]
-    {
-        use crate::ecs::EguiManagerComponent;
-        let egui_ui = EguiManagerComponent::get_ui(engine);
-        if let Some(egui_client) = engine.renderer.get_egui_client() {
-            egui_client.set_ui(egui_ui);
-        }
-    }
 
     let active_scene = engine.scene_manager.get_active_scene_mut()?;
     let camera_component_storage = active_scene

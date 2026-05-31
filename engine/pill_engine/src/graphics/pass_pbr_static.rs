@@ -1,3 +1,4 @@
+use crate::config::{DEFAULT_BRDF_LUT_FALLBACK_PIXEL, DEFAULT_IBL_FALLBACK_PIXEL};
 use crate::{
     ecs::{CameraComponent, ComponentStorage, TransformComponent},
     graphics::{
@@ -10,12 +11,14 @@ use glam::{Mat3, Mat4, Quat, Vec3};
 use pill_core::{PillSlotMapKey, Result};
 use std::num::NonZeroU32;
 
-/// Camera uniform layout: position (vec4) + view-projection matrix (mat4x4).
+/// Camera uniform layout: position (vec4) + view-projection matrix (mat4x4) + fog.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct CameraUniform {
     position: [f32; 4],
     view_projection_matrix: [[f32; 4]; 4],
+    fog_color: [f32; 3], // packed with fog_density for 16-byte alignment
+    fog_density: f32,
 }
 
 impl CameraUniform {
@@ -23,6 +26,8 @@ impl CameraUniform {
         Self {
             position: [0.0; 4],
             view_projection_matrix: Mat4::IDENTITY.to_cols_array_2d(),
+            fog_color: [1.0; 3],
+            fog_density: 0.0,
         }
     }
 
@@ -117,12 +122,6 @@ struct PassPBRStaticState {
     globals_bind_group: wgpu::BindGroup,
     pipeline: PipelineV2,
     ibl_sampler: wgpu::Sampler,
-    ibl_fallback_texture: wgpu::Texture,
-    ibl_fallback_view: wgpu::TextureView,
-    // Studio IBL textures loaded from embedded cooked assets.
-    _ibl_irradiance_texture: wgpu::Texture,
-    _ibl_prefilter_texture: wgpu::Texture,
-    _ibl_brdf_lut_texture: wgpu::Texture,
     per_draw_buffer: wgpu::Buffer,
     per_draw_bind_group: wgpu::BindGroup,
 }
@@ -135,9 +134,11 @@ pub struct PassPBRStatic {
     visible_pre_draw_buffer: Vec<VisiblePreDraw>,
     groups_buffer: Vec<GroupCmd>,
     staging_buffer: Vec<u8>,
-    ibl_diffuse: Option<Vec<u8>>,
-    ibl_specular: Option<Vec<u8>>,
-    ibl_brdf_lut: Option<Vec<u8>>,
+    ibl_diffuse: Option<RendererTextureHandle>,
+    ibl_specular: Option<RendererTextureHandle>,
+    ibl_brdf_lut: Option<RendererTextureHandle>,
+    fog_color: [f32; 3],
+    fog_density: f32,
     state: Option<PassPBRStaticState>,
 }
 
@@ -155,142 +156,29 @@ impl PassPBRStatic {
             ibl_diffuse: None,
             ibl_specular: None,
             ibl_brdf_lut: None,
+            fog_color: [1.0; 3],
+            fog_density: 0.0,
             state: None,
         }
     }
 
-    pub fn with_ibl(mut self, diffuse: Vec<u8>, specular: Vec<u8>, brdf_lut: Vec<u8>) -> Self {
+    pub fn with_ibl(
+        mut self,
+        diffuse: RendererTextureHandle,
+        specular: RendererTextureHandle,
+        brdf_lut: RendererTextureHandle,
+    ) -> Self {
         self.ibl_diffuse = Some(diffuse);
         self.ibl_specular = Some(specular);
         self.ibl_brdf_lut = Some(brdf_lut);
         self
     }
-}
 
-/// Decode an RTEX header: returns (rgba_bytes, width, height, mip_count, version).
-fn decode_rtex(bytes: &[u8]) -> (&[u8], u32, u32, u32, u32) {
-    let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-    let w = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-    let h = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
-    if version == 3 || version == 4 {
-        let mip_count = u32::from_le_bytes(bytes[16..20].try_into().unwrap());
-        (&bytes[20..], w, h, mip_count, version)
-    } else {
-        (&bytes[16..], w, h, 1, version)
+    pub fn with_fog(mut self, color: [f32; 3], density: f32) -> Self {
+        self.fog_color = color;
+        self.fog_density = density;
+        self
     }
-}
-
-/// Upload an RTEX blob as a 2D texture.
-/// v1/v3 = Rgba8UnormSrgb (LDR); v4 = Rgba32Float HDR mip chain.
-fn load_ibl_texture(
-    renderer: &dyn PillRenderer,
-    label: &str,
-    bytes: &[u8],
-    is_srgb: bool,
-) -> (wgpu::Texture, wgpu::TextureView) {
-    let (data, w, h, mip_count, version) = decode_rtex(bytes);
-    let size = wgpu::Extent3d {
-        width: w,
-        height: h,
-        depth_or_array_layers: 1,
-    };
-    let (format, bytes_per_texel) = if version == 4 {
-        (wgpu::TextureFormat::Rgba32Float, 16usize) // 4 × f32
-    } else if is_srgb {
-        (wgpu::TextureFormat::Rgba8UnormSrgb, 4usize)
-    } else {
-        (wgpu::TextureFormat::Rgba8Unorm, 4usize)
-    };
-    let tex = renderer
-        .get_device()
-        .create_texture(&wgpu::TextureDescriptor {
-            label: Some(label),
-            size,
-            mip_level_count: mip_count,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-    let mut offset = 0usize;
-    for mip in 0..mip_count {
-        let mip_w = (w >> mip).max(1);
-        let mip_h = (h >> mip).max(1);
-        let mip_bytes = (mip_w * mip_h) as usize * bytes_per_texel;
-        renderer.get_queue().write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &tex,
-                mip_level: mip,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &data[offset..offset + mip_bytes],
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(mip_w * bytes_per_texel as u32),
-                rows_per_image: Some(mip_h),
-            },
-            wgpu::Extent3d {
-                width: mip_w,
-                height: mip_h,
-                depth_or_array_layers: 1,
-            },
-        );
-        offset += mip_bytes;
-    }
-    let view = tex.create_view(&wgpu::TextureViewDescriptor {
-        mip_level_count: Some(mip_count),
-        ..Default::default()
-    });
-    (tex, view)
-}
-
-/// Creates a 1×1 Rgba8Unorm neutral-gray texture as a no-op IBL fallback.
-fn create_1px_ibl_fallback(
-    renderer: &dyn PillRenderer,
-    label: &str,
-) -> (wgpu::Texture, wgpu::TextureView) {
-    let tex = renderer
-        .get_device()
-        .create_texture(&wgpu::TextureDescriptor {
-            label: Some(label),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-    renderer.get_queue().write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &tex,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &[128, 128, 128, 255],
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(4),
-            rows_per_image: Some(1),
-        },
-        wgpu::Extent3d {
-            width: 1,
-            height: 1,
-            depth_or_array_layers: 1,
-        },
-    );
-    let view = tex.create_view(&wgpu::TextureViewDescriptor {
-        mip_level_count: Some(1),
-        ..Default::default()
-    });
-    (tex, view)
 }
 
 /// Returns the initialized pass state; panics in debug if `init` was not called.
@@ -542,46 +430,6 @@ impl Pass for PassPBRStatic {
             })
         };
 
-        // 1×1 black fallback texture used when IBL handles are None — zero IBL contribution.
-        let ibl_fallback_texture = {
-            let device = renderer.get_device();
-            device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("ibl_fallback"),
-                size: wgpu::Extent3d {
-                    width: 1,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            })
-        };
-        renderer.get_queue().write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &ibl_fallback_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &[0u8, 0, 0, 0],
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4),
-                rows_per_image: Some(1),
-            },
-            wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-        );
-        let ibl_fallback_view =
-            ibl_fallback_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
         let ibl_sampler = {
             let device = renderer.get_device();
             device.create_sampler(&wgpu::SamplerDescriptor {
@@ -595,18 +443,44 @@ impl Pass for PassPBRStatic {
             })
         };
 
-        let (ibl_irradiance_texture, irradiance_view) = match &self.ibl_diffuse {
-            Some(bytes) => load_ibl_texture(renderer, "diffuse_ibl", bytes, true),
-            None => create_1px_ibl_fallback(renderer, "diffuse_ibl_fallback"),
-        };
-        let (ibl_prefilter_texture, prefilter_view) = match &self.ibl_specular {
-            Some(bytes) => load_ibl_texture(renderer, "specular_ibl", bytes, true),
-            None => create_1px_ibl_fallback(renderer, "specular_ibl_fallback"),
-        };
-        let (ibl_brdf_lut_texture, brdf_lut_view) = match &self.ibl_brdf_lut {
-            Some(bytes) => load_ibl_texture(renderer, "brdf_lut", bytes, false), // linear
-            None => create_1px_ibl_fallback(renderer, "brdf_lut_fallback"),
-        };
+        // Register 1px neutral-gray fallbacks for any missing IBL handle,
+        // then get owned views (texture lifetime managed by renderer's pass_textures).
+        let irr_h = self.ibl_diffuse.unwrap_or_else(|| {
+            renderer.create_texture_from_pixels(
+                "diffuse_ibl_fallback",
+                &[DEFAULT_IBL_FALLBACK_PIXEL],
+                1,
+                1,
+                wgpu::TextureFormat::Rgba8Unorm,
+            )
+        });
+        let pre_h = self.ibl_specular.unwrap_or_else(|| {
+            renderer.create_texture_from_pixels(
+                "specular_ibl_fallback",
+                &[DEFAULT_IBL_FALLBACK_PIXEL],
+                1,
+                1,
+                wgpu::TextureFormat::Rgba8Unorm,
+            )
+        });
+        let lut_h = self.ibl_brdf_lut.unwrap_or_else(|| {
+            renderer.create_texture_from_pixels(
+                "brdf_lut_fallback",
+                &[DEFAULT_BRDF_LUT_FALLBACK_PIXEL],
+                1,
+                1,
+                wgpu::TextureFormat::Rgba8Unorm,
+            )
+        });
+        let irradiance_view = renderer
+            .get_texture_view(irr_h)
+            .expect("ibl_diffuse handle invalid");
+        let prefilter_view = renderer
+            .get_texture_view(pre_h)
+            .expect("ibl_specular handle invalid");
+        let brdf_lut_view = renderer
+            .get_texture_view(lut_h)
+            .expect("ibl_brdf_lut handle invalid");
 
         let prefilter_sampler = {
             let device = renderer.get_device();
@@ -670,11 +544,6 @@ impl Pass for PassPBRStatic {
             globals_bind_group,
             pipeline,
             ibl_sampler,
-            ibl_fallback_texture,
-            ibl_fallback_view,
-            _ibl_irradiance_texture: ibl_irradiance_texture,
-            _ibl_prefilter_texture: ibl_prefilter_texture,
-            _ibl_brdf_lut_texture: ibl_brdf_lut_texture,
             per_draw_buffer,
             per_draw_bind_group,
         });
@@ -708,11 +577,15 @@ impl Pass for PassPBRStatic {
             .unwrap();
 
         // Update camera uniform and write to GPU buffer.
+        let fog_color = self.fog_color;
+        let fog_density = self.fog_density;
         let vp_mat: Mat4 = {
             let state = get_state(self);
             state
                 .camera_uniform
                 .update_data(active_camera_component, active_camera_transform);
+            state.camera_uniform.fog_color = fog_color;
+            state.camera_uniform.fog_density = fog_density;
             renderer.get_queue().write_buffer(
                 &state.camera_buffer,
                 0,

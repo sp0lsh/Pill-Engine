@@ -1,3 +1,4 @@
+mod bake;
 mod game;
 pub use game::Game;
 

@@ -1,6 +1,6 @@
 use crate::{
     app_config::EngineConfig,
-    ecs::{CameraComponent, ComponentStorage, EguiClient, EntityHandle, TransformComponent},
+    ecs::{CameraComponent, ComponentStorage, EntityHandle, TransformComponent},
     graphics::{
         BufferDesc, Pass, PillRenderer, PipelineV2, PipelineV2Desc, RenderQueueItem,
         RendererCameraHandle, RendererTargetDesc, RendererTextureHandle, WorldQuery,
@@ -10,8 +10,8 @@ use crate::{
 
 use pill_core::Result;
 use pill_core::Timer;
-use std::{collections::HashMap, sync::Arc};
-use winit::{dpi::PhysicalSize, event::WindowEvent, window::Window};
+use std::collections::HashMap;
+use winit::{dpi::PhysicalSize, window::Window};
 
 pub struct DummyRenderer;
 
@@ -49,9 +49,8 @@ impl PillRenderer for DummyRenderer {
 
     fn resize(&mut self, _new_window_size: PhysicalSize<u32>) {}
 
-    #[cfg(feature = "ui")]
-    fn pass_input_to_egui(&mut self, _event: &WindowEvent) -> Result<()> {
-        Ok(())
+    fn get_window(&self) -> std::sync::Arc<winit::window::Window> {
+        unimplemented!("DummyRenderer has no window")
     }
 
     fn render(
@@ -73,8 +72,8 @@ impl PillRenderer for DummyRenderer {
         Ok(())
     }
 
-    fn init_default_passes(&mut self, _egui_client: Arc<EguiClient>) -> Result<()> {
-        Ok(())
+    fn get_surface_size(&self) -> (u32, u32) {
+        (0, 0)
     }
 
     fn get_device(&self) -> &wgpu::Device {

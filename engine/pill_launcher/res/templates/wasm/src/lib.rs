@@ -10,8 +10,6 @@
 
 use wasm_bindgen::prelude::*;
 
-use pill_game::WebGame;
-
 #[cfg(target_arch = "wasm32")]
 #[global_allocator]
 static ALLOC: lol_alloc::AssumeSingleThreaded<lol_alloc::FreeListAllocator> =
@@ -19,5 +17,5 @@ static ALLOC: lol_alloc::AssumeSingleThreaded<lol_alloc::FreeListAllocator> =
 
 #[wasm_bindgen(start)]
 pub fn wasm_main() {
-    pill_web::run(Box::new(WebGame {}), include_str!("../config.ini"));
+    pill_web::run(pill_game::create_pill_game(), include_str!("../config.ini"));
 }

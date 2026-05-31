@@ -11,7 +11,7 @@ mod component;
 mod component_storage;
 pub(crate) mod deferred_update_component;
 #[cfg(feature = "ui")]
-pub(crate) mod egui_manager_component;
+pub(crate) mod egui_component;
 pub(crate) mod input_component;
 pub(crate) mod mesh_component;
 #[cfg(not(target_arch = "wasm32"))]

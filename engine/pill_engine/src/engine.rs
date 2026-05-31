@@ -132,6 +132,41 @@ impl Engine {
             self.register_resource_type::<RendererMaterial>(max_material_count)?;
             self.register_resource_type::<RendererTexture>(max_texture_count)?;
             self.register_resource_type::<RendererMesh>(max_mesh_count)?;
+
+            // Upload neutral 1×1 fallback textures for the env slots; game may override before first frame.
+            let bg_h = self.renderer.create_texture_from_pixels(
+                "pill_engine_default_equirect",
+                &[DEFAULT_EQUIRECT_FALLBACK_PIXEL],
+                1,
+                1,
+                wgpu::TextureFormat::Rgba32Float,
+            );
+            let diff_h = self.renderer.create_texture_from_pixels(
+                "pill_engine_default_ibl_diffuse",
+                &[DEFAULT_IBL_FALLBACK_PIXEL],
+                1,
+                1,
+                wgpu::TextureFormat::Rgba8Unorm,
+            );
+            let spec_h = self.renderer.create_texture_from_pixels(
+                "pill_engine_default_ibl_specular",
+                &[DEFAULT_IBL_FALLBACK_PIXEL],
+                1,
+                1,
+                wgpu::TextureFormat::Rgba8Unorm,
+            );
+            let lut_h = self.renderer.create_texture_from_pixels(
+                "pill_engine_default_brdf_lut",
+                &[DEFAULT_BRDF_LUT_FALLBACK_PIXEL],
+                1,
+                1,
+                wgpu::TextureFormat::Rgba8Unorm,
+            );
+            let rs = self.get_global_component_mut::<RenderStateComponent>()?;
+            rs.background = bg_h;
+            rs.ibl_diffuse = diff_h;
+            rs.ibl_specular = spec_h;
+            rs.ibl_brdf_lut = lut_h;
         }
 
         self.register_resource_type::<Shader>(max_shader_count)?;
@@ -364,7 +399,7 @@ impl Engine {
         self.add_global_component(TimeComponent::new())?;
         self.add_global_component(DeferredUpdateComponent::new())?;
         #[cfg(feature = "ui")]
-        self.add_global_component(EguiManagerComponent::new())?;
+        self.add_global_component(EguiComponent::new())?;
 
         #[cfg(not(feature = "headless"))]
         {
@@ -412,6 +447,12 @@ impl Engine {
                 AUDIO_SYSTEM.name,
                 AUDIO_SYSTEM.system_function,
                 AUDIO_SYSTEM.update_phase,
+            )?;
+            #[cfg(feature = "ui")]
+            self.system_manager.add_system(
+                EGUI_SYSTEM.name,
+                EGUI_SYSTEM.system_function,
+                EGUI_SYSTEM.update_phase,
             )?;
             self.system_manager.add_system(
                 RENDERING_SYSTEM.name,
@@ -588,7 +629,9 @@ impl Engine {
 
     pub fn pass_input_to_egui(&mut self, event: &winit::event::WindowEvent) {
         #[cfg(feature = "ui")]
-        self.renderer.pass_input_to_egui(event).unwrap();
+        if let Ok(mgr) = self.get_global_component::<EguiComponent>() {
+            mgr.egui_client.handle_input(event.clone());
+        }
         #[cfg(not(feature = "ui"))]
         let _ = event;
     }
@@ -600,6 +643,20 @@ impl Engine {
 
 // --- API ------------------------------------------------------------------
 
+/// Parse an RTEX binary header.
+/// Returns `(pixel_bytes, width, height, mip_count, version)`.
+fn decode_rtex_header(bytes: &[u8]) -> (&[u8], u32, u32, u32, u32) {
+    let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+    let w = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+    let h = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
+    if version == 3 || version == 4 {
+        let mip_count = u32::from_le_bytes(bytes[16..20].try_into().unwrap());
+        (&bytes[20..], w, h, mip_count, version)
+    } else {
+        (&bytes[16..], w, h, 1, version)
+    }
+}
+
 /// Pill Engine game API
 impl Engine {
     // --- Renderer API ---
@@ -607,7 +664,18 @@ impl Engine {
     /// Provides equirect background texture bytes; used by PassBackground on first-frame init.
     /// Must be called before the first rendered frame (i.e. from `start()`).
     pub fn set_background_texture(&mut self, bytes: Vec<u8>) -> Result<()> {
-        self.renderer.set_background_texture(bytes)
+        let (raw, w, h, _mips, version) = decode_rtex_header(&bytes);
+        let format = if version == 2 {
+            wgpu::TextureFormat::Rgba32Float
+        } else {
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        };
+        let handle =
+            self.renderer
+                .create_texture_from_pixels("studio_equirect", &[raw], w, h, format);
+        self.get_global_component_mut::<RenderStateComponent>()?
+            .background = handle;
+        Ok(())
     }
 
     /// Provides IBL map bytes (diffuse irradiance, specular prefilter, BRDF LUT);
@@ -619,7 +687,89 @@ impl Engine {
         specular: Vec<u8>,
         brdf_lut: Vec<u8>,
     ) -> Result<()> {
-        self.renderer.set_ibl_textures(diffuse, specular, brdf_lut)
+        let (diff_raw, dw, dh, _, _) = decode_rtex_header(&diffuse);
+        let diff_h = self.renderer.create_texture_from_pixels(
+            "diffuse_ibl",
+            &[diff_raw],
+            dw,
+            dh,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+        );
+        // specular: RTEX v4 — Rgba32Float mip chain
+        let (spec_raw, sw, sh, spec_mip_count, _) = decode_rtex_header(&specular);
+        const SPEC_BYTES_PER_TEXEL: usize = 16; // Rgba32Float = 4 channels × 4 bytes
+        let mut spec_slices: Vec<&[u8]> = Vec::with_capacity(spec_mip_count as usize);
+        let mut offset = 0usize;
+        for mip in 0..spec_mip_count {
+            let mip_bytes =
+                (sw >> mip).max(1) as usize * (sh >> mip).max(1) as usize * SPEC_BYTES_PER_TEXEL;
+            spec_slices.push(&spec_raw[offset..offset + mip_bytes]);
+            offset += mip_bytes;
+        }
+        let spec_h = self.renderer.create_texture_from_pixels(
+            "specular_ibl",
+            &spec_slices,
+            sw,
+            sh,
+            wgpu::TextureFormat::Rgba32Float,
+        );
+
+        let (lut_raw, lw, lh, _, _) = decode_rtex_header(&brdf_lut);
+        let lut_h = self.renderer.create_texture_from_pixels(
+            "brdf_lut",
+            &[lut_raw],
+            lw,
+            lh,
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
+        let rs = self.get_global_component_mut::<RenderStateComponent>()?;
+        rs.ibl_diffuse = diff_h;
+        rs.ibl_specular = spec_h;
+        rs.ibl_brdf_lut = lut_h;
+        Ok(())
+    }
+
+    /// Creates a single-mip Rgba32Float GPU texture from f32 pixels.
+    /// Returns a handle for assignment to `RenderStateComponent`.
+    /// Must be called before the first rendered frame (i.e. from `start()`).
+    pub fn create_gpu_texture_f32(
+        &mut self,
+        name: &str,
+        pixels: &[f32],
+        width: u32,
+        height: u32,
+    ) -> Result<RendererTextureHandle> {
+        let bytes: &[u8] = bytemuck::cast_slice(pixels);
+        Ok(self.renderer.create_texture_from_pixels(
+            name,
+            &[bytes],
+            width,
+            height,
+            wgpu::TextureFormat::Rgba32Float,
+        ))
+    }
+
+    /// Creates a mipped Rgba32Float GPU texture from f32 pixels; `mips[0]` is the base level.
+    /// Returns a handle for assignment to `RenderStateComponent`.
+    /// Must be called before the first rendered frame (i.e. from `start()`).
+    pub fn create_gpu_mipped_texture_f32(
+        &mut self,
+        name: &str,
+        mips: &[Vec<f32>],
+        base_width: u32,
+        base_height: u32,
+    ) -> Result<RendererTextureHandle> {
+        let slices: Vec<&[u8]> = mips
+            .iter()
+            .map(|m| bytemuck::cast_slice(m.as_slice()))
+            .collect();
+        Ok(self.renderer.create_texture_from_pixels(
+            name,
+            &slices,
+            base_width,
+            base_height,
+            wgpu::TextureFormat::Rgba32Float,
+        ))
     }
 
     // --- UI API ---
@@ -630,7 +780,7 @@ impl Engine {
         &mut self,
         f: impl Fn(&egui::Context) + Send + Sync + 'static,
     ) -> Result<()> {
-        self.get_global_component_mut::<crate::ecs::EguiManagerComponent>()?
+        self.get_global_component_mut::<crate::ecs::EguiComponent>()?
             .set_overlay(f);
         Ok(())
     }

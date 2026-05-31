@@ -4,6 +4,8 @@
 struct Camera {
     float4                position;
     column_major float4x4 viewProjection;
+    float3                fog_color;
+    float                 fog_density;
 };
 [[vk::binding(0, 0)]] ConstantBuffer<Camera> UCamera;
 
@@ -133,5 +135,7 @@ float4 fs_main(
     float3 specularIBL        = prefilteredColor * (F * envBRDF.x + envBRDF.y);
     float3 emissive = texEmissive.Sample(smpEmissive, uv).rgb;
     float3 color = Lo + ambientDiffuse + specularIBL + emissive;
-    return float4(color, 1.0);
+    float  dist  = length(UCamera.position.xyz - WorldPos);
+    float  fog   = 1.0 - exp(-UCamera.fog_density * UCamera.fog_density * dist * dist);
+    return float4(lerp(color, UCamera.fog_color, fog), 1.0);
 }

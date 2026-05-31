@@ -8,6 +8,9 @@ use crate::{
     resources::{MaterialHandle, ShaderHandle, TextureHandle, TextureType},
 };
 
+#[cfg(feature = "ui")]
+use crate::ecs::egui_system;
+
 #[cfg(not(target_arch = "wasm32"))]
 use crate::ecs::{audio_system, haptics_system, AudioManagerComponent};
 
@@ -72,6 +75,13 @@ pub const RENDERING_SYSTEM: SystemConfig = SystemConfig {
     update_phase: UpdatePhase::PostGame,
 };
 
+#[cfg(feature = "ui")]
+pub const EGUI_SYSTEM: SystemConfig = SystemConfig {
+    name: "egui_system",
+    system_function: egui_system,
+    update_phase: UpdatePhase::PostGame,
+};
+
 // --- Resources ---
 
 pub const RESOURCE_VERSION_LIMIT: usize = 255;
@@ -106,6 +116,16 @@ pub const DEFAULT_METALLIC_ROUGHNESS_TEXTURE_BYTES: [u8; 20] = [
 pub const DEFAULT_EMISSIVE_TEXTURE_BYTES: [u8; 20] = [
     b'R', b'T', b'E', b'X', 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 255,
 ];
+
+// 1×1 Rgba32Float white — PassBackground equirect fallback; bg_color tints it to the desired solid color
+// 1.0f32 LE = 00 00 80 3F
+pub const DEFAULT_EQUIRECT_FALLBACK_PIXEL: &[u8] = &[
+    0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x80, 0x3F,
+];
+// 1×1 Rgba8Unorm neutral-gray — IBL diffuse/specular fallback: RGBA = [77, 77, 77, 255] ≈ 0.3 linear
+pub const DEFAULT_IBL_FALLBACK_PIXEL: &[u8] = &[77, 77, 77, 255];
+// 1×1 Rgba8Unorm — BRDF LUT fallback: R=F0_scale=0.5, G=F0_bias=0.5
+pub const DEFAULT_BRDF_LUT_FALLBACK_PIXEL: &[u8] = &[128, 128, 0, 255];
 
 // Default lit shader
 pub const DEFAULT_LIT_SHADER_NAME: &str = "pill_engine_default_lit_shader";
@@ -249,7 +269,7 @@ lazy_static! {
         #[cfg(not(target_arch = "wasm32"))]
         component_types.push(TypeId::of::<AudioManagerComponent>());
         #[cfg(feature = "ui")]
-        component_types.push(TypeId::of::<crate::ecs::EguiManagerComponent>());
+        component_types.push(TypeId::of::<crate::ecs::EguiComponent>());
         component_types
     };
 }

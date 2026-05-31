@@ -30,7 +30,7 @@ pub use components::audio_listener_component::AudioListenerComponent;
 pub use components::audio_source_component::AudioSourceComponent;
 
 #[cfg(feature = "ui")]
-pub use components::egui_manager_component::EguiManagerComponent;
+pub use components::egui_component::EguiComponent;
 
 pub use components::render_state_component::RenderStateComponent;
 
@@ -69,6 +69,9 @@ pub use components::network_state_component::{NetworkEntityState, NetworkStateCo
 pub use systems::{SystemFunction, SystemManager, UpdatePhase};
 
 pub use systems::rendering_system::rendering_system;
+
+#[cfg(feature = "ui")]
+pub use systems::egui_system::egui_system;
 
 pub use systems::deferred_update_system::deferred_update_system;
 

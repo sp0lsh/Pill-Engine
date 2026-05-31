@@ -1,22 +1,4 @@
 use pill_engine::{define_component, game::*};
-use std::sync::{Arc, OnceLock};
-
-static LOGO: OnceLock<Arc<(Vec<u8>, u32, u32)>> = OnceLock::new();
-
-fn load_logo() -> Arc<(Vec<u8>, u32, u32)> {
-    let bytes: &[u8] = include_bytes!("../res/textures/pill_logo.png");
-    let decoder = png::Decoder::new(bytes);
-    let mut reader = decoder.read_info().unwrap();
-    let mut buf = vec![0u8; reader.output_buffer_size()];
-    let info = reader.next_frame(&mut buf).unwrap();
-    let raw = &buf[..info.buffer_size()];
-    let rgba: Vec<u8> = match info.color_type {
-        png::ColorType::Rgba => raw.to_vec(),
-        png::ColorType::Rgb => raw.chunks(3).flat_map(|c| [c[0], c[1], c[2], 255u8]).collect(),
-        _ => raw.to_vec(),
-    };
-    Arc::new((rgba, info.width, info.height))
-}
 
 // --- Scene constants ---------------------------------------------------------
 
@@ -201,44 +183,21 @@ fn camera_drift_system(engine: &mut Engine) -> Result<()> {
     Ok(())
 }
 
-fn logo_overlay_system(engine: &mut Engine) -> Result<()> {
-    let logo = LOGO.get_or_init(load_logo).clone();
-    engine.set_game_overlay(move |ctx: &egui::Context| {
-        let tex_id = egui::Id::new("pill_logo_tex");
-        let handle = ctx
-            .memory(|m| m.data.get_temp::<egui::TextureHandle>(tex_id))
-            .unwrap_or_else(|| {
-                let (rgba, w, h) = &*logo;
-                let img = egui::ColorImage::from_rgba_unmultiplied(
-                    [*w as usize, *h as usize],
-                    rgba,
-                );
-                let t = ctx.load_texture("pill_logo", img, egui::TextureOptions::default());
-                ctx.memory_mut(|m| m.data.insert_temp(tex_id, t.clone()));
-                t
-            });
-        let display_w = 200.0f32;
-        let (_, src_w, src_h) = &*logo;
-        let display_h = display_w * (*src_h as f32 / *src_w as f32);
-        egui::Area::new("pill_logo_overlay".into())
-            .anchor(egui::Align2::RIGHT_BOTTOM, [-16.0, -16.0])
-            .interactable(false)
-            .show(ctx, |ui| {
-                ui.add(egui::Image::new(egui::load::SizedTexture::new(
-                    handle.id(),
-                    [display_w, display_h],
-                )));
-            });
-    })?;
-    Ok(())
-}
-
 // --- Game --------------------------------------------------------------------
 
 impl PillGame for WebGame {
     fn start(&self, engine: &mut Engine) -> Result<()> {
         let active_scene = engine.create_scene("default")?;
         engine.set_active_scene(active_scene)?;
+
+        let zero_ibl = engine.create_gpu_texture_f32("zero_ibl", &[0.0_f32, 0.0, 0.0, 0.0], 1, 1)?;
+        {
+            let rs = engine.get_global_component_mut::<RenderStateComponent>()?;
+            rs.bg_color = [CLEAR_COLOR.0, CLEAR_COLOR.1, CLEAR_COLOR.2];
+            rs.fog_density = FOG_DENSITY;
+            rs.ibl_diffuse = zero_ibl;
+            rs.ibl_specular = zero_ibl;
+        }
 
         engine.register_component::<TransformComponent>(active_scene)?;
         engine.register_component::<CameraComponent>(active_scene)?;
@@ -290,10 +249,6 @@ impl PillGame for WebGame {
                 CameraComponent::builder()
                     .enabled(true)
                     .fov(CAMERA_FOV)
-                    .clear_color(Color::new(CLEAR_COLOR.0, CLEAR_COLOR.1, CLEAR_COLOR.2))
-                    .fog_density(FOG_DENSITY)
-                    // Fade distant pills toward the clear color so the tunnel wrap seam disappears.
-                    .fog_color(Color::new(CLEAR_COLOR.0, CLEAR_COLOR.1, CLEAR_COLOR.2))
                     .build(),
             )
             .build();
@@ -363,7 +318,6 @@ impl PillGame for WebGame {
         engine.add_system("pill_particle", pill_particle_system)?;
         engine.add_system("hero_pill", hero_pill_system)?;
         engine.add_system("camera_drift", camera_drift_system)?;
-        engine.add_system("logo_overlay", logo_overlay_system)?;
         Ok(())
     }
 }

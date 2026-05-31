@@ -8,12 +8,15 @@ use crate::{
 use glam::{Mat3, Vec3};
 use pill_core::{PillSlotMapKey, Result};
 
+use crate::config::DEFAULT_EQUIRECT_FALLBACK_PIXEL;
+
 static VS: &str = include_str!("../../res/shaders/background_vertex.wgsl");
 static FS: &str = include_str!("../../res/shaders/background_fragment.wgsl");
 
 pub struct PassBackground {
     hdr_target: RendererTextureHandle,
-    equirect_bytes: Option<Vec<u8>>,
+    equirect: Option<RendererTextureHandle>,
+    bg_color: [f32; 3],
     state: Option<BgState>,
 }
 
@@ -21,7 +24,6 @@ struct BgState {
     pipeline: PipelineV2,
     bind_group: wgpu::BindGroup,
     camera_buffer: wgpu::Buffer,
-    _texture: wgpu::Texture,
     _sampler: wgpu::Sampler,
 }
 
@@ -34,28 +36,29 @@ struct BgCameraUbo {
     aspect: f32,
     fwd: [f32; 3],
     _pad: f32,
+    bg_color: [f32; 3],
+    _pad2: f32,
 }
 
 impl PassBackground {
     pub fn new(hdr_target: RendererTextureHandle) -> Self {
         Self {
             hdr_target,
-            equirect_bytes: None,
+            equirect: None,
+            bg_color: [1.0, 1.0, 1.0],
             state: None,
         }
     }
 
-    pub fn with_equirect_bytes(mut self, bytes: Vec<u8>) -> Self {
-        self.equirect_bytes = Some(bytes);
+    pub fn with_equirect(mut self, handle: RendererTextureHandle) -> Self {
+        self.equirect = Some(handle);
         self
     }
-}
 
-fn decode_rtex(bytes: &[u8]) -> (&[u8], u32, u32, u32) {
-    let version = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-    let w = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-    let h = u32::from_le_bytes(bytes[12..16].try_into().unwrap());
-    (&bytes[16..], w, h, version)
+    pub fn with_bg_color(mut self, color: [f32; 3]) -> Self {
+        self.bg_color = color;
+        self
+    }
 }
 
 impl Pass for PassBackground {
@@ -123,91 +126,20 @@ impl Pass for PassBackground {
             },
         })?;
 
-        let (texture, view) = match &self.equirect_bytes {
-            Some(bytes) => {
-                let (raw, w, h, version) = decode_rtex(bytes);
-                let size = wgpu::Extent3d {
-                    width: w,
-                    height: h,
-                    depth_or_array_layers: 1,
-                };
-                let (tex_format, bytes_per_channel) = if version == 2 {
-                    (wgpu::TextureFormat::Rgba32Float, 4u32)
-                } else {
-                    (wgpu::TextureFormat::Rgba8UnormSrgb, 1u32)
-                };
-                let texture = renderer
-                    .get_device()
-                    .create_texture(&wgpu::TextureDescriptor {
-                        label: Some("studio_equirect"),
-                        size,
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: tex_format,
-                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                        view_formats: &[],
-                    });
-                renderer.get_queue().write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &texture,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO,
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    raw,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(4 * bytes_per_channel * w),
-                        rows_per_image: Some(h),
-                    },
-                    size,
-                );
-                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                (texture, view)
-            }
-            None => {
-                // 1×1 Rgba32Float black fallback — no embedded asset
-                let texture = renderer
-                    .get_device()
-                    .create_texture(&wgpu::TextureDescriptor {
-                        label: Some("equirect_fallback"),
-                        size: wgpu::Extent3d {
-                            width: 1,
-                            height: 1,
-                            depth_or_array_layers: 1,
-                        },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: wgpu::TextureFormat::Rgba32Float,
-                        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                        view_formats: &[],
-                    });
-                // pixel: [0.0, 0.0, 0.0, 1.0] as f32 LE bytes
-                renderer.get_queue().write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &texture,
-                        mip_level: 0,
-                        origin: wgpu::Origin3d::ZERO,
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63],
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(16),
-                        rows_per_image: Some(1),
-                    },
-                    wgpu::Extent3d {
-                        width: 1,
-                        height: 1,
-                        depth_or_array_layers: 1,
-                    },
-                );
-                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-                (texture, view)
-            }
+        // Create equirect view; register a 1×1 Rgba32Float black fallback when no handle is set.
+        let equirect_h = match self.equirect {
+            Some(h) => h,
+            None => renderer.create_texture_from_pixels(
+                "equirect_fallback",
+                &[DEFAULT_EQUIRECT_FALLBACK_PIXEL],
+                1,
+                1,
+                wgpu::TextureFormat::Rgba32Float,
+            ),
         };
+        let view = renderer
+            .get_texture_view(equirect_h)
+            .expect("equirect handle invalid");
 
         let sampler = renderer
             .get_device()
@@ -258,7 +190,6 @@ impl Pass for PassBackground {
             pipeline,
             bind_group,
             camera_buffer,
-            _texture: texture,
             _sampler: sampler,
         });
         Ok(())
@@ -310,6 +241,8 @@ impl Pass for PassBackground {
             aspect: cam.aspect.get_value(),
             fwd: fwd.to_array(),
             _pad: 0.0,
+            bg_color: self.bg_color,
+            _pad2: 0.0,
         };
         renderer
             .get_queue()

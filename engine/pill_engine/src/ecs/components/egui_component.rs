@@ -5,7 +5,7 @@ use std::{collections::HashMap, sync::Arc};
 use crate::{
     ecs::{
         components::{GlobalComponent, GlobalComponentStorage},
-        UpdatePhase,
+        EguiClient, UpdatePhase,
     },
     engine::Engine,
 };
@@ -15,20 +15,22 @@ use pill_core::{PillTypeMapKey, Timer, TimerRecord};
 
 use pill_core::{ErrorContext, Result};
 
-pub struct EguiManagerComponent {
+pub struct EguiComponent {
+    pub egui_client: Arc<EguiClient>,
     collapsing_state: HashMap<String, bool>,
     game_overlay: Option<Arc<dyn Fn(&egui::Context) + Send + Sync>>,
 }
 
-impl Default for EguiManagerComponent {
+impl Default for EguiComponent {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl EguiManagerComponent {
+impl EguiComponent {
     pub fn new() -> Self {
         Self {
+            egui_client: EguiClient::new(),
             collapsing_state: HashMap::new(),
             game_overlay: None,
         }
@@ -40,7 +42,7 @@ impl EguiManagerComponent {
 
     pub fn get_ui(engine: &mut Engine) -> Box<dyn Fn(&egui::Context) + Send> {
         let game_overlay = engine
-            .get_global_component::<EguiManagerComponent>()
+            .get_global_component::<EguiComponent>()
             .ok()
             .and_then(|c| c.game_overlay.clone());
 
@@ -188,8 +190,8 @@ impl EguiManagerComponent {
     }
 }
 
-impl PillTypeMapKey for EguiManagerComponent {
-    type Storage = GlobalComponentStorage<EguiManagerComponent>;
+impl PillTypeMapKey for EguiComponent {
+    type Storage = GlobalComponentStorage<EguiComponent>;
 }
 
-impl GlobalComponent for EguiManagerComponent {}
+impl GlobalComponent for EguiComponent {}

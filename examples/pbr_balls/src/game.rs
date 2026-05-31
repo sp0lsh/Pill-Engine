@@ -1,9 +1,6 @@
 use pill_engine::{define_component, game::*};
 
-const EQUIRECT: &[u8] = include_bytes!("../res/textures/studio_equirect.cooked_tex");
-const DIFFUSE_IBL: &[u8] = include_bytes!("../res/textures/studio_diffuse_ibl.cooked_tex");
-const SPECULAR_IBL: &[u8] = include_bytes!("../res/textures/studio_specular_ibl.cooked_tex");
-const BRDF_LUT: &[u8] = include_bytes!("../res/textures/brdf_lut.cooked_tex");
+use crate::bake;
 
 define_component!(OrbitCamera {
     yaw: f32,
@@ -15,12 +12,19 @@ pub struct Game {}
 
 impl PillGame for Game {
     fn start(&self, engine: &mut Engine) -> Result<()> {
-        engine.set_background_texture(EQUIRECT.to_vec())?;
-        engine.set_ibl_textures(
-            DIFFUSE_IBL.to_vec(),
-            SPECULAR_IBL.to_vec(),
-            BRDF_LUT.to_vec(),
-        )?;
+        let (eq, eq_w, eq_h) = bake::generate();
+        let (diffuse, specular_mips, brdf_lut) = bake::bake_all(&eq, eq_w, eq_h);
+
+        let bg_h = engine.create_gpu_texture_f32("equirect", &eq, eq_w, eq_h)?;
+        let diff_h = engine.create_gpu_texture_f32("diffuse_ibl", &diffuse, 32, 16)?;
+        let spec_h = engine.create_gpu_mipped_texture_f32("specular_ibl", &specular_mips, 128, 64)?;
+        let lut_h = engine.create_gpu_texture_f32("brdf_lut", &brdf_lut, 256, 256)?;
+
+        let rs = engine.get_global_component_mut::<RenderStateComponent>()?;
+        rs.background = bg_h;
+        rs.ibl_diffuse = diff_h;
+        rs.ibl_specular = spec_h;
+        rs.ibl_brdf_lut = lut_h;
 
         let scene = engine.create_scene("pbr_balls")?;
         engine.set_active_scene(scene)?;
