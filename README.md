@@ -31,6 +31,8 @@ Designed from the ground up around performance, modularity and a frictionless de
 - **Embedded device support**
 
 ## Links
+**Run the Pill Engine teaser realtime in your browser (WebGPU): [sp0lsh.github.io/Pill-Engine](https://sp0lsh.github.io/Pill-Engine/)**
+
 **Discover Pill at [PillEngine.org](https://pillengine.org)**
 
 **Join the community on [Discord Server](https://discord.gg/VUKNQrctms)**
