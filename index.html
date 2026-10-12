@@ -46,6 +46,7 @@
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
             cursor: pointer;
             transition: background 0.1s ease, transform 0.1s ease;
+            z-index: 1; /* above #overlay */
         }
         #fullscreen-btn:hover { background: #000; }
         #fullscreen-btn:active { transform: translateX(-50%) translateY(1px); }
@@ -53,8 +54,21 @@
             display: block;
             width: 80vw;
             height: 80vh;
+            background: #000;
         }
         #canvas:fullscreen { width: 100vw; height: 100vh; }
+        #overlay {
+            position: fixed;
+            inset: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 42px;
+            color: #fff;
+            user-select: none;
+        }
+        #overlay.ready { cursor: pointer; }
+        #overlay.hidden { display: none; }
         #error {
             color: #c0392b;
             font-family: ui-monospace, Menlo, Consolas, monospace;
@@ -71,12 +85,25 @@
     </div>
     <button id="fullscreen-btn" type="button">⛶ Fullscreen</button>
     <canvas id="canvas"></canvas>
+    <div id="overlay">Loading...</div>
     <div id="error"></div>
 
     <script type="module">
         const errorDiv = document.getElementById('error');
         const canvas = document.getElementById('canvas');
         const fullscreenBtn = document.getElementById('fullscreen-btn');
+        const overlay = document.getElementById('overlay');
+
+        // pill-ready: init done. The click is the user gesture audio needs.
+        window.addEventListener('pill-ready', () => {
+            overlay.textContent = 'Click to play';
+            overlay.classList.add('ready');
+        }, { once: true });
+        overlay.addEventListener('click', () => {
+            if (!overlay.classList.contains('ready')) return;
+            overlay.classList.add('hidden');
+            window.dispatchEvent(new Event('pill-play'));
+        });
 
         function resizeCanvas() {
             const dpr = window.devicePixelRatio || 1;
@@ -99,6 +126,7 @@
         }
 
         function showError(msg) {
+            overlay.classList.add('hidden');
             canvas.style.display = 'none';
             errorDiv.style.display = 'block';
             errorDiv.textContent = msg;
