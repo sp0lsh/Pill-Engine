@@ -5,6 +5,12 @@
   </picture>
 </p>
 
+<p align="center">
+  <a href="https://sp0lsh.github.io/Pill-Engine/"><img src="https://sp0lsh.github.io/Pill-Engine/teaser.jpg" width=100%></a>
+  <br/>
+  <b><a href="https://sp0lsh.github.io/Pill-Engine/">Run the Pill Engine teaser realtime in your browser (WebGPU)</a></b>
+</p>
+
 <br/>
 
 Modern, free and blazingly fast game engine. Built for developers who refuse to compromise.  
@@ -31,8 +37,6 @@ Designed from the ground up around performance, modularity and a frictionless de
 - **Embedded device support**
 
 ## Links
-**Run the Pill Engine teaser realtime in your browser (WebGPU): [sp0lsh.github.io/Pill-Engine](https://sp0lsh.github.io/Pill-Engine/)**
-
 **Discover Pill at [PillEngine.org](https://pillengine.org)**
 
 **Join the community on [Discord Server](https://discord.gg/VUKNQrctms)**
