@@ -2,10 +2,10 @@ use pill_engine::{define_component, game::*};
 
 use crate::loader::{self, SponzaCpu};
 
-define_component!(OrbitCamera {
+// Fly camera: view angles in degrees; yaw 0 looks down -Z, positive pitch looks up
+define_component!(FlyCamera {
     yaw: f32,
     pitch: f32,
-    radius: f32,
 });
 
 pub struct Game {}
@@ -15,33 +15,51 @@ pub struct Game {}
 type Loaded = std::result::Result<SponzaCpu, String>;
 static PENDING: std::sync::Mutex<Option<Loaded>> = std::sync::Mutex::new(None);
 
-// Orbit around a point at mid-height of the atrium so the camera circles inside the hall.
-const ORBIT_CENTER_Y: f32 = 5.0;
+// Meters per second; Shift multiplies
+const FLY_SPEED: f32 = 4.0;
+const FLY_FAST_MULTIPLIER: f32 = 3.0;
+// Degrees per pixel of mouse movement
+const LOOK_SENSITIVITY: f32 = 0.2;
 
-fn orbit_camera_system(engine: &mut Engine) -> Result<()> {
-    let input = engine.get_global_component_mut::<InputComponent>()?;
+// FPS controls: hold the left mouse button to look, WASD to move, E/Q up/down, Shift faster.
+fn fly_camera_system(engine: &mut Engine) -> Result<()> {
+    let delta_time = engine.get_global_component::<TimeComponent>()?.delta_time;
+    let input = engine.get_global_component::<InputComponent>()?;
     let mouse_delta = input.get_mouse_delta();
-    let scroll_delta = input.get_mouse_scroll_delta();
-    let left_mouse_button_held = input.get_mouse_button(MouseButton::Left);
+    let look_held = input.get_mouse_button(MouseButton::Left);
+    let axis = |positive: KeyboardKey, negative: KeyboardKey| {
+        input.get_key(positive) as i32 as f32 - input.get_key(negative) as i32 as f32
+    };
+    // x = right, y = up, z = forward
+    let movement = Vector3f::new(
+        axis(KeyboardKey::KeyD, KeyboardKey::KeyA),
+        axis(KeyboardKey::KeyE, KeyboardKey::KeyQ),
+        axis(KeyboardKey::KeyW, KeyboardKey::KeyS),
+    );
+    let fast = input.get_key(KeyboardKey::ShiftLeft) || input.get_key(KeyboardKey::ShiftRight);
+    let speed = FLY_SPEED * if fast { FLY_FAST_MULTIPLIER } else { 1.0 };
 
-    for (_, transform, orbit) in
-        engine.iterate_two_components_mut::<TransformComponent, OrbitCamera>()?
+    for (_, transform, fly) in
+        engine.iterate_two_components_mut::<TransformComponent, FlyCamera>()?
     {
-        if left_mouse_button_held {
-            orbit.yaw -= mouse_delta.x * 0.3;
-            orbit.pitch = (orbit.pitch + mouse_delta.y * 0.3).clamp(-80.0, 80.0);
+        if look_held {
+            fly.yaw -= mouse_delta.x * LOOK_SENSITIVITY;
+            fly.pitch = (fly.pitch - mouse_delta.y * LOOK_SENSITIVITY).clamp(-89.0, 89.0);
         }
-        orbit.radius = (orbit.radius - scroll_delta.y * 0.8).clamp(2.0, 40.0);
-
-        let pitch_radians = orbit.pitch.to_radians();
-        let yaw_radians = orbit.yaw.to_radians();
-        let radius_cos_pitch = orbit.radius * pitch_radians.cos();
-        transform.set_position(Vector3f::new(
-            radius_cos_pitch * yaw_radians.sin(),
-            orbit.radius * pitch_radians.sin() + ORBIT_CENTER_Y,
-            radius_cos_pitch * yaw_radians.cos(),
-        ));
-        transform.look_at(Vector3f::new(0.0, ORBIT_CENTER_Y, 0.0));
+        let (yaw, pitch) = (fly.yaw.to_radians(), fly.pitch.to_radians());
+        let forward = Vector3f::new(
+            -yaw.sin() * pitch.cos(),
+            pitch.sin(),
+            -yaw.cos() * pitch.cos(),
+        );
+        let right = forward.cross(Vector3f::Y).normalize_or_zero();
+        let step = (right * movement.x + Vector3f::Y * movement.y + forward * movement.z)
+            .normalize_or_zero()
+            * speed
+            * delta_time;
+        transform.set_position(transform.position + step);
+        let target = transform.position + forward;
+        transform.look_at(target);
     }
     Ok(())
 }
@@ -182,7 +200,7 @@ impl PillGame for Game {
         engine.register_component::<TransformComponent>(scene)?;
         engine.register_component::<CameraComponent>(scene)?;
         engine.register_component::<MeshRenderingComponent>(scene)?;
-        engine.register_component::<OrbitCamera>(scene)?;
+        engine.register_component::<FlyCamera>(scene)?;
 
         // Build the camera up front so the window renders (clear color + sky once IBL lands)
         // while the ~50 MB model downloads.
@@ -190,18 +208,18 @@ impl PillGame for Game {
             .build_entity(scene)
             .with_component(
                 TransformComponent::builder()
-                    .position(Vector3f::new(-9.0, ORBIT_CENTER_Y, 0.0))
+                    .position(Vector3f::new(9.0, 5.8, 0.0))
                     .build(),
             )
             .with_component(CameraComponent::builder().enabled(true).fov(60.0).build())
-            .with_component(OrbitCamera {
+            // Looking down the court toward -X, slightly down
+            .with_component(FlyCamera {
                 yaw: 90.0,
-                pitch: 5.0,
-                radius: 9.0,
+                pitch: -5.0,
             })
             .build();
 
-        engine.add_system("orbit_camera", orbit_camera_system)?;
+        engine.add_system("fly_camera", fly_camera_system)?;
 
         // Load in the background; frames render meanwhile and the drain system uploads the result
         let store = |result| {
