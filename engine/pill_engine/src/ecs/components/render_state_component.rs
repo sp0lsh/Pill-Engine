@@ -175,6 +175,20 @@ pub struct PunctualLights {
     pub first_slice_depth: f32,
     /// Replaces the shaded color with a heatmap of the light count per froxel.
     pub debug_heatmap: bool,
+    /// Shadow maps of lights with `cast_shadows`; off skips rendering them.
+    pub shadows_enabled: bool,
+    /// Width and height of each point/spot shadow map in texels.
+    pub shadow_map_size: u32,
+    /// Shadow maps rendered per frame (spot light: 1, point light: 6), given to the lights
+    /// nearest the camera; at most 64.
+    pub max_shadow_maps: u32,
+    /// Hardware depth bias of the shadow casters, in depth-buffer units; read when the pass
+    /// chain is built.
+    pub shadow_constant_bias: i32,
+    /// Hardware depth bias scaled by the caster's depth slope; read when the pass chain is built.
+    pub shadow_slope_bias: f32,
+    /// Receiver offset along the surface normal, in shadow-map texels at the receiver's distance.
+    pub shadow_normal_bias: f32,
 }
 
 impl Default for PunctualLights {
@@ -183,6 +197,12 @@ impl Default for PunctualLights {
             light_far: 100.0,
             first_slice_depth: 5.0,
             debug_heatmap: false,
+            shadows_enabled: true,
+            shadow_map_size: 1024,
+            max_shadow_maps: 16,
+            shadow_constant_bias: 2,
+            shadow_slope_bias: 2.0,
+            shadow_normal_bias: 1.5,
         }
     }
 }

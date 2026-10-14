@@ -199,6 +199,8 @@ struct PassPBROpaqueState {
     shadow_stand_in: PassTextureHandle,
     shadow_sampler: wgpu::Sampler,
     light_buffers: LightBuffers,
+    // Bound until PassPunctualShadows publishes its texture array
+    punctual_shadow_stand_in: wgpu::TextureView,
     per_draw_buffer: wgpu::Buffer,
     // Last frame's transforms; a single entry when the pass writes no motion vectors (never read)
     previous_per_draw_buffer: wgpu::Buffer,
@@ -208,6 +210,7 @@ struct PassPBROpaqueState {
     // these change.
     cached_ibl: [PassTextureHandle; 3],
     cached_shadow_map: Option<PassTextureHandle>,
+    cached_punctual_shadows: u64,
 }
 
 /// View of a game-set RenderStateComponent texture; an invalid handle logs and uses `fallback`.
@@ -244,6 +247,7 @@ fn build_globals_bind_group(
     shadow_view: &wgpu::TextureView,
     shadow_sampler: &wgpu::Sampler,
     light_buffers: &LightBuffers,
+    punctual_shadow_view: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("pass_pbr_opaque_globals_bind_group"),
@@ -300,6 +304,14 @@ fn build_globals_bind_group(
             wgpu::BindGroupEntry {
                 binding: 12,
                 resource: light_buffers.records.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 13,
+                resource: light_buffers.shadows.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 14,
+                resource: wgpu::BindingResource::TextureView(punctual_shadow_view),
             },
         ],
     })
@@ -699,6 +711,18 @@ impl Pass for PassPBROpaque {
                 fragment_storage_entry(10),
                 fragment_storage_entry(11),
                 fragment_storage_entry(12),
+                // Point/spot shadow maps: light matrices, depth texture array
+                fragment_storage_entry(13),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 14,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        sample_type: wgpu::TextureSampleType::Depth,
+                    },
+                    count: None,
+                },
             ],
             // 1: material textures (base_color, normal, metallic_roughness, emissive)
             material_textures_layout_entries(),
@@ -880,8 +904,28 @@ impl Pass for PassPBROpaque {
         // Without PassLights, minimal buffers fill the bindings (the light count stays 0)
         let light_buffers = match &self.lights {
             Some(frame) => frame.borrow().buffers.clone(),
-            None => LightBuffers::new(renderer, 1, 1, 2)?,
+            None => LightBuffers::new(renderer, 1, 1, 2, 1)?,
         };
+        let punctual_shadow_stand_in = renderer
+            .get_device()
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("pass_pbr_punctual_shadow_stand_in"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: DEPTH_TARGET_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            });
 
         let globals_bind_group = build_globals_bind_group(
             renderer.get_device(),
@@ -897,6 +941,7 @@ impl Pass for PassPBROpaque {
             &shadow_view,
             &shadow_sampler,
             &light_buffers,
+            &punctual_shadow_stand_in,
         );
         let cached_ibl = [irr_h, pre_h, lut_h];
 
@@ -1028,12 +1073,14 @@ impl Pass for PassPBROpaque {
             shadow_stand_in,
             shadow_sampler,
             light_buffers,
+            punctual_shadow_stand_in,
             per_draw_buffer,
             previous_per_draw_buffer,
             per_draw_bind_group,
             bg,
             cached_ibl,
             cached_shadow_map: None,
+            cached_punctual_shadows: 0,
         });
 
         Ok(())
@@ -1054,11 +1101,22 @@ impl Pass for PassPBROpaque {
             .as_ref()
             .map(|frame| *frame.borrow())
             .unwrap_or_default();
-        let lights_params = self
-            .lights
+        let (lights_params, punctual_shadows) = match &self.lights {
+            Some(frame) => {
+                let frame = frame.borrow();
+                (
+                    frame.params,
+                    frame
+                        .shadow_view
+                        .clone()
+                        .map(|view| (view, frame.shadow_generation)),
+                )
+            }
+            None => (Default::default(), None),
+        };
+        let punctual_generation = punctual_shadows
             .as_ref()
-            .map(|frame| frame.borrow().params)
-            .unwrap_or_default();
+            .map_or(0, |(_, generation)| *generation);
 
         // Rebuild the globals bind group only when the component's IBL handles or the published
         // shadow map change (steady state: 0).
@@ -1069,7 +1127,10 @@ impl Pass for PassPBROpaque {
                 render_state.ibl_brdf_lut,
             ];
             let state = get_state(self);
-            if state.cached_ibl != ibl || state.cached_shadow_map != shadow_frame.map {
+            if state.cached_ibl != ibl
+                || state.cached_shadow_map != shadow_frame.map
+                || state.cached_punctual_shadows != punctual_generation
+            {
                 let shadow_view = renderer
                     .get_texture_view(shadow_frame.map.unwrap_or(state.shadow_stand_in))
                     .ok_or("PassPBROpaque: shadow map missing")?;
@@ -1096,9 +1157,13 @@ impl Pass for PassPBROpaque {
                     &shadow_view,
                     &state.shadow_sampler,
                     &state.light_buffers,
+                    punctual_shadows
+                        .as_ref()
+                        .map_or(&state.punctual_shadow_stand_in, |(view, _)| view),
                 );
                 state.cached_ibl = ibl;
                 state.cached_shadow_map = shadow_frame.map;
+                state.cached_punctual_shadows = punctual_generation;
             }
         }
 

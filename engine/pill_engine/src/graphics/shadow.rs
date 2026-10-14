@@ -85,7 +85,7 @@ pub(crate) fn fit_light(camera: &CameraSlice, direction: Vector3f, map_size: u32
 /// Up vector of the light view: −Z carried along by the shortest rotation from straight down to
 /// `direction`. Continuous for every light shining downward, so a moving sun never flips the
 /// texel grid; the only singular direction is straight up, where any perpendicular works.
-fn light_up(direction: Vector3f) -> Vector3f {
+pub(crate) fn light_up(direction: Vector3f) -> Vector3f {
     let down = Vector3f::NEG_Y;
     let cosine = down.dot(direction);
     if cosine < -1.0 + 1e-6 {

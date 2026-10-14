@@ -14,6 +14,13 @@ define_component!(DriftingLight {
     phase: f32,
 });
 
+// Shadowed light sweeping along the court (see sweep_position); spots aim down into it
+define_component!(SweepingLight {
+    phase: f32,
+    height: f32,
+    aim: bool,
+});
+
 pub struct Game {}
 
 // The background load (spawn_local task on WASM, thread on native) can't hold &mut Engine; it
@@ -70,11 +77,15 @@ fn fly_camera_system(engine: &mut Engine) -> Result<()> {
     Ok(())
 }
 
-// Clustered lighting test: lanterns along the court and galleries, spots down from the arches
+// Shadow test: a few intense moving lights in the court and no fill light, so the columns' shadows
+// are the only structure in the image. The 256 clustered lanterns are kept dark (J switches them
+// on) to show many-light shading without washing the shadows out.
 const LANTERN_COLUMNS: usize = 32;
 const LANTERN_ROWS: [f32; 4] = [-6.5, -2.2, 2.2, 6.5]; // z
 const LANTERN_HEIGHTS: [f32; 2] = [1.2, 7.2]; // ground floor, gallery
-const SPOT_COUNT: usize = 8;
+const LANTERN_INTENSITY: f32 = 3.0;
+// Court centre line between the column rows (z ≈ −2.4 and +1.9)
+const COURT_Z: f32 = -0.25;
 
 /// Fraction in 0..1 from an integer (cheap hash, for jitter and hues).
 fn hash(value: usize) -> f32 {
@@ -88,8 +99,77 @@ fn hue_color(hue: f32) -> [f32; 3] {
     [channel(0.0), channel(1.0 / 3.0), channel(2.0 / 3.0)]
 }
 
-/// 256 point lights (32 × 4 rows × 2 floors) and 8 spot lights.
+/// Path of a shadowed light: sweeps along the court at `height`, phase-shifted per light.
+fn sweep_position(time: f32, phase: f32, height: f32) -> Vector3f {
+    let t = time * 0.25 + phase;
+    Vector3f::new(
+        t.sin() * 7.0,
+        height + (t * 1.7).sin() * 0.4,
+        COURT_Z + (t * 1.3).cos() * 1.0,
+    )
+}
+
+/// 3 shadowed point lights low in the court, 2 shadowed spot lights from above it, and 256
+/// lanterns (dark until J).
 fn spawn_lights(engine: &mut Engine, scene: SceneHandle) {
+    let shadowed_points: [([f32; 3], f32); 3] = [
+        ([1.0, 0.55, 0.25], 0.0),
+        ([0.35, 0.6, 1.0], 2.1),
+        ([1.0, 0.95, 0.85], 4.2),
+    ];
+    for (color, phase) in shadowed_points {
+        engine
+            .build_entity(scene)
+            .with_component(
+                TransformComponent::builder()
+                    .position(sweep_position(0.0, phase, 1.4))
+                    .build(),
+            )
+            .with_component(
+                LightComponent::builder()
+                    .color(color)
+                    .intensity(40.0)
+                    .range(16.0)
+                    .cast_shadows(true)
+                    .build(),
+            )
+            .with_component(SweepingLight {
+                phase,
+                height: 1.4,
+                aim: false,
+            })
+            .build();
+    }
+    // Spots looking down into the court from above the gallery roof line, aimed at a point that
+    // sweeps with them
+    for phase in [1.0, 3.6] {
+        engine
+            .build_entity(scene)
+            .with_component(
+                TransformComponent::builder()
+                    .position(sweep_position(0.0, phase, 11.0))
+                    .build(),
+            )
+            .with_component(
+                LightComponent::builder()
+                    .light_type(LightType::Spot {
+                        inner_angle: 18.0,
+                        outer_angle: 28.0,
+                    })
+                    .color([1.0, 0.9, 0.75])
+                    .intensity(250.0)
+                    .range(16.0)
+                    .cast_shadows(true)
+                    .build(),
+            )
+            .with_component(SweepingLight {
+                phase,
+                height: 11.0,
+                aim: true,
+            })
+            .build();
+    }
+
     let mut index = 0;
     for &height in &LANTERN_HEIGHTS {
         for &row in &LANTERN_ROWS {
@@ -106,7 +186,7 @@ fn spawn_lights(engine: &mut Engine, scene: SceneHandle) {
                     .with_component(
                         LightComponent::builder()
                             .color(hue_color(hash(index + 3000)))
-                            .intensity(3.0)
+                            .intensity(0.0)
                             .range(3.5)
                             .build(),
                     )
@@ -119,43 +199,34 @@ fn spawn_lights(engine: &mut Engine, scene: SceneHandle) {
             }
         }
     }
-    // Spots shining straight down from above the court
-    for spot in 0..SPOT_COUNT {
-        let x = -12.0 + 24.0 * spot as f32 / (SPOT_COUNT - 1) as f32;
-        engine
-            .build_entity(scene)
-            .with_component(
-                TransformComponent::builder()
-                    .position(Vector3f::new(x, 10.0, 0.0))
-                    .rotation(Vector3f::new(-90.0, 0.0, 0.0))
-                    .build(),
-            )
-            .with_component(
-                LightComponent::builder()
-                    .light_type(LightType::Spot {
-                        inner_angle: 12.0,
-                        outer_angle: 20.0,
-                    })
-                    .color([1.0, 0.9, 0.75])
-                    .intensity(60.0)
-                    .range(14.0)
-                    .build(),
-            )
-            .build();
-    }
 }
 
-/// Lanterns bob and sway slowly; L toggles the froxel light-count heatmap.
+/// Moves the lights. L toggles the froxel light-count heatmap, K the point/spot shadows, J the
+/// lanterns.
 fn lights_system(engine: &mut Engine) -> Result<()> {
     let time = engine.get_global_component::<TimeComponent>()?.time;
-    let toggle_heatmap = engine
-        .get_global_component::<InputComponent>()?
-        .get_key_pressed(KeyboardKey::KeyL);
+    let input = engine.get_global_component::<InputComponent>()?;
+    let toggle_heatmap = input.get_key_pressed(KeyboardKey::KeyL);
+    let toggle_shadows = input.get_key_pressed(KeyboardKey::KeyK);
+    let toggle_lanterns = input.get_key_pressed(KeyboardKey::KeyJ);
+    let lights = &mut engine
+        .get_global_component_mut::<RenderStateComponent>()?
+        .punctual_lights;
     if toggle_heatmap {
-        let lights = &mut engine
-            .get_global_component_mut::<RenderStateComponent>()?
-            .punctual_lights;
         lights.debug_heatmap = !lights.debug_heatmap;
+    }
+    if toggle_shadows {
+        lights.shadows_enabled = !lights.shadows_enabled;
+    }
+    for (_, transform, sweep) in
+        engine.iterate_two_components_mut::<TransformComponent, SweepingLight>()?
+    {
+        let position = sweep_position(time, sweep.phase, sweep.height);
+        transform.set_position(position);
+        if sweep.aim {
+            // Down into the court, toward the column row on the far side
+            transform.look_at(Vector3f::new(position.x * 0.8, 0.0, COURT_Z + 2.5));
+        }
     }
     for (_, transform, drift) in
         engine.iterate_two_components_mut::<TransformComponent, DriftingLight>()?
@@ -164,6 +235,15 @@ fn lights_system(engine: &mut Engine) -> Result<()> {
         transform.set_position(
             drift.base + Vector3f::new(t.cos() * 0.4, (t * 1.3).sin() * 0.3, (t * 0.9).sin() * 0.4),
         );
+    }
+    if toggle_lanterns {
+        for (_, light, _) in engine.iterate_two_components_mut::<LightComponent, DriftingLight>()? {
+            light.intensity = if light.intensity > 0.0 {
+                0.0
+            } else {
+                LANTERN_INTENSITY
+            };
+        }
     }
     Ok(())
 }
@@ -289,18 +369,14 @@ impl PillGame for Game {
         engine.set_active_scene(scene)?;
         {
             let render_state = engine.get_global_component_mut::<RenderStateComponent>()?;
-            render_state.background_color = [0.02, 0.02, 0.03];
-            // Dusk: a low-intensity sun along the court's long axis (x) as the shadowed key light,
-            // dim IBL, so the point/spot lights read
-            render_state.shadow.enabled = true;
-            render_state.lights[0] = DirectionalLight {
-                direction: [0.45, -1.0, 0.08],
-                color: [1.0, 0.75, 0.55],
-                intensity: 0.6,
-            };
-            render_state.lights[1].intensity = 0.1;
-            render_state.lights[2].intensity = 0.05;
-            render_state.ibl_intensity = 0.08;
+            render_state.background_color = [0.0, 0.0, 0.0];
+            // Night, no fill: the shadowed point/spot lights are the only light
+            for light in render_state.lights.iter_mut() {
+                light.intensity = 0.0;
+            }
+            render_state.ibl_intensity = 0.0;
+            // 3 point lights (6 cube faces each) + 2 spot lights (1 map each)
+            render_state.punctual_lights.max_shadow_maps = 20;
         }
 
         engine.register_component::<TransformComponent>(scene)?;
@@ -309,6 +385,7 @@ impl PillGame for Game {
         engine.register_component::<FlyCamera>(scene)?;
         engine.register_component::<LightComponent>(scene)?;
         engine.register_component::<DriftingLight>(scene)?;
+        engine.register_component::<SweepingLight>(scene)?;
 
         // Build the camera up front so the window renders (clear color + sky once IBL lands)
         // while the ~50 MB model downloads.
@@ -316,14 +393,14 @@ impl PillGame for Game {
             .build_entity(scene)
             .with_component(
                 TransformComponent::builder()
-                    .position(Vector3f::new(9.0, 5.8, 0.0))
+                    .position(Vector3f::new(9.5, 1.7, COURT_Z))
                     .build(),
             )
             .with_component(CameraComponent::builder().enabled(true).fov(60.0).build())
-            // Looking down the court toward -X, slightly down
+            // At floor level looking down the court toward -X, between the column rows
             .with_component(FlyCamera {
                 yaw: 90.0,
-                pitch: -5.0,
+                pitch: -4.0,
             })
             .build();
 

@@ -227,6 +227,8 @@ pub(crate) struct Froxelizer {
     rows: Vec<bool>,
     /// (offset, count) into `records` per froxel.
     pub(crate) entries: Vec<[u32; 2]>,
+    /// Per light: whether it reached any froxel this frame (it is visible).
+    pub(crate) visible: Vec<bool>,
     /// Light indices; the first ones are all lights of the frame (the overflow fallback). Padded
     /// to an even length, the GPU reads them as u32 pairs.
     pub(crate) records: Vec<u16>,
@@ -241,6 +243,7 @@ impl Default for Froxelizer {
             columns: Vec::new(),
             rows: Vec::new(),
             entries: Vec::new(),
+            visible: Vec::new(),
             records: Vec::new(),
         }
     }
@@ -255,8 +258,10 @@ impl Froxelizer {
         self.words = lights.len().div_ceil(64).max(1);
         self.bits.clear();
         self.bits.resize(froxel_count * self.words, 0);
+        self.visible.clear();
+        self.visible.resize(lights.len(), false);
         for (index, light) in lights.iter().enumerate() {
-            self.add_light(layout, index, light);
+            self.visible[index] = self.add_light(layout, index, light);
         }
         let fits = self.compress(layout.count_x as usize);
         if self.records.len() % 2 == 1 {
@@ -265,14 +270,15 @@ impl Froxelizer {
         fits
     }
 
-    fn add_light(&mut self, layout: &FroxelLayout, index: usize, light: &FroxelLight) {
+    /// Marks the froxels the light reaches; returns whether there was any.
+    fn add_light(&mut self, layout: &FroxelLayout, index: usize, light: &FroxelLight) -> bool {
         let center = light.position;
         let radius = light.radius;
         let depth = -center.z;
         let near_depth = (depth - radius).max(layout.near);
         let far_depth = (depth + radius).min(layout.light_far);
         if far_depth < near_depth {
-            return; // entirely in front of the near plane or beyond light_far
+            return false; // entirely in front of the near plane or beyond light_far
         }
 
         // Froxel range of the light's view-space box, projected at its near and far depth
@@ -303,6 +309,7 @@ impl Froxelizer {
         }));
 
         let (word, bit) = (index / 64, 1u64 << (index % 64));
+        let mut any = false;
         for z in z0..=z1 {
             for (y, _) in (y0..=y1).zip(&self.rows).filter(|(_, hit)| **hit) {
                 for (x, _) in (x0..=x1).zip(&self.columns).filter(|(_, hit)| **hit) {
@@ -313,9 +320,11 @@ impl Froxelizer {
                         }
                     }
                     self.bits[froxel * self.words + word] |= bit;
+                    any = true;
                 }
             }
         }
+        any
     }
 
     /// Bitsets → entries + records (Filament `froxelizeAssignRecordsCompress`).

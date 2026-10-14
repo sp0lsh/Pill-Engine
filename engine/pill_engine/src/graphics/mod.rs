@@ -18,16 +18,19 @@ pub(crate) mod pass_lights;
 #[cfg(feature = "post_fx")]
 mod pass_motion_blur;
 mod pass_pbr_opaque;
+mod pass_punctual_shadows;
 mod pass_shadow;
 #[cfg(feature = "post_fx")]
 mod pass_ssao;
 mod pass_tonemap;
 #[cfg(feature = "post_fx")]
 mod projection;
+mod punctual_shadows;
 mod render_queue;
 mod renderer;
 mod scene_uniform;
 pub(crate) mod shadow;
+mod shadow_casters;
 
 // --- Use ---
 
@@ -55,6 +58,7 @@ pub use pass_motion_blur::PassMotionBlur;
 pub use pass_pbr_opaque::PassPBROpaque;
 #[cfg(feature = "post_fx")]
 pub use pass_pbr_opaque::PassPBRTranslucent;
+pub(crate) use pass_punctual_shadows::PassPunctualShadows;
 pub(crate) use pass_shadow::PassShadow;
 #[cfg(feature = "post_fx")]
 pub use pass_ssao::PassSsao;

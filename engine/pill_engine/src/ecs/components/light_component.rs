@@ -41,6 +41,13 @@ impl LightComponentBuilder {
         self
     }
 
+    /// Renders a shadow map for the light (spot: 1, point: 6), within the per-frame budget
+    /// `PunctualLights::max_shadow_maps`.
+    pub fn cast_shadows(mut self, cast_shadows: bool) -> Self {
+        self.component.cast_shadows = cast_shadows;
+        self
+    }
+
     pub fn build(self) -> LightComponent {
         self.component
     }
@@ -59,6 +66,8 @@ pub struct LightComponent {
     pub intensity: f32,
     /// Distance (m) at which the light fades to zero.
     pub range: f32,
+    /// Shadowed when within the shadow-map budget; nearer lights first.
+    pub cast_shadows: bool,
 }
 
 impl Default for LightComponent {
@@ -68,6 +77,7 @@ impl Default for LightComponent {
             color: [1.0; 3],
             intensity: 1.0,
             range: 5.0,
+            cast_shadows: false,
         }
     }
 }

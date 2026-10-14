@@ -41,11 +41,44 @@ struct PunctualLight {
     float4 position_falloff;  // xyz = world position, w = 1 / range²
     float4 direction;         // xyz = direction the spot shines in
     float4 color_intensity;   // rgb = color, w = intensity
-    float4 spot_scale_offset; // x, y: angle term saturate(cos · x + y) (point light: 0, 1)
+    // x, y: angle term saturate(cos · x + y) (point light: 0, 1); z: first shadow layer (−1 = no
+    // shadow); w: 1 = point light (6 cube-face layers from z)
+    float4 spot_scale_offset;
 };
 [[vk::binding(10, 0)]] StructuredBuffer<PunctualLight> punctual_lights;
 [[vk::binding(11, 0)]] StructuredBuffer<uint2>         froxel_entries; // (offset, count) per froxel
 [[vk::binding(12, 0)]] StructuredBuffer<uint>          froxel_records; // u16 light indices, 2 per uint
+
+// Point/spot shadow maps (punctual_shadows.rs): one per spot light, six cube faces per point
+// light, all layers of one depth array; sampled with shadow_sampler — mirrors GpuShadowMap
+struct PunctualShadow {
+    column_major float4x4 view_projection; // world → light clip space (depth 0..1)
+    float4 params; // x = normal offset per meter of light distance, y = map size, z = 1 / map size
+};
+[[vk::binding(13, 0)]] StructuredBuffer<PunctualShadow> punctual_shadows;
+[[vk::binding(14, 0)]] DepthTexture2DArray              punctual_shadow_maps;
+
+// 3×3 tent filter from 4 bilinear comparison taps (Castaño 2013, Filament PCF_Low): tap
+// coordinates and weights (sum 16) around `uv` in a map of `size` texels (`texel` = 1 / size).
+struct TentTaps {
+    float2 uv[4];
+    float  weight[4];
+};
+TentTaps tent_taps(float2 uv, float size, float texel) {
+    float2 scaled = uv * size + 0.5;
+    float2 base   = (floor(scaled) - 0.5) * texel;
+    float2 st     = frac(scaled);
+    float2 uw     = float2(3.0 - 2.0 * st.x, 1.0 + 2.0 * st.x);
+    float2 vw     = float2(3.0 - 2.0 * st.y, 1.0 + 2.0 * st.y);
+    float2 u      = float2((2.0 - st.x) / uw.x - 1.0, st.x / uw.y + 1.0) * texel;
+    float2 v      = float2((2.0 - st.y) / vw.x - 1.0, st.y / vw.y + 1.0) * texel;
+    TentTaps taps;
+    taps.uv[0] = base + float2(u.x, v.x);  taps.weight[0] = uw.x * vw.x;
+    taps.uv[1] = base + float2(u.y, v.x);  taps.weight[1] = uw.y * vw.x;
+    taps.uv[2] = base + float2(u.x, v.y);  taps.weight[2] = uw.x * vw.y;
+    taps.uv[3] = base + float2(u.y, v.y);  taps.weight[3] = uw.y * vw.y;
+    return taps;
+}
 
 // Key light shadow map; the comparison sampler (LessEqual, linear) makes every tap a 2×2 PCF
 [[vk::binding(8, 0)]] DepthTexture2D         shadow_map;
@@ -66,19 +99,12 @@ float shadow_visibility(float3 world_position, float3 geometric_normal) {
     float2 uv       = clip.xy * float2(0.5, -0.5) + 0.5; // NDC y up, texture v down
     float  depth    = clip.z;
 
-    float  texel = scene.shadow_params.z;
-    float2 scaled = uv * scene.shadow_params.w + 0.5;
-    float2 base   = (floor(scaled) - 0.5) * texel;
-    float2 st     = frac(scaled);
-    float2 uw     = float2(3.0 - 2.0 * st.x, 1.0 + 2.0 * st.x);
-    float2 vw     = float2(3.0 - 2.0 * st.y, 1.0 + 2.0 * st.y);
-    float2 u      = float2((2.0 - st.x) / uw.x - 1.0, st.x / uw.y + 1.0) * texel;
-    float2 v      = float2((2.0 - st.y) / vw.x - 1.0, st.y / vw.y + 1.0) * texel;
     // SampleCmpLevelZero (textureSampleCompareLevel) is valid in non-uniform control flow
-    float sum = uw.x * vw.x * shadow_map.SampleCmpLevelZero(shadow_sampler, base + float2(u.x, v.x), depth)
-              + uw.y * vw.x * shadow_map.SampleCmpLevelZero(shadow_sampler, base + float2(u.y, v.x), depth)
-              + uw.x * vw.y * shadow_map.SampleCmpLevelZero(shadow_sampler, base + float2(u.x, v.y), depth)
-              + uw.y * vw.y * shadow_map.SampleCmpLevelZero(shadow_sampler, base + float2(u.y, v.y), depth);
+    TentTaps taps = tent_taps(uv, scene.shadow_params.w, scene.shadow_params.z);
+    float    sum  = 0.0;
+    for (uint tap = 0; tap < 4; tap++) {
+        sum += taps.weight[tap] * shadow_map.SampleCmpLevelZero(shadow_sampler, taps.uv[tap], depth);
+    }
     bool  outside = any(uv < 0.0) || any(uv > 1.0) || depth > 1.0;
     float fade    = saturate((length(world_position - camera.position.xyz) - 0.9 * shadow_distance) / (0.1 * shadow_distance));
     return outside ? 1.0 : lerp(sum / 16.0, 1.0, fade);
@@ -196,10 +222,50 @@ uint froxel_index(float2 pixel, float3 world_position) {
     return tile.x + tile.y * columns + uint(slice) * columns * rows;
 }
 
+// Cube face of a light-to-surface direction: its dominant axis, in +X −X +Y −Y +Z −Z order
+// (cube_face in punctual_shadows.rs).
+uint cube_face(float3 direction) {
+    float3 magnitude = abs(direction);
+    if (magnitude.x >= magnitude.y && magnitude.x >= magnitude.z) {
+        return direction.x > 0.0 ? 0u : 1u;
+    }
+    if (magnitude.y >= magnitude.z) {
+        return direction.y > 0.0 ? 2u : 3u;
+    }
+    return direction.z > 0.0 ? 4u : 5u;
+}
+
+// Fraction of a point/spot light reaching `world_position` (1 = lit, or the light has no shadow
+// map this frame). Same normal offset and tent PCF as the key light. A point light's face is
+// chosen for the offset receiver; faces carry a texel border (cube_face_fov), so the taps of a
+// receiver on a face edge stay inside that face's map.
+float punctual_shadow_visibility(PunctualLight light, float3 world_position, float3 geometric_normal, float distance) {
+    int layer = int(light.spot_scale_offset.z);
+    if (layer < 0) {
+        return 1.0;
+    }
+    // All maps of a frame share the params (map size); the normal offset per meter as well
+    float3 receiver = world_position + geometric_normal * (punctual_shadows[layer].params.x * distance);
+    if (light.spot_scale_offset.w > 0.5) {
+        layer += int(cube_face(receiver - light.position_falloff.xyz));
+    }
+    PunctualShadow shadow = punctual_shadows[layer];
+    float4 clip     = mul(shadow.view_projection, float4(receiver, 1.0));
+    float3 ndc      = clip.xyz / max(clip.w, 1e-6);
+    float2 uv       = ndc.xy * float2(0.5, -0.5) + 0.5;
+    TentTaps taps   = tent_taps(uv, shadow.params.y, shadow.params.z);
+    float    sum    = 0.0;
+    for (uint tap = 0; tap < 4; tap++) {
+        sum += taps.weight[tap] * punctual_shadow_maps.SampleCmpLevelZero(shadow_sampler, float3(taps.uv[tap], float(layer)), ndc.z);
+    }
+    bool outside = clip.w <= 0.0 || any(uv < 0.0) || any(uv > 1.0) || ndc.z > 1.0;
+    return outside ? 1.0 : sum / 16.0;
+}
+
 // Point/spot lights of the fragment's froxel: Filament's inverse-square falloff with a smooth
 // window to zero at the light's range, and the spot angle term. Returns the light count in `count`.
 float3 accumulate_punctual_lights(
-    float2 pixel, float3 world_position, float3 normal, float3 view_direction,
+    float2 pixel, float3 world_position, float3 normal, float3 geometric_normal, float3 view_direction,
     float3 base_reflectivity, float3 albedo, float roughness, float metallic,
     float clearcoat, float coat_roughness, out uint count
 ) {
@@ -220,6 +286,9 @@ float3 accumulate_punctual_lights(
         float3 incoming        = to_light * rsqrt(max(distance_square, 1e-8));
         float  angle           = saturate(dot(light.direction.xyz, -incoming) * light.spot_scale_offset.x + light.spot_scale_offset.y);
         float  attenuation     = window * window / max(distance_square, 1e-4) * angle * angle;
+        if (attenuation > 0.0) {
+            attenuation *= punctual_shadow_visibility(light, world_position, geometric_normal, sqrt(distance_square));
+        }
         float4 light_color     = float4(light.color_intensity.rgb, light.color_intensity.w * attenuation);
         radiance += accumulate_directional_light(normal, view_direction, base_reflectivity, albedo, roughness, metallic, -incoming, light_color);
         if (clearcoat > 0.0) {
@@ -275,7 +344,7 @@ FragmentOutput fs_main(
     float3 view_direction    = normalize(camera.position.xyz - world_position);
     float3 base_reflectivity = lerp(float3(0.04, 0.04, 0.04), albedo, float3(metallic, metallic, metallic));
     float3 outgoing_radiance = float3(0.0, 0.0, 0.0);
-    // Only the key light (0) casts shadows
+    // Key light (0) shadow; point/spot shadows are in accumulate_punctual_lights
     float  key_visibility    = shadow_visibility(world_position, normalize(input_normal));
     float4 key_light_color   = float4(scene.light_color0.rgb, scene.light_color0.w * key_visibility);
     outgoing_radiance += accumulate_directional_light(normal, view_direction, base_reflectivity, albedo, roughness, metallic, scene.light_direction0.xyz, key_light_color);
@@ -283,7 +352,7 @@ FragmentOutput fs_main(
     outgoing_radiance += accumulate_directional_light(normal, view_direction, base_reflectivity, albedo, roughness, metallic, scene.light_direction2.xyz, scene.light_color2);
     float coat_roughness = clamp(material.clearcoat_roughness, 0.045, 0.99);
     uint  punctual_count;
-    outgoing_radiance += accumulate_punctual_lights(frag_coord.xy, world_position, normal, view_direction, base_reflectivity, albedo, roughness, metallic, material.clearcoat, coat_roughness, punctual_count);
+    outgoing_radiance += accumulate_punctual_lights(frag_coord.xy, world_position, normal, normalize(input_normal), view_direction, base_reflectivity, albedo, roughness, metallic, material.clearcoat, coat_roughness, punctual_count);
     if (material.clearcoat > 0.0) {
         outgoing_radiance += clearcoat_directional_light(normal, view_direction, material.clearcoat, coat_roughness, scene.light_direction0.xyz, key_light_color);
         outgoing_radiance += clearcoat_directional_light(normal, view_direction, material.clearcoat, coat_roughness, scene.light_direction1.xyz, scene.light_color1);
