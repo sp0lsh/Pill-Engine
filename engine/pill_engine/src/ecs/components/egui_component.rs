@@ -165,7 +165,7 @@ impl EguiComponent {
                 overlay(ui);
             }
             egui::Window::new("Pill Engine")
-                .default_open(true)
+                .default_open(false)
                 .resizable(true)
                 .anchor(egui::Align2::LEFT_TOP, [0.0, 0.0])
                 .show(ui, |ui| {

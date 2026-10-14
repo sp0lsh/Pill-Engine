@@ -42,7 +42,7 @@ pub async fn load() -> Result<SponzaCpu, String> {
         })
         .collect();
     let hdr = fetched.next().unwrap_or_default();
-    let images = resolved.split_off(uris.buffers.len());
+    let mut images = resolved.split_off(uris.buffers.len());
     log::info!(
         "Sponza: fetched {:.1} MB",
         (gltf_bytes.len() + hdr.len() + resolved.iter().chain(&images).map(Vec::len).sum::<usize>())
@@ -50,8 +50,8 @@ pub async fn load() -> Result<SponzaCpu, String> {
             / (1024.0 * 1024.0)
     );
 
-    let scene =
-        parse_gltf_scene("sponza", &gltf_bytes, &resolved, &images).map_err(|e| e.to_string())?;
+    let scene = parse_gltf_scene("sponza", &gltf_bytes, &resolved, &mut images)
+        .map_err(|e| e.to_string())?;
     finish(scene, &hdr)
 }
 

@@ -179,6 +179,22 @@ pub struct TextureData<'a> {
     pub mips: &'a [&'a [u8]],
 }
 
+/// Copy layout of mip `mip` of a `width` × `height` texture in `format`: (blocks per row, block
+/// rows, bytes per block); a block is one texel for uncompressed formats and 4×4 for BC.
+pub(crate) fn mip_copy_layout(
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+    mip: u32,
+) -> Option<(u32, u32, u32)> {
+    let (block_width, block_height) = format.block_dimensions();
+    Some((
+        (width >> mip).max(1).div_ceil(block_width),
+        (height >> mip).max(1).div_ceil(block_height),
+        format.block_copy_size(None)?,
+    ))
+}
+
 impl TextureData<'_> {
     /// Checks dimensions, mip count and each mip's byte length before anything reaches wgpu.
     pub fn validate(&self) -> Result<()> {
@@ -194,14 +210,11 @@ impl TextureData<'_> {
             )
             .into());
         }
-        let bytes_per_texel = self
-            .format
-            .block_copy_size(None)
-            .ok_or("Texture data format has no texel size")? as usize;
         for (mip, data) in self.mips.iter().enumerate() {
-            let expected = (self.width >> mip).max(1) as usize
-                * (self.height >> mip).max(1) as usize
-                * bytes_per_texel;
+            let (blocks_x, blocks_y, block_bytes) =
+                mip_copy_layout(self.format, self.width, self.height, mip as u32)
+                    .ok_or("Texture data format has no block size")?;
+            let expected = blocks_x as usize * blocks_y as usize * block_bytes as usize;
             if data.len() != expected {
                 return Err(format!(
                     "Texture data mip {mip} is {} bytes, expected {expected}",
@@ -394,6 +407,18 @@ mod tests {
     #[test]
     fn texture_data_with_too_many_mips_is_rejected() {
         assert!(data(1, 1, &[&[0; 4], &[0; 4]]).validate().is_err());
+    }
+
+    #[test]
+    fn texture_data_bc7_5x3_with_3_mips_sizes_mips_in_whole_blocks() {
+        // 5×3 → 2×1 blocks; 2×1 and 1×1 → 1 block each (16 B per block)
+        let data = TextureData {
+            width: 5,
+            height: 3,
+            format: wgpu::TextureFormat::Bc7RgbaUnorm,
+            mips: &[&[0; 32], &[0; 16], &[0; 16]],
+        };
+        assert!(data.validate().is_ok());
     }
 
     #[test]

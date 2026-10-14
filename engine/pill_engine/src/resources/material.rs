@@ -85,6 +85,16 @@ pub struct Material {
     /// translucent PBR pass of `PassChain::PostFx`.
     #[readonly]
     pub opacity: f32,
+    /// Alpha test (glTF `MASK`): texels with albedo alpha below it are discarded, also in shadow
+    /// maps. 0 = off.
+    #[readonly]
+    pub alpha_cutoff: f32,
+    /// Both faces drawn (no back-face culling); back faces are lit with the flipped normal.
+    #[readonly]
+    pub double_sided: bool,
+    /// The normal map's green channel points down (DirectX convention) instead of up (glTF).
+    #[readonly]
+    pub directx_normals: bool,
     #[readonly]
     pub albedo_texture: Option<TextureHandle>,
     #[readonly]
@@ -108,6 +118,9 @@ impl Material {
             clearcoat: 0.0,
             clearcoat_roughness: 0.1,
             opacity: 1.0,
+            alpha_cutoff: 0.0,
+            double_sided: false,
+            directx_normals: false,
             albedo_texture: None,
             normal_texture: None,
             metallic_roughness_texture: None,
@@ -150,6 +163,21 @@ impl Material {
 
     pub fn opacity(mut self, opacity: f32) -> Self {
         self.opacity = opacity.clamp(0.0, 1.0);
+        self
+    }
+
+    pub fn alpha_cutoff(mut self, cutoff: f32) -> Self {
+        self.alpha_cutoff = cutoff.clamp(0.0, 1.0);
+        self
+    }
+
+    pub fn double_sided(mut self, double_sided: bool) -> Self {
+        self.double_sided = double_sided;
+        self
+    }
+
+    pub fn directx_normals(mut self, directx_normals: bool) -> Self {
+        self.directx_normals = directx_normals;
         self
     }
 
@@ -253,7 +281,10 @@ impl Material {
             clearcoat: self.clearcoat,
             clearcoat_roughness: self.clearcoat_roughness,
             opacity: self.opacity,
-            _padding: 0.0,
+            alpha_cutoff: self.alpha_cutoff,
+            normal_y_sign: if self.directx_normals { -1.0 } else { 1.0 },
+            double_sided: self.double_sided as u32 as f32,
+            _padding: [0.0; 2],
         }
     }
 

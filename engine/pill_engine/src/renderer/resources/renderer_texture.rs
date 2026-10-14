@@ -1,4 +1,4 @@
-use crate::graphics::RendererTextureHandle;
+use crate::graphics::{mip_copy_layout, RendererTextureHandle};
 use crate::resources::{Resource, ResourceStorage, TextureType};
 
 use pill_core::{PillTypeMapKey, Result};
@@ -100,6 +100,70 @@ impl RendererTexture {
         })
     }
 
+    /// Material texture from pre-built BC7 mips (cooked RTEX v5): uploaded as is, no CPU work.
+    /// Needs `wgpu::Features::TEXTURE_COMPRESSION_BC`.
+    pub fn new_bc7_texture(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        name: &str,
+        (width, height): (u32, u32),
+        srgb: bool,
+        mips: &[&[u8]],
+    ) -> Result<Self> {
+        if !device
+            .features()
+            .contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
+        {
+            return Err(format!(
+                "BC7 texture {name}: the GPU lacks wgpu::Features::TEXTURE_COMPRESSION_BC"
+            )
+            .into());
+        }
+        let format = if srgb {
+            wgpu::TextureFormat::Bc7RgbaUnormSrgb
+        } else {
+            wgpu::TextureFormat::Bc7RgbaUnorm
+        };
+        let mip_count = mips.len() as u32;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(name),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: mip_count,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        for (mip, data) in mips.iter().enumerate() {
+            write_mip(queue, &texture, mip as u32, data, (width, height));
+        }
+        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // Trilinear + 16× anisotropic: large scenes see most surfaces at grazing angles
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Linear,
+            lod_min_clamp: 0.0,
+            lod_max_clamp: (mip_count - 1) as f32,
+            anisotropy_clamp: 16,
+            ..Default::default()
+        });
+        Ok(Self {
+            name: name.to_string(),
+            texture,
+            texture_view,
+            sampler,
+        })
+    }
+
     pub fn new_depth_texture(
         device: &wgpu::Device,
         width: u32,
@@ -158,9 +222,6 @@ impl RendererTexture {
         format: wgpu::TextureFormat,
     ) -> Result<Self> {
         let mip_count = mip_pixels.len() as u32;
-        let bytes_per_texel = format
-            .block_copy_size(None)
-            .expect("new_from_pixels: format must be a color format");
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some(name),
@@ -179,27 +240,7 @@ impl RendererTexture {
 
         for (mip, &mip_data) in mip_pixels.iter().enumerate() {
             let mip = mip as u32;
-            let mip_w = (base_width >> mip).max(1);
-            let mip_h = (base_height >> mip).max(1);
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &texture,
-                    mip_level: mip,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                mip_data,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(mip_w * bytes_per_texel),
-                    rows_per_image: Some(mip_h),
-                },
-                wgpu::Extent3d {
-                    width: mip_w,
-                    height: mip_h,
-                    depth_or_array_layers: 1,
-                },
-            );
+            write_mip(queue, &texture, mip, mip_data, (base_width, base_height));
         }
 
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -267,6 +308,40 @@ impl RendererTexture {
             sampler,
         })
     }
+}
+
+/// Uploads mip `mip` of a texture whose base size is `base`; copies whole blocks (the physical
+/// size, for block-compressed mips smaller than a block).
+fn write_mip(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    mip: u32,
+    data: &[u8],
+    (base_width, base_height): (u32, u32),
+) {
+    let format = texture.format();
+    let (blocks_x, blocks_y, block_bytes) =
+        mip_copy_layout(format, base_width, base_height, mip).expect("color texture format");
+    let (block_width, block_height) = format.block_dimensions();
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: mip,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        data,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(blocks_x * block_bytes),
+            rows_per_image: Some(blocks_y),
+        },
+        wgpu::Extent3d {
+            width: blocks_x * block_width,
+            height: blocks_y * block_height,
+            depth_or_array_layers: 1,
+        },
+    );
 }
 
 /// Full chain down to 1×1.

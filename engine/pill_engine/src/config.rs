@@ -37,7 +37,9 @@ use pill_core::Result;
 
 use lazy_static::lazy_static;
 use std::any::TypeId;
-use std::cell::{Cell, RefCell};
+#[cfg(feature = "post_fx")]
+use std::cell::Cell;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 // --- General ---
@@ -139,6 +141,13 @@ pub const PBR_OPAQUE_FRAGMENT_SHADER: &str =
 #[cfg(feature = "post_fx")]
 pub const PBR_OPAQUE_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/pbr_opaque_post_fx_fragment.wgsl");
+/// PBR fragment variants with the alpha test (materials with `alpha_cutoff`)
+#[cfg(not(feature = "post_fx"))]
+pub const PBR_OPAQUE_ALPHA_TEST_FRAGMENT_SHADER: &str =
+    include_str!("../res/shaders/pbr_opaque_alpha_test_fragment.wgsl");
+#[cfg(feature = "post_fx")]
+pub const PBR_OPAQUE_ALPHA_TEST_FRAGMENT_SHADER: &str =
+    include_str!("../res/shaders/pbr_opaque_post_fx_alpha_test_fragment.wgsl");
 pub const BACKGROUND_VERTEX_SHADER: &str = include_str!("../res/shaders/background_vertex.wgsl");
 #[cfg(not(feature = "post_fx"))]
 pub const BACKGROUND_FRAGMENT_SHADER: &str =
@@ -151,8 +160,13 @@ pub const SHADOW_CASTER_VERTEX_SHADER: &str =
 pub const DDGI_TRACE_COMPUTE_SHADER: &str = include_str!("../res/shaders/ddgi_trace_compute.wgsl");
 pub const DDGI_COLOR_COMPUTE_SHADER: &str = include_str!("../res/shaders/ddgi_color_compute.wgsl");
 pub const DDGI_DEPTH_COMPUTE_SHADER: &str = include_str!("../res/shaders/ddgi_depth_compute.wgsl");
+pub const DDGI_RESET_COMPUTE_SHADER: &str = include_str!("../res/shaders/ddgi_reset_compute.wgsl");
 pub const SHADOW_CASTER_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/shadow_caster_fragment.wgsl");
+pub const SHADOW_CASTER_CUTOUT_VERTEX_SHADER: &str =
+    include_str!("../res/shaders/shadow_caster_cutout_vertex.wgsl");
+pub const SHADOW_CASTER_CUTOUT_FRAGMENT_SHADER: &str =
+    include_str!("../res/shaders/shadow_caster_cutout_fragment.wgsl");
 pub const FULLSCREEN_VERTEX_SHADER: &str = include_str!("../res/shaders/fullscreen_vertex.wgsl");
 pub const TONEMAP_FRAGMENT_SHADER: &str = include_str!("../res/shaders/tonemap_fragment.wgsl");
 #[cfg(feature = "post_fx")]
@@ -488,11 +502,11 @@ pub type RenderQueueKeyType = u64;
 // +--------+------------------+----------------------------------------------+
 // | Bits   | Field            | Description                                  |
 // +--------+------------------+----------------------------------------------+
-// | 56..63 | Material Index   |  8 bits: renderer material slot (max 256)    |
-// | 48..55 | Material Version |  8 bits: renderer material version (max 256) |
-// | 40..47 | Mesh Index       |  8 bits: renderer mesh slot (max 256)        |
-// | 32..39 | Mesh Version     |  8 bits: renderer mesh version (max 256)     |
-// |  0..31 | Free             | 32 bits: free for future use                 |
+// | 52..63 | Material Index   | 12 bits: renderer material slot (max 4096)   |
+// | 44..51 | Material Version |  8 bits: renderer material version (max 256) |
+// | 28..43 | Mesh Index       | 16 bits: renderer mesh slot (max 65536)      |
+// | 20..27 | Mesh Version     |  8 bits: renderer mesh version (max 256)     |
+// |  0..19 | Free             | 20 bits: free for future use                 |
 // +--------+------------------+----------------------------------------------+
 // Sorting by key groups draws by material first (fewest bind group switches), then by mesh.
 

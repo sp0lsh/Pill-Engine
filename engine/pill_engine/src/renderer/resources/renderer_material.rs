@@ -10,7 +10,7 @@ use crate::{
 use pill_core::{debug, LogContext, PillError, PillStyle, PillTypeMapKey, RendererError, Result};
 
 /// Material parameter uniform (bind group 2). Mirrors `MaterialParams` in pbr_opaque_fragment.hlsl:
-/// three fully packed 16-byte std140 rows.
+/// four fully packed 16-byte std140 rows.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct MaterialParams {
@@ -21,7 +21,23 @@ pub(crate) struct MaterialParams {
     pub(crate) clearcoat: f32,
     pub(crate) clearcoat_roughness: f32,
     pub(crate) opacity: f32,
-    pub(crate) _padding: f32,
+    /// Alpha test: texels with base-color alpha below it are discarded (0 = off).
+    pub(crate) alpha_cutoff: f32,
+    /// -1 flips the normal map's green channel (DirectX convention), else 1.
+    pub(crate) normal_y_sign: f32,
+    /// 1 = no back-face culling; back faces are lit with the flipped normal.
+    pub(crate) double_sided: f32,
+    pub(crate) _padding: [f32; 2],
+}
+
+impl MaterialParams {
+    pub(crate) fn alpha_tested(&self) -> bool {
+        self.alpha_cutoff > 0.0
+    }
+
+    pub(crate) fn is_double_sided(&self) -> bool {
+        self.double_sided > 0.5
+    }
 }
 
 /// Renderer textures of a material; `None` falls back to the engine default texture of that slot.
@@ -81,6 +97,10 @@ pub struct RendererMaterial {
     pub name: String,
     /// Opacity < 1: drawn by the translucent PBR pass (blended, back to front) instead of the opaque one.
     pub translucent: bool,
+    /// Alpha cutoff set: drawn with discard; shadow casters use the cutout pipeline.
+    pub alpha_tested: bool,
+    /// Drawn without back-face culling.
+    pub double_sided: bool,
     pub parameters_bind_group: wgpu::BindGroup,
     pub textures_bind_group: wgpu::BindGroup,
     parameters_uniform_buffer: wgpu::Buffer,
@@ -132,6 +152,8 @@ impl RendererMaterial {
         Ok(Self {
             name: name.to_string(),
             translucent: parameters.opacity < 1.0,
+            alpha_tested: parameters.alpha_tested(),
+            double_sided: parameters.is_double_sided(),
             parameters_bind_group,
             textures_bind_group,
             parameters_uniform_buffer,
@@ -141,6 +163,8 @@ impl RendererMaterial {
     /// Uploads new parameter values; bind groups stay valid.
     pub(crate) fn write_parameters(&mut self, queue: &wgpu::Queue, parameters: &MaterialParams) {
         self.translucent = parameters.opacity < 1.0;
+        self.alpha_tested = parameters.alpha_tested();
+        self.double_sided = parameters.is_double_sided();
         queue.write_buffer(
             &self.parameters_uniform_buffer,
             0,

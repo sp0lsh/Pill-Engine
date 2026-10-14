@@ -23,7 +23,7 @@ struct DdgiParams {
     float2 depth_texel_size;
     uint   enabled;
     uint   frame;
-    uint   probe_offset;
+    uint   _padding;
     uint   probes_this_frame;
     uint   rays_per_probe;
     uint   light_count;
@@ -32,9 +32,12 @@ struct DdgiParams {
     float3 sun_radiance;
     float  sky_intensity;
     float4 rotation[3]; // columns
+    int3   grid_origin; // world cell of logical probe (0, 0, 0); storage is toroidal around it
+    int    _padding_origin;
 };
 
-// L1 SH radiance of one probe: sh[0] = L0, sh[1..3] = L1 (y, z, x); rgb in xyz
+// L1 SH radiance of one probe: sh[0] = L0, sh[1..3] = L1 (y, z, x); rgb in xyz. sh[0].w = 1 once
+// the probe has an estimate (0 after a reset: the grid moved and exposed it)
 struct DdgiProbe {
     float4 sh[4];
 };
@@ -48,8 +51,24 @@ uint ddgi_probe_index(uint3 coord) {
     return coord.x + coord.y * ddgi.grid_dims.x + coord.z * ddgi.grid_dims.x * ddgi.grid_dims.y;
 }
 
-float3 ddgi_probe_position(uint3 coord) {
-    return ddgi.grid_min + float3(coord) * ddgi.cell_size;
+// Probe data lives at `(logical + origin) mod dims` (ProbeGrid in ddgi/mod.rs): a grid that moves
+// in whole cells keeps the probes it still covers in place
+uint3 ddgi_wrap(int3 value) {
+    int3 dims = int3(ddgi.grid_dims);
+    return uint3(((value % dims) + dims) % dims);
+}
+
+uint3 ddgi_storage_coord(uint3 logical) {
+    return ddgi_wrap(int3(logical) + ddgi.grid_origin);
+}
+
+uint3 ddgi_logical_coord(uint3 storage) {
+    return ddgi_wrap(int3(storage) - ddgi.grid_origin);
+}
+
+// World position of the probe stored at `storage`
+float3 ddgi_probe_position(uint3 storage) {
+    return ddgi.grid_min + float3(ddgi_logical_coord(storage)) * ddgi.cell_size;
 }
 
 // Top-left inner texel of a probe's depth tile (ProbeGrid::depth_pixel)
@@ -67,8 +86,10 @@ float2 ddgi_depth_uv(uint3 coord, float3 direction) {
 #ifdef DDGI_SAMPLER
 // Irradiance / π (same scale as the IBL irradiance map: × albedo gives diffuse radiance) at P
 // with normal N, from the 8 probes around P: trilinear weights, smooth backface weight and
-// Chebyshev visibility from the depth moments (ddgi_sample_irradiance in Wicked).
-float3 ddgi_irradiance(float3 P, float3 N) {
+// Chebyshev visibility from the depth moments (ddgi_sample_irradiance in Wicked). w = coverage:
+// the trilinear weight of the probes with an estimate (1 when all have one); callers blend
+// toward their fallback by it.
+float4 ddgi_irradiance(float3 P, float3 N) {
     uint3  max_coord   = ddgi.grid_dims - 1;
     float3 cell_coord  = clamp((P - ddgi.grid_min) / ddgi.cell_size, 0.0, float3(max_coord));
     uint3  base_coord  = min(uint3(floor(cell_coord)), max(max_coord, 1u) - 1u);
@@ -76,10 +97,14 @@ float3 ddgi_irradiance(float3 P, float3 N) {
 
     float4 sum_sh[4] = { float4(0.0, 0.0, 0.0, 0.0), float4(0.0, 0.0, 0.0, 0.0), float4(0.0, 0.0, 0.0, 0.0), float4(0.0, 0.0, 0.0, 0.0) };
     float  sum_weight = 0.0;
+    float  coverage   = 0.0;
     for (uint i = 0; i < 8; i++) {
         uint3  offset          = uint3(i, i >> 1, i >> 2) & 1u;
-        uint3  probe_coord     = min(base_coord + offset, max_coord);
-        float3 probe_pos       = ddgi_probe_position(probe_coord);
+        uint3  logical_coord   = min(base_coord + offset, max_coord);
+        uint3  probe_coord     = ddgi_storage_coord(logical_coord);
+        DdgiProbe probe        = ddgi_probes[ddgi_probe_index(probe_coord)];
+        float  valid           = probe.sh[0].w;
+        float3 probe_pos       = ddgi.grid_min + float3(logical_coord) * ddgi.cell_size;
         float3 probe_to_point  = P - probe_pos + N * 0.001;
         float3 dir             = normalize(-probe_to_point);
         float3 trilinear       = lerp(1.0 - alpha, alpha, float3(offset));
@@ -102,16 +127,16 @@ float3 ddgi_irradiance(float3 P, float3 N) {
         if (weight < crush_threshold) {
             weight *= weight * weight / (crush_threshold * crush_threshold);
         }
-        weight *= trilinear.x * trilinear.y * trilinear.z;
-
-        DdgiProbe probe = ddgi_probes[ddgi_probe_index(probe_coord)];
+        float trilinear_weight = trilinear.x * trilinear.y * trilinear.z;
+        weight   *= trilinear_weight * valid;
+        coverage += trilinear_weight * valid;
         for (uint c = 0; c < 4; c++) {
             sum_sh[c] += probe.sh[c] * weight;
         }
         sum_weight += weight;
     }
     if (sum_weight <= 0.0) {
-        return float3(0.0, 0.0, 0.0);
+        return float4(0.0, 0.0, 0.0, 0.0);
     }
     // Convolve with the cosine lobe and evaluate in N (SH::CalculateIrradiance), divided by π
     const float a0 = DDGI_PI;
@@ -120,7 +145,7 @@ float3 ddgi_irradiance(float3 P, float3 N) {
     const float basis_l1 = 0.4886025;
     float3 irradiance = basis_l0 * a0 * sum_sh[0].xyz
                       + basis_l1 * a1 * (N.y * sum_sh[1].xyz + N.z * sum_sh[2].xyz + N.x * sum_sh[3].xyz);
-    return max(irradiance / (sum_weight * DDGI_PI), 0.0);
+    return float4(max(irradiance / (sum_weight * DDGI_PI), 0.0), saturate(coverage));
 }
 #endif // DDGI_SAMPLER
 #endif

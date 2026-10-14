@@ -1,0 +1,18 @@
+[package]
+name = "pill_game"
+version = "0.1.0"
+edition = "2021"
+workspace = "NO_PATH"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pill_engine = { path = "../../engine/pill_engine", features = ["game", "internal", "gltf_loading", "ibl_bake", "post_fx", "ui"] }
+log = "0.4"
+
+# Native only (~600 MB of assets, BC7 textures cooked on the CPU)
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pill_assets = { path = "../../engine/pill_assets", default-features = false, features = ["ktx2"] }
+ureq = "2"
+pollster = "0.2"

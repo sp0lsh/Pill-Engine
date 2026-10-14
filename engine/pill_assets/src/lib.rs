@@ -16,6 +16,8 @@
 // feature can compile these into a game binary.
 pub mod convert;
 pub mod ibl;
+#[cfg(feature = "ktx2")]
+pub mod ktx2;
 // Asset pack (PPAK): reader + decoders are wasm-safe; the writer needs feature `encode`.
 pub mod pak_codec;
 pub mod ppak;

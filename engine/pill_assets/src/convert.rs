@@ -166,6 +166,30 @@ pub fn rtex_bytes(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
     output
 }
 
+/// RTEX v5: BC7 mips. Header after b"RTEX" | 5 | width | height: u32 flags (bit 0 = sRGB), f32×3
+/// mean linear color (diffuse GI albedo), u32 mip count; then each mip's 16-byte 4×4 blocks.
+pub fn rtex_bc7_bytes(
+    width: u32,
+    height: u32,
+    srgb: bool,
+    average_color: [f32; 3],
+    mips: &[Vec<u8>],
+) -> Vec<u8> {
+    let mut output = Vec::with_capacity(36 + mips.iter().map(Vec::len).sum::<usize>());
+    output.extend_from_slice(b"RTEX");
+    for value in [5, width, height, srgb as u32] {
+        output.extend_from_slice(&value.to_le_bytes());
+    }
+    for value in average_color {
+        output.extend_from_slice(&value.to_le_bytes());
+    }
+    output.extend_from_slice(&(mips.len() as u32).to_le_bytes());
+    for mip in mips {
+        output.extend_from_slice(mip);
+    }
+    output
+}
+
 /// RTEX v2: Rgba32Float (f32 LE per channel), linear HDR.
 pub fn rtex_hdr_bytes(width: u32, height: u32, rgba_f32: &[f32]) -> Vec<u8> {
     let mut output = Vec::with_capacity(16 + rgba_f32.len() * 4);

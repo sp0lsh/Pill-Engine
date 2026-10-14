@@ -15,6 +15,7 @@ struct DdgiRay {
 // History of the moments (mean, mean²) per inner texel; the atlas can't be read back in place
 [[vk::binding(2, 0)]] RWStructuredBuffer<float2>        ddgi_depth_history;
 [[vk::binding(3, 0)]] [format("rgba16f")] WTexture2D<float4> ddgi_depth_out;
+[[vk::binding(4, 0)]] StructuredBuffer<uint>            ddgi_probe_list;
 
 static const uint TEXELS = DDGI_DEPTH_RESOLUTION * DDGI_DEPTH_RESOLUTION;
 groupshared float4 ray_cache[TEXELS]; // xyz = direction, w = distance
@@ -24,7 +25,7 @@ groupshared float2 tile[TEXELS];
 [numthreads(DDGI_DEPTH_RESOLUTION, DDGI_DEPTH_RESOLUTION, 1)]
 void cs_main(uint3 group : SV_GroupID, uint2 thread : SV_GroupThreadID, uint thread_index : SV_GroupIndex) {
     uint  slot         = group.x;
-    uint  probe_index  = (ddgi.probe_offset + slot) % ddgi.probe_count;
+    uint  probe_index  = ddgi_probe_list[slot];
     uint3 probe_coord  = ddgi_probe_coord(probe_index);
     uint  ray_count    = ddgi.rays_per_probe;
     float max_distance = ddgi.max_distance;

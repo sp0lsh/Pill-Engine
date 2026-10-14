@@ -137,12 +137,17 @@ struct MaterialParams {
     float  clearcoat;           // coat weight, 0 = no coat
     float  clearcoat_roughness; // perceptual
     float  opacity;             // < 1: drawn blended by the translucent pass
-    float  _padding;
+    float  alpha_cutoff;        // > 0: texels with base-color alpha below it are discarded
+    float  normal_y_sign;       // -1: DirectX normal map (green down)
+    float  double_sided;        // 1: back faces drawn, lit with the flipped normal
+    float2 _padding;
 };
 [[vk::binding(0, 2)]] ConstantBuffer<MaterialParams> material;
 
 static const float PI                 = 3.14159265359;
 static const float MAX_REFLECTION_LOD = 4.0;
+// Least cosine between the shading normal and the view direction
+static const float MIN_NORMAL_DOT_VIEW = 0.02;
 
 #include "equirect.hlsl"
 
@@ -339,6 +344,17 @@ FragmentOutput fs_main(
                         float4 frag_coord             : SV_Position
 ) {
     float4 base_color         = base_color_texture.Sample(base_color_sampler, texture_coordinates);
+#ifdef ALPHA_TEST
+    // Separate shader variant: discard turns off early depth rejection for the whole pipeline
+    if (base_color.a < material.alpha_cutoff) {
+        discard;
+    }
+#endif
+    // Double-sided surfaces are lit from the side the camera sees: flipped by the vertex normal
+    // vs the view, not by triangle winding (foliage cards often wind against their normals)
+    float3 view_direction     = normalize(camera.position.xyz - world_position);
+    float  face_sign          = material.double_sided > 0.5 && dot(input_normal, view_direction) < 0.0 ? -1.0 : 1.0;
+    float3 vertex_normal      = normalize(input_normal) * face_sign;
     float3 albedo             = base_color.rgb * material.base_color_factor;
     float2 metallic_roughness = metallic_roughness_texture.Sample(metallic_roughness_sampler, texture_coordinates).gb;
     // metallic_roughness.x = G channel (roughness 0=smooth, 1=rough); metallic_roughness.y = B channel (metallic 0=dielectric, 1=metal)
@@ -346,23 +362,33 @@ FragmentOutput fs_main(
     float  metallic  = metallic_roughness.y * material.metallic_factor;
     // Tangent-space normal map; the default texel (0.5, 0.5, 1) keeps the vertex normal
     float3 tangent_normal    = normal_texture.Sample(normal_sampler, texture_coordinates).xyz * 2.0 - 1.0;
+    // z rebuilt from x and y (BC5-style): two-channel maps leave blue empty, and mips filtered
+    // between a two-channel and a full level would otherwise mix z toward the surface. For a
+    // unit-length map this is its own z.
+    tangent_normal.z = sqrt(saturate(1.0 - dot(tangent_normal.xy, tangent_normal.xy)));
+    tangent_normal.y        *= material.normal_y_sign;
     // Meshes without a usable tangent frame (degenerate UVs) keep the vertex normal
     bool   has_tangent_frame = dot(input_tangent, input_tangent) > 1e-6;
     float3 normal            = has_tangent_frame
-        ? normalize(tangent_normal.x * input_tangent + tangent_normal.y * input_bitangent + tangent_normal.z * input_normal)
-        : normalize(input_normal);
-    float3 view_direction    = normalize(camera.position.xyz - world_position);
+        ? normalize(tangent_normal.x * input_tangent + tangent_normal.y * input_bitangent + tangent_normal.z * input_normal) * face_sign
+        : vertex_normal;
+    // A normal-mapped normal can tilt past the horizon at grazing angles; facing away it would
+    // get full Fresnel and no diffuse (a silver sheen). Keep it in the visible hemisphere.
+    float  normal_dot_view   = dot(normal, view_direction);
+    if (normal_dot_view < MIN_NORMAL_DOT_VIEW) {
+        normal = normalize(normal + view_direction * (MIN_NORMAL_DOT_VIEW - normal_dot_view));
+    }
     float3 base_reflectivity = lerp(float3(0.04, 0.04, 0.04), albedo, float3(metallic, metallic, metallic));
     float3 outgoing_radiance = float3(0.0, 0.0, 0.0);
     // Key light (0) shadow; point/spot shadows are in accumulate_punctual_lights
-    float  key_visibility    = shadow_visibility(world_position, normalize(input_normal));
+    float  key_visibility    = shadow_visibility(world_position, vertex_normal);
     float4 key_light_color   = float4(scene.light_color0.rgb, scene.light_color0.w * key_visibility);
     outgoing_radiance += accumulate_directional_light(normal, view_direction, base_reflectivity, albedo, roughness, metallic, scene.light_direction0.xyz, key_light_color);
     outgoing_radiance += accumulate_directional_light(normal, view_direction, base_reflectivity, albedo, roughness, metallic, scene.light_direction1.xyz, scene.light_color1);
     outgoing_radiance += accumulate_directional_light(normal, view_direction, base_reflectivity, albedo, roughness, metallic, scene.light_direction2.xyz, scene.light_color2);
     float coat_roughness = clamp(material.clearcoat_roughness, 0.045, 0.99);
     uint  punctual_count;
-    outgoing_radiance += accumulate_punctual_lights(frag_coord.xy, world_position, normal, normalize(input_normal), view_direction, base_reflectivity, albedo, roughness, metallic, material.clearcoat, coat_roughness, punctual_count);
+    outgoing_radiance += accumulate_punctual_lights(frag_coord.xy, world_position, normal, vertex_normal, view_direction, base_reflectivity, albedo, roughness, metallic, material.clearcoat, coat_roughness, punctual_count);
     if (material.clearcoat > 0.0) {
         outgoing_radiance += clearcoat_directional_light(normal, view_direction, material.clearcoat, coat_roughness, scene.light_direction0.xyz, key_light_color);
         outgoing_radiance += clearcoat_directional_light(normal, view_direction, material.clearcoat, coat_roughness, scene.light_direction1.xyz, scene.light_color1);
@@ -372,16 +398,26 @@ FragmentOutput fs_main(
     float3 specular_factor = fresnel_schlick(max(dot(normal, view_direction), 0.0), base_reflectivity);
     float3 diffuse_factor  = (float3(1.0, 1.0, 1.0) - specular_factor) * (1.0 - metallic);
     // Indirect diffuse: DDGI probes when on (their rays that miss already see the IBL), else IBL
-    float3 irradiance      = ddgi.enabled > 0
-        ? ddgi_irradiance(world_position, normal) * ddgi.intensity
-        : irradiance_texture.Sample(irradiance_sampler, dir_to_equirect_uv(normal)).rgb * scene.ibl_intensity.x;
+    float3 sky_irradiance  = irradiance_texture.Sample(irradiance_sampler, dir_to_equirect_uv(normal)).rgb * scene.ibl_intensity.x;
+    float3 irradiance      = sky_irradiance;
+    // Specular occlusion: the sky reflection is occluded as much as the probes find the sky light
+    // occluded here (inside foliage, under awnings), which the IBL alone can't know
+    float  specular_occlusion = 1.0;
+    if (ddgi.enabled > 0) {
+        // Probes without an estimate yet (newly exposed by a moving grid) fall back to the IBL
+        float4 probe_irradiance = ddgi_irradiance(world_position, normal);
+        irradiance = lerp(irradiance, probe_irradiance.rgb * ddgi.intensity, probe_irradiance.a);
+        const float3 luminance = float3(0.2126, 0.7152, 0.0722);
+        float sky = dot(sky_irradiance, luminance);
+        specular_occlusion = sky > 1e-4 ? saturate(dot(irradiance, luminance) / sky) : 1.0;
+    }
     float3 ambient_diffuse = diffuse_factor * irradiance * albedo;
     // Specular IBL.
     float3 reflection        = reflect(-view_direction, normal);
     float3 prefiltered_color = prefilter_texture.SampleLevel(prefilter_sampler, dir_to_equirect_uv(reflection), roughness * MAX_REFLECTION_LOD).rgb;
     float2 environment_brdf  = brdf_lut_texture.Sample(brdf_lut_sampler, float2(max(dot(normal, view_direction), 0.0), roughness)).rg;
     float3 fresnel           = fresnel_schlick_roughness(max(dot(normal, view_direction), 0.0), base_reflectivity, roughness);
-    float3 specular_weight   = fresnel * environment_brdf.x + environment_brdf.y;
+    float3 specular_weight   = (fresnel * environment_brdf.x + environment_brdf.y) * specular_occlusion;
     float3 specular_ibl      = prefiltered_color * specular_weight * scene.ibl_intensity.x;
     float3 emissive = emissive_texture.Sample(emissive_sampler, texture_coordinates).rgb * material.emissive_factor;
     // With SSR (ibl_intensity.y) PassSsr adds the specular term: reflection where its ray hits, IBL elsewhere

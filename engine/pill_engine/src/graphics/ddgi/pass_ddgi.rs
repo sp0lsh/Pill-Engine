@@ -1,5 +1,6 @@
 use crate::config::{
-    DDGI_COLOR_COMPUTE_SHADER, DDGI_DEPTH_COMPUTE_SHADER, DDGI_TRACE_COMPUTE_SHADER,
+    DDGI_COLOR_COMPUTE_SHADER, DDGI_DEPTH_COMPUTE_SHADER, DDGI_RESET_COMPUTE_SHADER,
+    DDGI_TRACE_COMPUTE_SHADER,
 };
 use crate::ecs::{MeshRenderingComponent, RenderStateComponent, TransformComponent};
 use crate::graphics::ddgi::bvh::{Bvh, Triangle};
@@ -18,6 +19,7 @@ use crate::resources::{Material, Mesh, Texture};
 
 use pill_core::{info, LogContext, Result, Vector3f};
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 /// Bytes of one probe ray (direction + depth, radiance) — `DdgiRay` in the DDGI shaders.
@@ -129,8 +131,13 @@ struct ProbeStorage {
     /// Also published in `DdgiFrame`.
     probes: wgpu::Buffer,
     depth_view: wgpu::TextureView,
-    /// Probe updates since creation; the PBR passes read the probes once every probe has one.
-    updates: u64,
+    /// Probes a grid move exposed (reset, not yet updated), updated before the round robin.
+    pending: VecDeque<u32>,
+    /// Next probe of the round robin.
+    cursor: u32,
+    /// Storage indices to reset this frame, and the reset kernel's bind group.
+    reset_list: wgpu::Buffer,
+    reset_group: wgpu::BindGroup,
 }
 
 /// What the ray buffer and the bind groups were built for.
@@ -145,6 +152,8 @@ struct BindingKey {
 
 struct ProbeBindings {
     key: BindingKey,
+    /// Storage indices of the probes updated this frame (`probes_per_frame` entries).
+    probe_list: wgpu::Buffer,
     // The bind groups keep the ray buffer alive
     trace_group: wgpu::BindGroup,
     color_group: wgpu::BindGroup,
@@ -152,6 +161,7 @@ struct ProbeBindings {
 }
 
 struct Pipelines {
+    reset: ComputePipeline,
     trace: ComputePipeline,
     color: ComputePipeline,
     depth: ComputePipeline,
@@ -183,7 +193,6 @@ pub(crate) struct PassDdgi {
     storage_generation: u64,
     bindings: Option<ProbeBindings>,
     frame_index: u32,
-    probe_offset: u32,
     triangles: Vec<Triangle>,
 }
 
@@ -212,7 +221,6 @@ impl PassDdgi {
             storage_generation: 0,
             bindings: None,
             frame_index: 0,
-            probe_offset: 0,
             triangles: Vec::new(),
         }
     }
@@ -361,22 +369,44 @@ impl PassDdgi {
         let probes = storage_buffer(renderer, "ddgi_probes", probe_count * PROBE_BYTES)?;
         let (width, height) = grid.depth_atlas_size();
         let depth_view = depth_atlas(renderer.get_device(), width, height);
+        let reset_list = storage_buffer(renderer, "ddgi_reset_list", probe_count * 4)?;
+        let pipelines = self
+            .pipelines
+            .as_ref()
+            .expect("PassDdgi: pipelines before probe storage");
+        let reset_group = renderer
+            .get_device()
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("ddgi_reset"),
+                layout: &pipelines.reset.bind_group_layouts[0],
+                entries: &[&reset_list, &probes, &color_history, &depth_history]
+                    .iter()
+                    .enumerate()
+                    .map(|(binding, buffer)| wgpu::BindGroupEntry {
+                        binding: binding as u32,
+                        resource: buffer.as_entire_binding(),
+                    })
+                    .collect::<Vec<_>>(),
+            });
         let mut frame = self.frame.borrow_mut();
         frame.probes = probes.clone();
         frame.depth_view = depth_view.clone();
         frame.generation += 1;
+        // New buffers are zeroed: every probe starts without an estimate
         self.storage = Some(ProbeStorage {
             grid,
             color_history,
             depth_history,
             probes,
             depth_view,
-            updates: 0,
+            pending: VecDeque::new(),
+            cursor: 0,
+            reset_list,
+            reset_group,
         });
         self.storage_generation += 1;
         // Frame 0 starts the estimators from this frame's rays
         self.frame_index = 0;
-        self.probe_offset = 0;
         Ok(())
     }
 
@@ -387,6 +417,8 @@ impl PassDdgi {
             "ddgi_rays",
             key.probes_per_frame as u64 * key.rays_per_probe as u64 * RAY_BYTES,
         )?;
+        let probe_list =
+            storage_buffer(renderer, "ddgi_probe_list", key.probes_per_frame as u64 * 4)?;
         let sky = renderer
             .get_texture_view(key.sky)
             .ok_or("PassDdgi: IBL irradiance missing")?;
@@ -428,6 +460,7 @@ impl PassDdgi {
                 lights.buffers.lights.as_entire_binding(),
                 wgpu::BindingResource::TextureView(&sky),
                 rays.as_entire_binding(),
+                probe_list.as_entire_binding(),
             ],
         );
         let color_group = group(
@@ -437,6 +470,7 @@ impl PassDdgi {
                 rays.as_entire_binding(),
                 storage.color_history.as_entire_binding(),
                 storage.probes.as_entire_binding(),
+                probe_list.as_entire_binding(),
             ],
         );
         let depth_group = group(
@@ -446,12 +480,14 @@ impl PassDdgi {
                 rays.as_entire_binding(),
                 storage.depth_history.as_entire_binding(),
                 wgpu::BindingResource::TextureView(&storage.depth_view),
+                probe_list.as_entire_binding(),
             ],
         );
         drop(frame);
         drop(lights);
         self.bindings = Some(ProbeBindings {
             key,
+            probe_list,
             trace_group,
             color_group,
             depth_group,
@@ -472,6 +508,19 @@ impl PassDdgi {
 
 fn create_pipelines(renderer: &mut dyn PillRenderer) -> Result<Pipelines> {
     let uniform = uniform_entry_for(0, wgpu::ShaderStages::COMPUTE);
+    let reset = renderer.create_compute_pipeline(ComputePipelineDesc {
+        label: Some("ddgi_reset"),
+        cs: ShaderDesc {
+            source: DDGI_RESET_COMPUTE_SHADER,
+            entry_func: "cs_main",
+        },
+        bind_groups: vec![vec![
+            storage_entry(0, true),
+            storage_entry(1, false),
+            storage_entry(2, false),
+            storage_entry(3, false),
+        ]],
+    })?;
     let trace = renderer.create_compute_pipeline(ComputePipelineDesc {
         label: Some("ddgi_trace"),
         cs: ShaderDesc {
@@ -491,6 +540,7 @@ fn create_pipelines(renderer: &mut dyn PillRenderer) -> Result<Pipelines> {
             storage_entry(6, true),
             texture_entry(7),
             storage_entry(8, false),
+            storage_entry(9, true),
         ]],
     })?;
     let color = renderer.create_compute_pipeline(ComputePipelineDesc {
@@ -504,6 +554,7 @@ fn create_pipelines(renderer: &mut dyn PillRenderer) -> Result<Pipelines> {
             storage_entry(1, true),
             storage_entry(2, false),
             storage_entry(3, false),
+            storage_entry(4, true),
         ]],
     })?;
     let depth = renderer.create_compute_pipeline(ComputePipelineDesc {
@@ -524,6 +575,7 @@ fn create_pipelines(renderer: &mut dyn PillRenderer) -> Result<Pipelines> {
                     view_dimension: wgpu::TextureViewDimension::D2,
                 },
             ),
+            storage_entry(4, true),
         ]],
     })?;
     let sampler = renderer
@@ -537,6 +589,7 @@ fn create_pipelines(renderer: &mut dyn PillRenderer) -> Result<Pipelines> {
             ..Default::default()
         });
     Ok(Pipelines {
+        reset,
         trace,
         color,
         depth,
@@ -579,13 +632,28 @@ impl Pass for PassDdgi {
 
         // Each resource follows only what it depends on: the probe data the grid, the ray
         // buffer and bind groups the ray settings, sky, BVH and probe data
-        let grid = ProbeGrid::fit(bvh.bounds, settings.probe_spacing);
-        if self
-            .storage
-            .as_ref()
-            .is_none_or(|storage| storage.grid != grid)
-        {
-            self.create_storage(renderer, grid)?;
+        // A camera-following grid moves in whole cells and keeps the probes it still covers
+        let grid = if settings.follow_camera {
+            let (_, camera) = world.active_camera()?;
+            ProbeGrid::around(camera.position, settings.probe_spacing)
+        } else {
+            ProbeGrid::fit(
+                settings.bounds.unwrap_or(bvh.bounds),
+                settings.probe_spacing,
+            )
+        };
+        let mut reset: Vec<u32> = Vec::new();
+        match &mut self.storage {
+            Some(storage) if storage.grid.same_storage(&grid) => {
+                if storage.grid.origin != grid.origin {
+                    reset = grid.exposed(storage.grid.origin);
+                    for &index in reset.iter().rev() {
+                        storage.pending.push_front(index);
+                    }
+                    storage.grid = grid;
+                }
+            }
+            _ => self.create_storage(renderer, grid)?,
         }
         let key = BindingKey {
             rays_per_probe: settings.rays_per_probe.clamp(1, MAX_RAYS_PER_PROBE),
@@ -617,9 +685,22 @@ impl Pass for PassDdgi {
             .as_ref()
             .expect("PassDdgi: bindings created above");
 
-        // The PBR passes keep the IBL until every probe has an estimate (round robin)
-        storage.updates += key.probes_per_frame as u64;
-        let warm = storage.updates >= grid.probe_count() as u64;
+        // This frame's probes: the ones a move exposed first, then the round robin
+        let mut probe_list: Vec<u32> = Vec::with_capacity(key.probes_per_frame as usize);
+        while probe_list.len() < key.probes_per_frame as usize {
+            match storage.pending.pop_front() {
+                Some(index) => probe_list.push(index),
+                None => {
+                    probe_list.push(storage.cursor);
+                    storage.cursor = (storage.cursor + 1) % grid.probe_count();
+                }
+            }
+        }
+        let queue = renderer.get_queue();
+        queue.write_buffer(&bindings.probe_list, 0, bytemuck::cast_slice(&probe_list));
+        if !reset.is_empty() {
+            queue.write_buffer(&storage.reset_list, 0, bytemuck::cast_slice(&reset));
+        }
         let light_count = self.lights.borrow().params.grid[3] as u32;
         let sun = render_state.lights[0];
         let params = GpuDdgiParams {
@@ -633,13 +714,10 @@ impl Pass for PassDdgi {
                 let (width, height) = grid.depth_atlas_size();
                 [1.0 / width as f32, 1.0 / height as f32]
             },
-            enabled: match (warm, settings.debug_indirect_only) {
-                (false, _) => 0,
-                (true, false) => 1,
-                (true, true) => 2,
-            },
+            // Probes without an estimate yet are skipped per probe (`DdgiProbe::sh[0].w`)
+            enabled: if settings.debug_indirect_only { 2 } else { 1 },
             frame: self.frame_index,
-            probe_offset: self.probe_offset,
+            _padding: 0,
             probes_this_frame: key.probes_per_frame,
             rays_per_probe: key.rays_per_probe,
             light_count,
@@ -650,6 +728,8 @@ impl Pass for PassDdgi {
             sun_radiance: (Vector3f::from_array(sun.color) * sun.intensity).to_array(),
             sky_intensity: render_state.ibl_intensity,
             rotation: random_rotation(self.frame_index),
+            grid_origin: grid.origin,
+            _padding_origin: 0,
         };
         renderer.get_queue().write_buffer(
             &self.frame.borrow().params,
@@ -665,6 +745,11 @@ impl Pass for PassDdgi {
             label: Some("pass_ddgi"),
             timestamp_writes: None,
         });
+        if !reset.is_empty() {
+            pass.set_pipeline(&pipelines.reset.pipeline);
+            pass.set_bind_group(0, &storage.reset_group, &[]);
+            pass.dispatch_workgroups(reset.len() as u32, 1, 1);
+        }
         for (pipeline, group) in [
             (&pipelines.trace, &bindings.trace_group),
             (&pipelines.color, &bindings.color_group),
@@ -677,7 +762,6 @@ impl Pass for PassDdgi {
         drop(pass);
 
         self.frame_index = self.frame_index.wrapping_add(1);
-        self.probe_offset = (self.probe_offset + key.probes_per_frame) % grid.probe_count();
         Ok(())
     }
 }

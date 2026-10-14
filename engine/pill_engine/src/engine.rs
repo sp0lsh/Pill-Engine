@@ -114,9 +114,10 @@ impl Engine {
     fn create_default_resources(&mut self) -> Result<()> {
         // Register resources and their limits
 
-        // Renderer handles are packed into 8-bit render queue key fields
+        // Renderer handles are packed into the render queue key's index fields
         let max_material_count = limit_to_render_key(
             "MAX_MATERIALS",
+            RENDER_QUEUE_KEY_MATERIAL_INDEX.max as usize,
             self.config
                 .get_int("MAX_MATERIALS")
                 .unwrap_or(MAX_MATERIALS as i64) as usize,
@@ -127,6 +128,7 @@ impl Engine {
             .unwrap_or(MAX_TEXTURES as i64) as usize;
         let max_mesh_count = limit_to_render_key(
             "MAX_MESHES",
+            RENDER_QUEUE_KEY_MESH_INDEX.max as usize,
             self.config
                 .get_int("MAX_MESHES")
                 .unwrap_or(MAX_MESHES as i64) as usize,
@@ -541,9 +543,8 @@ impl Engine {
 
 // --- API ------------------------------------------------------------------
 
-/// Caps a resource count to what the render queue key's 8-bit index fields can address.
-fn limit_to_render_key(name: &str, count: usize) -> usize {
-    let limit = RENDER_QUEUE_KEY_MESH_INDEX.max as usize;
+/// Caps a resource count to what its render queue key index field can address (`limit`).
+fn limit_to_render_key(name: &str, limit: usize, count: usize) -> usize {
     if count > limit {
         error!(LogContext::Engine => "{} = {} exceeds the render queue key limit; using {}", name, count, limit);
     }

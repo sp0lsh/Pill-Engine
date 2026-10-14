@@ -59,13 +59,16 @@ impl Texture {
 }
 
 /// Decoded `.cooked_tex`: b"RTEX" | u32 version | u32 width | u32 height (LE); v1 sRGB RGBA8,
-/// v2 Rgba32Float, v4 u32 mip_count + Rgba32Float mips (see pill_assets `util/rtex.rs`).
+/// v2 Rgba32Float, v4 u32 mip_count + Rgba32Float mips, v5 u32 flags (bit 0 = sRGB) + f32×3
+/// average linear color + u32 mip_count + BC7 mips (see pill_assets `util/rtex.rs`).
 pub(crate) struct CookedTexture<'a> {
     pub(crate) version: u32,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) format: wgpu::TextureFormat,
     pub(crate) mips: Vec<&'a [u8]>,
+    /// v5: mean linear color stored by the cooker.
+    pub(crate) average_color: Option<[f32; 3]>,
 }
 
 pub(crate) fn parse_cooked_tex(bytes: &[u8]) -> Result<CookedTexture<'_>> {
@@ -77,10 +80,12 @@ pub(crate) fn parse_cooked_tex(bytes: &[u8]) -> Result<CookedTexture<'_>> {
     }
     let read_u32 =
         |offset: usize| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+    let read_f32 = |offset: usize| f32::from_bits(read_u32(offset));
     let version = read_u32(4);
     let width = read_u32(8);
     let height = read_u32(12);
 
+    let mut average_color = None;
     let (format, mip_count, data_offset) = match version {
         1 => (wgpu::TextureFormat::Rgba8UnormSrgb, 1, 16),
         2 => (wgpu::TextureFormat::Rgba32Float, 1, 16),
@@ -89,6 +94,18 @@ pub(crate) fn parse_cooked_tex(bytes: &[u8]) -> Result<CookedTexture<'_>> {
                 return Err(invalid("truncated v4 header"));
             }
             (wgpu::TextureFormat::Rgba32Float, read_u32(16), 20)
+        }
+        5 => {
+            if bytes.len() < 36 {
+                return Err(invalid("truncated v5 header"));
+            }
+            average_color = Some([read_f32(20), read_f32(24), read_f32(28)]);
+            let format = if read_u32(16) & 1 != 0 {
+                wgpu::TextureFormat::Bc7RgbaUnormSrgb
+            } else {
+                wgpu::TextureFormat::Bc7RgbaUnorm
+            };
+            (format, read_u32(32), 36)
         }
         other => return Err(invalid(&format!("unsupported version {other}"))),
     };
@@ -102,14 +119,15 @@ pub(crate) fn parse_cooked_tex(bytes: &[u8]) -> Result<CookedTexture<'_>> {
             "invalid mip count {mip_count} for {width}x{height}"
         )));
     }
-    let bytes_per_texel = format.block_copy_size(None).unwrap() as usize;
-
     let mut mips = Vec::with_capacity(mip_count as usize);
     let mut offset: usize = data_offset;
     for mip in 0..mip_count {
-        let mip_data = ((width >> mip).max(1) as usize)
-            .checked_mul((height >> mip).max(1) as usize)
-            .and_then(|texels| texels.checked_mul(bytes_per_texel))
+        let (blocks_x, blocks_y, block_bytes) =
+            crate::graphics::mip_copy_layout(format, width, height, mip)
+                .expect("RTEX formats have a block size");
+        let mip_data = (blocks_x as usize)
+            .checked_mul(blocks_y as usize)
+            .and_then(|blocks| blocks.checked_mul(block_bytes as usize))
             .and_then(|mip_bytes| offset.checked_add(mip_bytes))
             .and_then(|end| bytes.get(offset..end))
             .ok_or_else(|| invalid("pixel data shorter than header declares"))?;
@@ -123,6 +141,7 @@ pub(crate) fn parse_cooked_tex(bytes: &[u8]) -> Result<CookedTexture<'_>> {
         height,
         format,
         mips,
+        average_color,
     })
 }
 
@@ -153,23 +172,6 @@ fn average_srgb8_color(rgba: &[u8]) -> [f32; 3] {
         return [1.0; 3];
     }
     sum.map(|total| (total / weight) as f32)
-}
-
-fn owned((pixels, width, height): (Cow<'_, [u8]>, u32, u32)) -> (Cow<'static, [u8]>, u32, u32) {
-    (Cow::Owned(pixels.into_owned()), width, height)
-}
-
-/// Material textures are RGBA8; float RTEX files are environment/IBL maps for
-/// `Engine::load_cooked_texture`.
-fn decode_cooked_tex(bytes: &[u8]) -> Result<(Cow<'_, [u8]>, u32, u32)> {
-    let cooked = parse_cooked_tex(bytes)?;
-    if cooked.version != 1 {
-        return Err(pill_core::PillError::from(format!(
-            "RTEX v{} is a float texture; load it with Engine::load_cooked_texture into RenderStateComponent",
-            cooked.version
-        )));
-    }
-    Ok((Cow::Borrowed(cooked.mips[0]), cooked.width, cooked.height))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -223,33 +225,28 @@ impl Resource for Texture {
             get_type_name::<Self>().specific_object_style()
         );
 
-        // Create new renderer texture resource
-        let (rgba, width, height) = match &self.resource_loader {
+        // Source bytes: the mounted asset pack, a cooked file on disk, a PNG, or the loader's bytes
+        let source: Cow<'_, [u8]> = match &self.resource_loader {
             ResourceLoader::Path(path) => {
                 let base = engine.game_resources_directory_path.join(path);
                 let cooked_tex_path = base.with_extension("cooked_tex");
                 // The mounted asset pack wins over the cooked file on disk
                 if let Some(bytes) = engine.packed_asset(&path.with_extension("cooked_tex")) {
-                    owned(decode_cooked_tex(&bytes)?)
+                    bytes
                 } else if cooked_tex_path.exists() {
-                    let bytes =
-                        std::fs::read(&cooked_tex_path).map_err(|e| -> pill_core::PillError {
+                    Cow::Owned(std::fs::read(&cooked_tex_path).map_err(
+                        |e| -> pill_core::PillError {
                             format!("Failed to read texture {cooked_tex_path:?}: {e}").into()
-                        })?;
-                    owned(decode_cooked_tex(&bytes)?)
+                        },
+                    )?)
                 } else {
                     #[cfg(not(target_arch = "wasm32"))]
                     {
                         // Check if path to asset is correct
                         pill_core::validate_asset_path(&base, &["png", "cooked_tex"])?;
-                        let bytes = std::fs::read(&base).map_err(|e| -> pill_core::PillError {
+                        Cow::Owned(std::fs::read(&base).map_err(|e| -> pill_core::PillError {
                             format!("Failed to read texture {base:?}: {e}").into()
-                        })?;
-                        if base.extension().map(|e| e == "cooked_tex").unwrap_or(false) {
-                            owned(decode_cooked_tex(&bytes)?)
-                        } else {
-                            decode_png(&bytes)?
-                        }
+                        })?)
                     }
                     #[cfg(target_arch = "wasm32")]
                     {
@@ -260,43 +257,82 @@ impl Resource for Texture {
                     }
                 }
             }
-            ResourceLoader::Bytes(bytes) => {
-                if bytes.starts_with(b"RTEX") {
-                    decode_cooked_tex(bytes)?
-                } else {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        decode_png(bytes)?
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    {
-                        return Err(pill_core::PillError::from(
-                            "Texture::from_bytes on wasm requires pre-converted COOKED_TEX format",
-                        ));
-                    }
-                }
-            }
+            ResourceLoader::Bytes(bytes) => Cow::Borrowed(&bytes[..]),
         };
 
-        if self.texture_type == TextureType::Color {
-            self.average_color = Some(average_srgb8_color(&rgba));
-        }
-
-        // Create renderer texture resource
+        // Material textures are RGBA8 (PNG or RTEX v1, mips built here) or BC7 with mips (RTEX
+        // v5); float RTEX files are environment/IBL maps for `Engine::load_cooked_texture`
+        #[cfg_attr(feature = "headless", allow(unused_variables))]
+        let renderer_texture = if source.starts_with(b"RTEX") {
+            let cooked = parse_cooked_tex(&source)?;
+            match cooked.version {
+                1 => {
+                    let rgba = cooked.mips[0];
+                    if self.texture_type == TextureType::Color {
+                        self.average_color = Some(average_srgb8_color(rgba));
+                    }
+                    #[cfg(not(feature = "headless"))]
+                    RendererTexture::new_texture(
+                        engine.renderer.get_device(),
+                        engine.renderer.get_queue(),
+                        &self.name,
+                        rgba,
+                        cooked.width,
+                        cooked.height,
+                        self.texture_type,
+                    )
+                    .context(error_message)?
+                }
+                5 => {
+                    if self.texture_type == TextureType::Color {
+                        self.average_color = cooked.average_color;
+                    }
+                    #[cfg(not(feature = "headless"))]
+                    RendererTexture::new_bc7_texture(
+                        engine.renderer.get_device(),
+                        engine.renderer.get_queue(),
+                        &self.name,
+                        (cooked.width, cooked.height),
+                        cooked.format == wgpu::TextureFormat::Bc7RgbaUnormSrgb,
+                        &cooked.mips,
+                    )
+                    .context(error_message)?
+                }
+                other => {
+                    return Err(pill_core::PillError::from(format!(
+                        "RTEX v{other} is a float texture; load it with Engine::load_cooked_texture into RenderStateComponent"
+                    )))
+                }
+            }
+        } else {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let (rgba, width, height) = decode_png(&source)?;
+                if self.texture_type == TextureType::Color {
+                    self.average_color = Some(average_srgb8_color(&rgba));
+                }
+                #[cfg(not(feature = "headless"))]
+                RendererTexture::new_texture(
+                    engine.renderer.get_device(),
+                    engine.renderer.get_queue(),
+                    &self.name,
+                    &rgba,
+                    width,
+                    height,
+                    self.texture_type,
+                )
+                .context(error_message)?
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                return Err(pill_core::PillError::from(
+                    "Texture::from_bytes on wasm requires pre-converted COOKED_TEX format",
+                ));
+            }
+        };
+        drop(source);
         #[cfg(not(feature = "headless"))]
-        {
-            let renderer_texture = RendererTexture::new_texture(
-                engine.renderer.get_device(),
-                engine.renderer.get_queue(),
-                &self.name,
-                &rgba,
-                width,
-                height,
-                self.texture_type,
-            )
-            .context(error_message)?;
-            engine.resource_manager.add_resource(renderer_texture)?;
-        }
+        engine.resource_manager.add_resource(renderer_texture)?;
 
         // The pixels live on the GPU now; nothing reads the source bytes again
         if let ResourceLoader::Bytes(bytes) = &mut self.resource_loader {

@@ -28,8 +28,8 @@ pub(crate) use texture::parse_cooked_tex;
 
 #[cfg(feature = "gltf_loading")]
 pub use gltf_scene::{
-    gltf_resource_uris, parse_gltf_scene, GltfMaterialData, GltfMeshData, GltfResourceUris,
-    GltfSceneData, GltfTextureData,
+    gltf_image_kinds, gltf_resource_uris, parse_gltf_scene, GltfAlphaMode, GltfMaterialData,
+    GltfMeshData, GltfResourceUris, GltfSceneData, GltfTextureData,
 };
 
 pub use texture::{Texture, TextureHandle, TextureType};

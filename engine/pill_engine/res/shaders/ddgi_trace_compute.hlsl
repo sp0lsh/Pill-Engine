@@ -24,6 +24,7 @@ struct DdgiRay {
 [[vk::binding(6, 0)]] StructuredBuffer<PunctualLight>   punctual_lights;
 [[vk::binding(7, 0)]] Texture2D                         sky_irradiance;
 [[vk::binding(8, 0)]] RWStructuredBuffer<DdgiRay>       ddgi_rays;
+[[vk::binding(9, 0)]] StructuredBuffer<uint>            ddgi_probe_list; // probes updated this frame
 
 static const uint THREADS = 64;
 
@@ -71,7 +72,7 @@ float3 direct_irradiance(float3 P, float3 N, uint seed) {
 [numthreads(THREADS, 1, 1)]
 void cs_main(uint3 group : SV_GroupID, uint thread : SV_GroupIndex) {
     uint   slot        = group.x;
-    uint   probe_index = (ddgi.probe_offset + slot) % ddgi.probe_count;
+    uint   probe_index = ddgi_probe_list[slot];
     float3 probe_pos   = ddgi_probe_position(ddgi_probe_coord(probe_index));
     uint   ray_count   = ddgi.rays_per_probe;
     for (uint ray = thread; ray < ray_count; ray += THREADS) {
@@ -94,7 +95,8 @@ void cs_main(uint3 group : SV_GroupID, uint thread : SV_GroupIndex) {
             float3 radiance = albedo * direct_irradiance(P, N, probe_index * 1031u + ray * 7919u + ddgi.frame * 104729u) / DDGI_PI;
             // Further bounces from last frame's probes (Wicked's energy conservation 0.95)
             if (ddgi.frame > 0) {
-                radiance += albedo * ddgi_irradiance(P, N) * 0.95;
+                float4 bounce = ddgi_irradiance(P, N);
+                radiance += albedo * bounce.rgb * bounce.a * 0.95;
             }
             // A back face means the probe sees the inside of geometry: shorten the depth so the
             // visibility test treats the probe as occluded there (Wicked)

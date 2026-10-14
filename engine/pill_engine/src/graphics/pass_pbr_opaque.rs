@@ -1,9 +1,10 @@
 use crate::config::{
     AMBIENT_TARGET_FORMAT, BACKGROUND_FRAGMENT_SHADER, BACKGROUND_VERTEX_SHADER,
     DEFAULT_EQUIRECT_FALLBACK_PIXEL, DEPTH_TARGET_FORMAT, HDR_TARGET_FORMAT,
-    PBR_OPAQUE_FRAGMENT_SHADER, PBR_OPAQUE_VERTEX_SHADER, SSR_NORMAL_TARGET_FORMAT,
-    SSR_SURFACE_TARGET_FORMAT, VELOCITY_TARGET_FORMAT,
+    PBR_OPAQUE_ALPHA_TEST_FRAGMENT_SHADER, PBR_OPAQUE_FRAGMENT_SHADER, PBR_OPAQUE_VERTEX_SHADER,
+    SSR_NORMAL_TARGET_FORMAT, SSR_SURFACE_TARGET_FORMAT, VELOCITY_TARGET_FORMAT,
 };
+use crate::graphics::shadow_casters::{box_corners, frustum_planes, outside_frustum};
 use crate::{
     ecs::{CameraComponent, MeshRenderingComponent, RenderStateComponent, TransformComponent},
     graphics::ddgi::DdgiFrame,
@@ -23,6 +24,7 @@ use crate::{
 };
 use pill_core::{error, LogContext, Matrix4f, Result, Vector3f};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::rc::Rc;
 // Motion history (post_fx): entity handles and their index/version
@@ -153,6 +155,24 @@ struct Draw {
 
 /// One instanced draw: a run of equal render keys (same material and mesh) in the sorted
 /// per-draw array; instances `first..first + count` of the storage buffer.
+/// Scene pipeline variant: with the PassSsr outputs, the alpha-test shader, no back-face culling.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
+struct SceneVariant {
+    ssr: bool,
+    alpha_test: bool,
+    double_sided: bool,
+}
+
+impl SceneVariant {
+    fn of(material: &RendererMaterial, ssr: bool) -> Self {
+        Self {
+            ssr,
+            alpha_test: material.alpha_tested,
+            double_sided: material.double_sided,
+        }
+    }
+}
+
 struct DrawBatch {
     material_handle: RendererMaterialHandle,
     mesh_handle: RendererMeshHandle,
@@ -196,9 +216,10 @@ struct PassPBROpaqueState {
     camera_buffer: wgpu::Buffer,
     scene_buffer: wgpu::Buffer,
     globals_bind_group: wgpu::BindGroup,
+    // `SceneVariant::default()`; its layouts build the bind groups
     pipeline: Pipeline,
-    // With the PassSsr outputs; built on the first frame with SSR on
-    ssr_pipeline: Option<Pipeline>,
+    // Other variants, built on the first frame that draws them
+    variants: HashMap<SceneVariant, Pipeline>,
     ibl_sampler: wgpu::Sampler,
     prefilter_sampler: wgpu::Sampler,
     brdf_lut_sampler: wgpu::Sampler,
@@ -593,12 +614,12 @@ impl PassPBROpaque {
         ]
     }
 
-    /// Scene pipeline; `ssr` adds the `PassSsr` outputs (`with_ssr_targets`), built on the first
-    /// frame with SSR on.
+    /// Scene pipeline of `variant`: `ssr` adds the `PassSsr` outputs (`with_ssr_targets`),
+    /// `alpha_test` the shader with discard, `double_sided` turns culling off.
     fn create_scene_pipeline(
         &self,
         renderer: &mut dyn PillRenderer,
-        ssr: bool,
+        variant: SceneVariant,
     ) -> Result<Pipeline> {
         let bind_groups: Vec<Vec<wgpu::BindGroupLayoutEntry>> = vec![
             // 0: globals (camera + IBL irradiance + prefilter + BRDF LUT + scene)
@@ -727,7 +748,7 @@ impl PassPBROpaque {
             (0..2).map(per_draw_storage_entry).collect(),
         ];
 
-        let color_targets = self.color_targets(ssr);
+        let color_targets = self.color_targets(variant.ssr);
         let desc = PipelineDesc {
             label: Some("pass_pbr_opaque_pipeline"),
             vs: ShaderDesc {
@@ -735,7 +756,11 @@ impl PassPBROpaque {
                 entry_func: "vs_main",
             },
             ps: ShaderDesc {
-                source: PBR_OPAQUE_FRAGMENT_SHADER,
+                source: if variant.alpha_test {
+                    PBR_OPAQUE_ALPHA_TEST_FRAGMENT_SHADER
+                } else {
+                    PBR_OPAQUE_FRAGMENT_SHADER
+                },
                 entry_func: "fs_main",
             },
             vertex_buffers: &[RendererMesh::data_layout_descriptor()],
@@ -755,7 +780,7 @@ impl PassPBROpaque {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
+                cull_mode: (!variant.double_sided).then_some(wgpu::Face::Back),
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
                 unclipped_depth: false,
@@ -930,7 +955,7 @@ impl Pass for PassPBROpaque {
     }
 
     fn init(&mut self, renderer: &mut dyn PillRenderer) -> Result<()> {
-        let pipeline = self.create_scene_pipeline(renderer, false)?;
+        let pipeline = self.create_scene_pipeline(renderer, SceneVariant::default())?;
 
         let camera_buffer = {
             let device = renderer.get_device();
@@ -1164,7 +1189,7 @@ impl Pass for PassPBROpaque {
             scene_buffer,
             globals_bind_group,
             pipeline,
-            ssr_pipeline: None,
+            variants: HashMap::new(),
             ibl_sampler,
             prefilter_sampler,
             brdf_lut_sampler,
@@ -1297,12 +1322,9 @@ impl Pass for PassPBROpaque {
         let (active_camera_component, active_camera_transform) = world.active_camera()?;
         // SSR on: the pipelines and attachments with the PassSsr outputs, else without them
         let ssr = self.ssr_targets.is_some() && render_state.ssr.enabled;
-        if ssr && get_state(self).ssr_pipeline.is_none() {
-            let scene = self.create_scene_pipeline(renderer, true)?;
+        if ssr && get_state(self).bg.ssr_pipeline.is_none() {
             let bg = self.create_bg_pipeline(renderer, true)?;
-            let state = get_state(self);
-            state.ssr_pipeline = Some(scene);
-            state.bg.ssr_pipeline = Some(bg);
+            get_state(self).bg.ssr_pipeline = Some(bg);
         }
 
         // Motion history: a reset (camera cut) or another scene makes this frame's previous
@@ -1355,6 +1377,8 @@ impl Pass for PassPBROpaque {
         // them by material, then mesh (depth-tested, so order doesn't matter). Translucent: back to
         // front; equal neighbouring keys still share an instanced draw, which keeps that order.
         self.draws.clear();
+        // Main-view frustum culling by each mesh's world-space bounding box
+        let planes = frustum_planes(&view_projection);
         // Motion history needs entity versions; without it plain storage iteration is enough
         #[cfg(feature = "post_fx")]
         let entities = world.query_two::<TransformComponent, MeshRenderingComponent>()?;
@@ -1396,6 +1420,21 @@ impl Pass for PassPBROpaque {
             };
             #[cfg(not(feature = "post_fx"))]
             let (previous, _) = (current, entity);
+            // After the motion history update, so an entity entering the view has a valid one
+            let fields = decompose_render_queue_key(key);
+            let mesh_handle = NonZeroU32::new(fields.mesh_version.into())
+                .map(|version| RendererMeshHandle::new(fields.mesh_index.into(), version));
+            if let Some(mesh) = mesh_handle
+                .as_ref()
+                .and_then(|handle| world.resources.get_resource::<RendererMesh>(handle).ok())
+            {
+                let model = current.model_matrix();
+                let corners =
+                    box_corners(mesh.local_bounds).map(|corner| model.transform_point3(corner));
+                if outside_frustum(&planes, &corners) {
+                    continue;
+                }
+            }
             let distance_squared =
                 (transform.position - active_camera_transform.position).length_squared();
             self.draws.push(Draw {
@@ -1461,6 +1500,28 @@ impl Pass for PassPBROpaque {
             }
         }
 
+        // Pipelines for the variants this frame's materials need
+        let mut missing: Vec<SceneVariant> = Vec::new();
+        for batch in &self.batches {
+            if let Ok(material) = world
+                .resources
+                .get_resource::<RendererMaterial>(&batch.material_handle)
+            {
+                let variant = SceneVariant::of(material, ssr);
+                let built = self
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.variants.contains_key(&variant));
+                if variant != SceneVariant::default() && !built && !missing.contains(&variant) {
+                    missing.push(variant);
+                }
+            }
+        }
+        for variant in missing {
+            let pipeline = self.create_scene_pipeline(renderer, variant)?;
+            get_state(self).variants.insert(variant, pipeline);
+        }
+
         let depth_view = renderer
             .get_render_target_view(self.depth_target)
             .expect("PassPBROpaque: depth target missing");
@@ -1518,11 +1579,8 @@ impl Pass for PassPBROpaque {
             .state
             .as_ref()
             .expect("PassPBROpaque: state not initialized — call init() before draw()");
-        let pipeline = match (&state_ref.ssr_pipeline, ssr) {
-            (Some(ssr_pipeline), true) => ssr_pipeline,
-            _ => &state_ref.pipeline,
-        };
-        render_pass.set_pipeline(&pipeline.pipeline);
+        // Each variant was built above; set per material (batches are grouped by material)
+        let mut bound_variant: Option<SceneVariant> = None;
         // Per-draw array bound once; each batch's instance range selects its entries.
         render_pass.set_bind_group(
             MATERIAL_BIND_GROUP_PERDRAW as u32,
@@ -1546,6 +1604,15 @@ impl Pass for PassPBROpaque {
                 else {
                     continue;
                 };
+                let variant = SceneVariant::of(mat, ssr);
+                if bound_variant != Some(variant) {
+                    let pipeline = match state_ref.variants.get(&variant) {
+                        Some(pipeline) => pipeline,
+                        None => &state_ref.pipeline,
+                    };
+                    render_pass.set_pipeline(&pipeline.pipeline);
+                    bound_variant = Some(variant);
+                }
                 render_pass.set_bind_group(
                     MATERIAL_BIND_GROUP_TEXTURES as u32,
                     &mat.textures_bind_group,

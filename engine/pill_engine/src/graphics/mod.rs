@@ -37,6 +37,7 @@ mod shadow_casters;
 
 // --- Use ---
 
+pub(crate) use renderer::mip_copy_layout;
 pub use renderer::{
     camera_forward, camera_view_projection, BufferDesc, ComputePipeline, ComputePipelineDesc,
     FrameTarget, Pass, PassTextureHandle, PillRenderer, Pipeline, PipelineDesc, Renderer,
@@ -73,5 +74,5 @@ pub(crate) use scene_uniform::SceneUniform;
 
 pub use render_queue::{
     compose_render_queue_key, decompose_render_queue_key, RenderQueueKey, RenderQueueKeyFields,
-    RENDER_QUEUE_KEY_MESH_INDEX,
+    RENDER_QUEUE_KEY_MATERIAL_INDEX, RENDER_QUEUE_KEY_MESH_INDEX,
 };

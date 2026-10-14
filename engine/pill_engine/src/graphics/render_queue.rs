@@ -29,12 +29,13 @@ const fn field(mask: u64, shift: u32, max: u64) -> RenderQueueFieldDesc {
 
 // Layout is documented in config.rs (RenderQueueKeyType)
 pub const RENDER_QUEUE_KEY_MATERIAL_INDEX: RenderQueueFieldDesc =
-    field(0xFF00_0000_0000_0000, 56, 255);
+    field(0xFFF0_0000_0000_0000, 52, 4095);
 pub const RENDER_QUEUE_KEY_MATERIAL_VERSION: RenderQueueFieldDesc =
-    field(0x00FF_0000_0000_0000, 48, 255);
-pub const RENDER_QUEUE_KEY_MESH_INDEX: RenderQueueFieldDesc = field(0x0000_FF00_0000_0000, 40, 255);
+    field(0x000F_F000_0000_0000, 44, 255);
+pub const RENDER_QUEUE_KEY_MESH_INDEX: RenderQueueFieldDesc =
+    field(0x0000_0FFF_F000_0000, 28, 65535);
 pub const RENDER_QUEUE_KEY_MESH_VERSION: RenderQueueFieldDesc =
-    field(0x0000_00FF_0000_0000, 32, 255);
+    field(0x0000_0000_0FF0_0000, 20, 255);
 
 // --- Compose ---
 
@@ -86,21 +87,62 @@ fn pack_field(field: &RenderQueueFieldDesc, value: RenderQueueKey) -> Result<Ren
 // --- Decompose ---
 
 pub struct RenderQueueKeyFields {
-    pub material_index: u8,
+    pub material_index: u16,
     pub material_version: u8,
-    pub mesh_index: u8,
+    pub mesh_index: u16,
     pub mesh_version: u8,
 }
 
 pub fn decompose_render_queue_key(key: RenderQueueKey) -> RenderQueueKeyFields {
     RenderQueueKeyFields {
         material_index: ((key & RENDER_QUEUE_KEY_MATERIAL_INDEX.mask)
-            >> RENDER_QUEUE_KEY_MATERIAL_INDEX.mask_shift) as u8,
+            >> RENDER_QUEUE_KEY_MATERIAL_INDEX.mask_shift) as u16,
         material_version: ((key & RENDER_QUEUE_KEY_MATERIAL_VERSION.mask)
             >> RENDER_QUEUE_KEY_MATERIAL_VERSION.mask_shift) as u8,
         mesh_index: ((key & RENDER_QUEUE_KEY_MESH_INDEX.mask)
-            >> RENDER_QUEUE_KEY_MESH_INDEX.mask_shift) as u8,
+            >> RENDER_QUEUE_KEY_MESH_INDEX.mask_shift) as u16,
         mesh_version: ((key & RENDER_QUEUE_KEY_MESH_VERSION.mask)
             >> RENDER_QUEUE_KEY_MESH_VERSION.mask_shift) as u8,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FIELDS: [RenderQueueFieldDesc; 4] = [
+        RENDER_QUEUE_KEY_MATERIAL_INDEX,
+        RENDER_QUEUE_KEY_MATERIAL_VERSION,
+        RENDER_QUEUE_KEY_MESH_INDEX,
+        RENDER_QUEUE_KEY_MESH_VERSION,
+    ];
+
+    #[test]
+    fn fields_do_not_overlap_and_masks_match_max() {
+        for (index, field) in FIELDS.iter().enumerate() {
+            assert_eq!(field.mask >> field.mask_shift, field.max, "field {index}");
+            for other in &FIELDS[index + 1..] {
+                assert_eq!(field.mask & other.mask, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn max_material_and_mesh_slots_round_trip() {
+        let key = pack_field(&RENDER_QUEUE_KEY_MATERIAL_INDEX, 4095).unwrap()
+            | pack_field(&RENDER_QUEUE_KEY_MATERIAL_VERSION, 255).unwrap()
+            | pack_field(&RENDER_QUEUE_KEY_MESH_INDEX, 65535).unwrap()
+            | pack_field(&RENDER_QUEUE_KEY_MESH_VERSION, 7).unwrap();
+        let fields = decompose_render_queue_key(key);
+        assert_eq!(
+            (
+                fields.material_index,
+                fields.material_version,
+                fields.mesh_index,
+                fields.mesh_version
+            ),
+            (4095, 255, 65535, 7)
+        );
+        assert!(pack_field(&RENDER_QUEUE_KEY_MESH_INDEX, 65536).is_err());
     }
 }

@@ -26,6 +26,15 @@ pub struct GltfTextureData {
     pub rtex: Vec<u8>,
 }
 
+/// How a material's base-color alpha is used (glTF `alphaMode` / `alphaCutoff`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GltfAlphaMode {
+    Opaque,
+    /// Alpha-tested: texels below the cutoff are discarded.
+    Mask(f32),
+    Blend,
+}
+
 /// A material's factors and texture references (indices into [`GltfSceneData::textures`]).
 pub struct GltfMaterialData {
     pub name: String,
@@ -33,10 +42,17 @@ pub struct GltfMaterialData {
     pub normal: Option<usize>,
     pub metallic_roughness: Option<usize>,
     pub emissive: Option<usize>,
+    /// `KHR_materials_specular` `specularTexture`, uploaded as linear data (some exporters store
+    /// other channels in it; the caller decides how to use it).
+    pub specular: Option<usize>,
     pub base_color: [f32; 4],
     pub metallic: f32,
     pub roughness: f32,
     pub emissive_color: [f32; 3],
+    pub alpha_mode: GltfAlphaMode,
+    pub double_sided: bool,
+    /// `KHR_materials_transmission` factor (0 = none).
+    pub transmission: f32,
 }
 
 /// A mesh primitive ready to upload via `Mesh::from_cooked_mesh_bytes(name, &rmsh)`.
@@ -72,16 +88,75 @@ pub fn gltf_resource_uris(gltf_bytes: &[u8]) -> Result<GltfResourceUris> {
     })
 }
 
+/// Texture kind of each document image, from the first material slot that uses it (`None` when
+/// unused): lets a caller cook images (e.g. KTX2 → RTEX) before [`parse_gltf_scene`].
+pub fn gltf_image_kinds(gltf_bytes: &[u8]) -> Result<Vec<Option<TextureType>>> {
+    let (doc, _) =
+        Doc::from_bytes(gltf_bytes).map_err(|e| PillError::from(format!("parse glTF: {e:?}")))?;
+    let mut kinds = vec![None; doc.images.len()];
+    for material in &doc.materials {
+        for (texture, kind) in material_textures(material).into_iter().zip(SLOT_KINDS) {
+            if let Some(image) = texture.and_then(|index| texture_image(&doc, index)) {
+                if let Some(slot) = kinds.get_mut(image) {
+                    slot.get_or_insert(kind);
+                }
+            }
+        }
+    }
+    Ok(kinds)
+}
+
+/// Kind of each material texture slot, in [`material_textures`] order.
+const SLOT_KINDS: [TextureType; 5] = [
+    TextureType::Color,
+    TextureType::Normal,
+    TextureType::MetallicRoughness,
+    TextureType::Emissive,
+    TextureType::MetallicRoughness,
+];
+
+/// Texture indices of a material: base color, normal, metallic-roughness, emissive, specular.
+fn material_textures(
+    material: &goth_gltf::Material<goth_gltf::default_extensions::Extensions>,
+) -> [Option<usize>; 5] {
+    let pbr = &material.pbr_metallic_roughness;
+    [
+        pbr.base_color_texture.as_ref().map(|t| t.index),
+        material.normal_texture.as_ref().map(|t| t.index),
+        pbr.metallic_roughness_texture.as_ref().map(|t| t.index),
+        material.emissive_texture.as_ref().map(|t| t.index),
+        material
+            .extensions
+            .khr_materials_specular
+            .as_ref()
+            .and_then(|specular| specular.specular_texture.as_ref())
+            .map(|t| t.index),
+    ]
+}
+
+/// Image of a texture: its `source`, else the `KHR_texture_basisu` source.
+fn texture_image(doc: &Doc, texture: usize) -> Option<usize> {
+    let texture = doc.textures.get(texture)?;
+    texture.source.or_else(|| {
+        texture
+            .extensions
+            .khr_texture_basisu
+            .as_ref()
+            .map(|basisu| basisu.source)
+    })
+}
+
 /// Parses a glTF/glb into uploadable scene data; resource names start with `name_prefix`, so
 /// several scenes can be loaded into one engine.
 ///
 /// `external_buffers` / `external_images` are indexed 1:1 with the document's buffers/images (the
-/// order from [`gltf_resource_uris`]); entries that were `None` there may be empty.
+/// order from [`gltf_resource_uris`]); entries that were `None` there may be empty. Images are
+/// JPEG, PNG, or already-cooked RTEX (e.g. BC7 from KTX2), which is moved out, not copied.
 pub fn parse_gltf_scene(
     name_prefix: &str,
     gltf_bytes: &[u8],
     external_buffers: &[Vec<u8>],
-    external_images: &[Vec<u8>],
+    external_images: &mut [Vec<u8>],
 ) -> Result<GltfSceneData> {
     use std::borrow::Cow;
     use std::collections::{HashMap, HashSet};
@@ -108,31 +183,27 @@ pub fn parse_gltf_scene(
     }
     let buffers: Vec<&[u8]> = buffers.iter().map(|b| b.as_ref()).collect();
 
-    // Image index per material texture slot; textures without a source (extension-only) are skipped
-    const KINDS: [TextureType; 4] = [
-        TextureType::Color,
-        TextureType::Normal,
-        TextureType::MetallicRoughness,
-        TextureType::Emissive,
-    ];
+    // Image index per material texture slot (`source`, else `KHR_texture_basisu`)
     let image_of = |tex_index: Option<usize>| -> Result<Option<usize>> {
         let Some(tex_index) = tex_index else {
             return Ok(None);
         };
-        let image = get(&doc.textures, tex_index, "texture")?.source;
+        get(&doc.textures, tex_index, "texture")?;
+        let image = texture_image(&doc, tex_index);
         if let Some(image) = image {
             get(&doc.images, image, "image")?;
         }
         Ok(image)
     };
-    let mut material_images: Vec<[Option<usize>; 4]> = Vec::with_capacity(doc.materials.len());
+    let mut material_images: Vec<[Option<usize>; 5]> = Vec::with_capacity(doc.materials.len());
     for material in &doc.materials {
-        let pbr = &material.pbr_metallic_roughness;
+        let textures = material_textures(material);
         material_images.push([
-            image_of(pbr.base_color_texture.as_ref().map(|t| t.index))?,
-            image_of(material.normal_texture.as_ref().map(|t| t.index))?,
-            image_of(pbr.metallic_roughness_texture.as_ref().map(|t| t.index))?,
-            image_of(material.emissive_texture.as_ref().map(|t| t.index))?,
+            image_of(textures[0])?,
+            image_of(textures[1])?,
+            image_of(textures[2])?,
+            image_of(textures[3])?,
+            image_of(textures[4])?,
         ]);
     }
 
@@ -141,7 +212,7 @@ pub fn parse_gltf_scene(
     let mut kinds_left: HashMap<usize, usize> = HashMap::new();
     let mut seen: HashSet<(usize, TextureType)> = HashSet::new();
     for images in &material_images {
-        for (image, kind) in images.iter().zip(KINDS) {
+        for (image, kind) in images.iter().zip(SLOT_KINDS) {
             if let Some(image) = *image {
                 if seen.insert((image, kind)) {
                     *kinds_left.entry(image).or_default() += 1;
@@ -155,8 +226,8 @@ pub fn parse_gltf_scene(
 
     let mut materials: Vec<GltfMaterialData> = Vec::with_capacity(doc.materials.len() + 1);
     for (idx, (material, images)) in doc.materials.iter().zip(&material_images).enumerate() {
-        let mut slots = [None; 4];
-        for (slot, (image, kind)) in slots.iter_mut().zip(images.iter().zip(KINDS)) {
+        let mut slots = [None; 5];
+        for (slot, (image, kind)) in slots.iter_mut().zip(images.iter().zip(SLOT_KINDS)) {
             let Some(image) = *image else {
                 continue;
             };
@@ -164,9 +235,30 @@ pub fn parse_gltf_scene(
                 *slot = Some(existing);
                 continue;
             }
+            // Pre-cooked RTEX: uploaded as is, moved out on its last use
+            if external_images
+                .get(image)
+                .is_some_and(|bytes| bytes.starts_with(b"RTEX"))
+            {
+                let left = kinds_left.get_mut(&image).expect("counted above");
+                *left -= 1;
+                let rtex = if *left > 0 {
+                    external_images[image].clone()
+                } else {
+                    std::mem::take(&mut external_images[image])
+                };
+                texture_index.insert((image, kind), textures.len());
+                *slot = Some(textures.len());
+                textures.push(GltfTextureData {
+                    name: format!("{name_prefix}_{}_{image}", role(kind)),
+                    kind,
+                    rtex,
+                });
+                continue;
+            }
             let pixels = match decoded.remove(&image) {
                 Some(pixels) => pixels,
-                None => decode_image(&image_bytes(&doc, &buffers, external_images, image)?)?,
+                None => decode_image(&image_bytes(&doc, &buffers, &*external_images, image)?)?,
             };
             let left = kinds_left.get_mut(&image).expect("counted above");
             *left -= 1;
@@ -187,17 +279,29 @@ pub fn parse_gltf_scene(
             });
         }
         let pbr = &material.pbr_metallic_roughness;
-        let [albedo, normal, metallic_roughness, emissive] = slots;
+        let [albedo, normal, metallic_roughness, emissive, specular] = slots;
         materials.push(GltfMaterialData {
             name: format!("{name_prefix}_mat_{idx}"),
             albedo,
             normal,
             metallic_roughness,
             emissive,
+            specular,
             base_color: pbr.base_color_factor,
             metallic: pbr.metallic_factor,
             roughness: pbr.roughness_factor,
             emissive_color: material.emissive_factor,
+            alpha_mode: match material.alpha_mode {
+                goth_gltf::AlphaMode::Opaque => GltfAlphaMode::Opaque,
+                goth_gltf::AlphaMode::Mask => GltfAlphaMode::Mask(material.alpha_cutoff),
+                goth_gltf::AlphaMode::Blend => GltfAlphaMode::Blend,
+            },
+            double_sided: material.double_sided,
+            transmission: material
+                .extensions
+                .khr_materials_transmission
+                .as_ref()
+                .map_or(0.0, |transmission| transmission.transmission_factor),
         });
     }
 
@@ -209,10 +313,14 @@ pub fn parse_gltf_scene(
         normal: None,
         metallic_roughness: None,
         emissive: None,
+        specular: None,
         base_color: [1.0; 4],
         metallic: 1.0,
         roughness: 1.0,
         emissive_color: [0.0; 3],
+        alpha_mode: GltfAlphaMode::Opaque,
+        double_sided: false,
+        transmission: 0.0,
     });
 
     // (name label, mesh index, world transform): walk the scene graph, or, without a scene, every
@@ -703,7 +811,7 @@ mod tests {
           "materials":[],"textures":[],"images":[]
         }"#;
 
-        let scene = parse_gltf_scene("t", json.as_bytes(), &[buf], &[]).expect("parse");
+        let scene = parse_gltf_scene("t", json.as_bytes(), &[buf], &mut []).expect("parse");
         assert_eq!(scene.meshes.len(), 1);
         let rmsh = &scene.meshes[0].rmsh;
         assert_eq!(&rmsh[0..4], b"RMSH");
@@ -767,26 +875,26 @@ mod tests {
     fn truncated_buffer_is_rejected() {
         let json = doc(ONE_NODE, "", "b.bin", "");
         let buffer = triangle_buffer()[..30].to_vec();
-        assert!(parse_gltf_scene("t", json.as_bytes(), &[buffer], &[]).is_err());
+        assert!(parse_gltf_scene("t", json.as_bytes(), &[buffer], &mut []).is_err());
     }
 
     #[test]
     fn node_cycle_is_rejected() {
         let scene = r#","scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0,"children":[1]},{"children":[0]}]"#;
         let json = doc(scene, "", "b.bin", "");
-        assert!(parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &[]).is_err());
+        assert!(parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &mut []).is_err());
     }
 
     #[test]
     fn material_index_out_of_range_is_rejected() {
         let json = doc(ONE_NODE, r#","material":3"#, "b.bin", "");
-        assert!(parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &[]).is_err());
+        assert!(parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &mut []).is_err());
     }
 
     #[test]
     fn no_scenes_uses_every_mesh_untransformed() {
         let json = doc("", "", "b.bin", "");
-        let scene = parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &[]).unwrap();
+        let scene = parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &mut []).unwrap();
         assert_eq!(scene.meshes.len(), 1);
         assert_eq!(scene.meshes[0].name, "t_mesh_m0_0");
         let (position, _) = vertex(&scene.meshes[0].rmsh, 1);
@@ -807,7 +915,7 @@ mod tests {
             gltf_resource_uris(json.as_bytes()).unwrap().buffers,
             vec![None]
         );
-        let scene = parse_gltf_scene("t", json.as_bytes(), &[], &[]).unwrap();
+        let scene = parse_gltf_scene("t", json.as_bytes(), &[], &mut []).unwrap();
         let (position, _) = vertex(&scene.meshes[0].rmsh, 2);
         assert_eq!(position, [0.0, 1.0, 0.0]);
     }
@@ -820,7 +928,7 @@ mod tests {
             "b.bin",
             r#","materials":[{"emissiveFactor":[1,0.5,0]}]"#,
         );
-        let scene = parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &[]).unwrap();
+        let scene = parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &mut []).unwrap();
         assert_eq!(scene.materials[0].emissive_color, [1.0, 0.5, 0.0]);
     }
 
@@ -829,7 +937,7 @@ mod tests {
         let json = doc(ONE_NODE, "", "b.bin", "");
         let names = |prefix| {
             let scene =
-                parse_gltf_scene(prefix, json.as_bytes(), &[triangle_buffer()], &[]).unwrap();
+                parse_gltf_scene(prefix, json.as_bytes(), &[triangle_buffer()], &mut []).unwrap();
             let mut names: Vec<String> = scene.materials.into_iter().map(|m| m.name).collect();
             names.extend(scene.meshes.into_iter().map(|m| m.name));
             names
@@ -841,15 +949,66 @@ mod tests {
     #[test]
     fn unreferenced_unsupported_image_is_not_decoded() {
         let json = doc(ONE_NODE, "", "b.bin", r#","images":[{"uri":"x.webp"}]"#);
-        let images = vec![b"RIFF....WEBP".to_vec()];
-        let scene = parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &images).unwrap();
+        let mut images = vec![b"RIFF....WEBP".to_vec()];
+        let scene =
+            parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &mut images).unwrap();
         assert!(scene.textures.is_empty());
+    }
+
+    // Bistro-style material: basisu-only textures, specular texture, MASK, double-sided,
+    // transmission
+    const BASISU_MATERIAL: &str = r#","materials":[{
+        "alphaMode":"MASK","alphaCutoff":0.3,"doubleSided":true,
+        "pbrMetallicRoughness":{"baseColorTexture":{"index":0}},
+        "extensions":{
+          "KHR_materials_specular":{"specularTexture":{"index":1}},
+          "KHR_materials_transmission":{"transmissionFactor":0.5}}}],
+      "textures":[
+        {"extensions":{"KHR_texture_basisu":{"source":0}}},
+        {"extensions":{"KHR_texture_basisu":{"source":1}}}],
+      "images":[{"uri":"base.ktx2"},{"uri":"spec.ktx2"}]"#;
+
+    #[test]
+    fn basisu_textures_resolve_and_cooked_rtex_passes_through() {
+        let json = doc(ONE_NODE, r#","material":0"#, "b.bin", BASISU_MATERIAL);
+        assert_eq!(
+            gltf_image_kinds(json.as_bytes()).unwrap(),
+            vec![
+                Some(TextureType::Color),
+                Some(TextureType::MetallicRoughness)
+            ]
+        );
+        let mut images = vec![b"RTEXbase".to_vec(), b"RTEXspec".to_vec()];
+        let scene =
+            parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &mut images).unwrap();
+        let material = &scene.materials[0];
+        let albedo = &scene.textures[material.albedo.unwrap()];
+        let specular = &scene.textures[material.specular.unwrap()];
+        assert_eq!(
+            (albedo.rtex.as_slice(), albedo.kind),
+            (&b"RTEXbase"[..], TextureType::Color)
+        );
+        assert_eq!(specular.kind, TextureType::MetallicRoughness);
+        // Moved out, not copied
+        assert!(images.iter().all(Vec::is_empty));
+    }
+
+    #[test]
+    fn mask_cutoff_double_sided_and_transmission_are_kept() {
+        let json = doc(ONE_NODE, r#","material":0"#, "b.bin", BASISU_MATERIAL);
+        let mut images = vec![b"RTEXbase".to_vec(), b"RTEXspec".to_vec()];
+        let scene =
+            parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &mut images).unwrap();
+        let material = &scene.materials[0];
+        assert_eq!(material.alpha_mode, GltfAlphaMode::Mask(0.3));
+        assert!(material.double_sided);
+        assert_eq!(material.transmission, 0.5);
     }
 
     #[test]
     fn default_material_is_rough_metal() {
         let json = doc(ONE_NODE, "", "b.bin", "");
-        let scene = parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &[]).unwrap();
+        let scene = parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &mut []).unwrap();
         let default = &scene.materials[scene.meshes[0].material];
         assert_eq!((default.metallic, default.roughness), (1.0, 1.0));
     }

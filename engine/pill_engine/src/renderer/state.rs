@@ -587,8 +587,10 @@ impl State {
         info!(LogContext::Rendering => "Using GPU: {} ({:?})", info.name, info.backend);
 
         let (device, queue) = {
-            let mut wanted =
-                wgpu::Features::DEPTH_CLIP_CONTROL | wgpu::Features::FLOAT32_FILTERABLE;
+            // BC block compression: cooked BC7 material textures (RTEX v5)
+            let mut wanted = wgpu::Features::DEPTH_CLIP_CONTROL
+                | wgpu::Features::FLOAT32_FILTERABLE
+                | wgpu::Features::TEXTURE_COMPRESSION_BC;
             // Debug switch to exercise the Rgba16Float fallback on hardware that has the feature
             if cfg!(debug_assertions) && std::env::var("PILL_FORCE_NO_F32_FILTER").is_ok() {
                 wanted.remove(wgpu::Features::FLOAT32_FILTERABLE);
@@ -598,11 +600,20 @@ impl State {
                 info!(LogContext::Rendering => "FLOAT32_FILTERABLE unavailable: float textures use Rgba16Float");
             }
 
+            // Buffer sizes up to what the adapter allows: large scenes' vertex buffers and the
+            // DDGI BVH (48 B per triangle) outgrow the 256 MB / 128 MB defaults
+            let adapter_limits = adapter.limits();
+            let limits = wgpu::Limits {
+                max_buffer_size: adapter_limits.max_buffer_size,
+                max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,
+                ..wgpu::Limits::default()
+            };
+
             adapter
                 .request_device(&wgpu::DeviceDescriptor {
                     label: None,
                     required_features: features,
-                    required_limits: wgpu::Limits::default(),
+                    required_limits: limits,
                     memory_hints: wgpu::MemoryHints::default(),
                     trace: wgpu::Trace::default(),
                 })

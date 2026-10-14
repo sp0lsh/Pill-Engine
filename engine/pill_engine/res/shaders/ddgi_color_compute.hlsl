@@ -20,6 +20,7 @@ struct DdgiTexelHistory {
 [[vk::binding(1, 0)]] StructuredBuffer<DdgiRay>               ddgi_rays;
 [[vk::binding(2, 0)]] RWStructuredBuffer<DdgiTexelHistory>    ddgi_history;
 [[vk::binding(3, 0)]] RWStructuredBuffer<DdgiProbe>           ddgi_probes_out;
+[[vk::binding(4, 0)]] StructuredBuffer<uint>                  ddgi_probe_list;
 
 static const uint TEXELS = DDGI_COLOR_RESOLUTION * DDGI_COLOR_RESOLUTION;
 groupshared float3 ray_directions[TEXELS];
@@ -63,7 +64,7 @@ void multiscale_mean_estimator(float3 y, inout DdgiTexelHistory data, float shor
 [numthreads(DDGI_COLOR_RESOLUTION, DDGI_COLOR_RESOLUTION, 1)]
 void cs_main(uint3 group : SV_GroupID, uint2 thread : SV_GroupThreadID, uint thread_index : SV_GroupIndex) {
     uint   slot        = group.x;
-    uint   probe_index = (ddgi.probe_offset + slot) % ddgi.probe_count;
+    uint   probe_index = ddgi_probe_list[slot];
     uint   ray_count   = ddgi.rays_per_probe;
     float3 texel_direction = oct_decode(((float2(thread) + 0.5) / DDGI_COLOR_RESOLUTION) * 2.0 - 1.0);
 
@@ -119,7 +120,7 @@ void cs_main(uint3 group : SV_GroupID, uint2 thread : SV_GroupThreadID, uint thr
         // Monte Carlo over the sphere: × 4π / texel count
         float scale = 4.0 * DDGI_PI / float(TEXELS);
         DdgiProbe probe;
-        probe.sh[0] = float4(sh0 * scale, 0.0);
+        probe.sh[0] = float4(sh0 * scale, 1.0); // w: has an estimate
         probe.sh[1] = float4(sh1 * scale, 0.0);
         probe.sh[2] = float4(sh2 * scale, 0.0);
         probe.sh[3] = float4(sh3 * scale, 0.0);

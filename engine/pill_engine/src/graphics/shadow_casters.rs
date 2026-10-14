@@ -3,26 +3,32 @@
 //! one light matrix per map (dynamic uniform offsets).
 
 use crate::config::{
-    DEPTH_TARGET_FORMAT, SHADOW_CASTER_FRAGMENT_SHADER, SHADOW_CASTER_VERTEX_SHADER,
+    DEPTH_TARGET_FORMAT, SHADOW_CASTER_CUTOUT_FRAGMENT_SHADER, SHADOW_CASTER_CUTOUT_VERTEX_SHADER,
+    SHADOW_CASTER_FRAGMENT_SHADER, SHADOW_CASTER_VERTEX_SHADER,
 };
 use crate::ecs::{MeshRenderingComponent, TransformComponent};
 use crate::graphics::pass_pbr_opaque::{
-    is_translucent, per_draw_storage_entry, DrawTransform, PER_DRAW_STRIDE_BYTES,
+    per_draw_storage_entry, DrawTransform, PER_DRAW_STRIDE_BYTES,
 };
 use crate::graphics::{
     decompose_render_queue_key, BufferDesc, PillRenderer, Pipeline, PipelineDesc,
-    RendererMeshHandle, ShaderDesc, WorldQuery,
+    RendererMaterialHandle, RendererMeshHandle, ShaderDesc, WorldQuery,
 };
-use crate::renderer::resources::{RendererMesh, Vertex};
+use crate::renderer::resources::{
+    material_params_layout_entries, material_textures_layout_entries, RendererMaterial,
+    RendererMesh, Vertex,
+};
 
 use pill_core::{Matrix4f, PillSlotMapKey, Result, Vector3f, Vector4f};
 use std::num::NonZeroU32;
 use std::ops::Range;
 
-/// A mesh drawn into a shadow map.
+/// A mesh drawn into a shadow map; `cutout` = its alpha-tested or double-sided material, drawn
+/// with the alpha test and without culling.
 #[derive(Clone, Copy)]
 pub(crate) struct Caster {
     pub(crate) mesh: RendererMeshHandle,
+    pub(crate) cutout: Option<RendererMaterialHandle>,
     pub(crate) transform: DrawTransform,
 }
 
@@ -53,11 +59,24 @@ pub(crate) fn gather_casters(world: &WorldQuery<'_>, out: &mut Vec<CasterCandida
         let Some(key) = mesh_rendering.render_queue_key else {
             continue;
         };
-        // Translucent materials don't cast (no partial coverage in a depth map)
-        if !mesh_rendering.cast_shadows || is_translucent(world, key) {
+        if !mesh_rendering.cast_shadows {
             continue;
         }
         let fields = decompose_render_queue_key(key);
+        let Some(material_version) = NonZeroU32::new(fields.material_version.into()) else {
+            continue;
+        };
+        let material = RendererMaterialHandle::new(fields.material_index.into(), material_version);
+        let Ok(renderer_material) = world.resources.get_resource::<RendererMaterial>(&material)
+        else {
+            continue;
+        };
+        // Translucent materials don't cast (no partial coverage in a depth map)
+        if renderer_material.translucent {
+            continue;
+        }
+        let cutout =
+            (renderer_material.alpha_tested || renderer_material.double_sided).then_some(material);
         let Some(version) = NonZeroU32::new(fields.mesh_version.into()) else {
             continue;
         };
@@ -66,7 +85,11 @@ pub(crate) fn gather_casters(world: &WorldQuery<'_>, out: &mut Vec<CasterCandida
             continue;
         };
         let transform = DrawTransform::from(transform);
-        let caster = Caster { mesh, transform };
+        let caster = Caster {
+            mesh,
+            cutout,
+            transform,
+        };
         let model = transform.model_matrix();
         let world_corners =
             box_corners(renderer_mesh.local_bounds).map(|corner| model.transform_point3(corner));
@@ -81,7 +104,7 @@ pub(crate) fn gather_casters(world: &WorldQuery<'_>, out: &mut Vec<CasterCandida
 }
 
 /// The 8 corners of an axis-aligned box.
-fn box_corners((min, max): (Vector3f, Vector3f)) -> [Vector3f; 8] {
+pub(crate) fn box_corners((min, max): (Vector3f, Vector3f)) -> [Vector3f; 8] {
     std::array::from_fn(|corner| {
         Vector3f::new(
             if corner & 1 == 0 { min.x } else { max.x },
@@ -120,6 +143,8 @@ pub(crate) fn keep_nearest<T>(items: &mut Vec<T>, capacity: usize, distance: imp
 /// `max_instances` caster transforms across all maps of a frame.
 pub(crate) struct ShadowCasters {
     pipeline: Pipeline,
+    // Alpha test, no culling: casters with a `cutout` material
+    cutout_pipeline: Pipeline,
     camera_buffer: wgpu::Buffer,
     camera_stride: u64,
     camera_bind_group: wgpu::BindGroup,
@@ -153,37 +178,43 @@ impl ShadowCasters {
                 entry_func: "fs_main",
             },
             vertex_buffers: &[RendererMesh::data_layout_descriptor()],
-            bind_groups: vec![
-                vec![wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: true,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-                vec![per_draw_storage_entry(0)],
-            ],
+            bind_groups: vec![vec![camera_entry()], vec![per_draw_storage_entry(0)]],
             targets: &[],
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_TARGET_FORMAT,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: wgpu::StencilState::default(),
-                // Polygon offset against self-shadowing (Filament's default approach)
-                bias: wgpu::DepthBiasState {
-                    constant: constant_bias,
-                    slope_scale: slope_bias,
-                    clamp: 0.0,
-                },
-            }),
+            depth_stencil: Some(caster_depth_state(constant_bias, slope_bias)),
             multisample: wgpu::MultisampleState::default(),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+        })?;
+
+        let cutout_pipeline = renderer.create_pipeline(PipelineDesc {
+            label: Some(label),
+            vs: ShaderDesc {
+                source: SHADOW_CASTER_CUTOUT_VERTEX_SHADER,
+                entry_func: "vs_main",
+            },
+            ps: ShaderDesc {
+                source: SHADOW_CASTER_CUTOUT_FRAGMENT_SHADER,
+                entry_func: "fs_main",
+            },
+            vertex_buffers: &[RendererMesh::data_layout_descriptor()],
+            // Groups 2 and 3 are the material's own texture and parameter bind groups
+            bind_groups: vec![
+                vec![camera_entry()],
+                vec![per_draw_storage_entry(0)],
+                material_textures_layout_entries(),
+                material_params_layout_entries(),
+            ],
+            targets: &[],
+            depth_stencil: Some(caster_depth_state(constant_bias, slope_bias)),
+            multisample: wgpu::MultisampleState::default(),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
                 ..Default::default()
             },
         })?;
@@ -227,6 +258,7 @@ impl ShadowCasters {
         });
         Ok(Self {
             pipeline,
+            cutout_pipeline,
             camera_buffer,
             camera_stride,
             camera_bind_group,
@@ -305,11 +337,31 @@ impl ShadowCasters {
         render_pass.set_bind_group(1, &self.per_draw_bind_group, &[]);
         let end = range.end.min(casters.len()).min(self.max_instances);
         let mut first = range.start;
+        // Casters are sorted with the plain ones first, then by cutout material
+        let mut bound_cutout: Option<RendererMaterialHandle> = None;
         while first < end {
-            let mesh_handle = casters[first].mesh;
+            let (mesh_handle, cutout) = (casters[first].mesh, casters[first].cutout);
             let mut run_end = first + 1;
-            while run_end < end && casters[run_end].mesh == mesh_handle {
+            while run_end < end
+                && casters[run_end].mesh == mesh_handle
+                && casters[run_end].cutout == cutout
+            {
                 run_end += 1;
+            }
+            if let Some(material_handle) = cutout.filter(|handle| bound_cutout != Some(*handle)) {
+                let Ok(material) = world
+                    .resources
+                    .get_resource::<RendererMaterial>(&material_handle)
+                else {
+                    first = run_end;
+                    continue;
+                };
+                if bound_cutout.is_none() {
+                    render_pass.set_pipeline(&self.cutout_pipeline.pipeline);
+                }
+                render_pass.set_bind_group(2, &material.textures_bind_group, &[]);
+                render_pass.set_bind_group(3, &material.parameters_bind_group, &[]);
+                bound_cutout = Some(material_handle);
             }
             if let Ok(mesh) = world.resources.get_resource::<RendererMesh>(&mesh_handle) {
                 render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
@@ -322,9 +374,45 @@ impl ShadowCasters {
     }
 }
 
-/// Sorts `casters[range]` by mesh so equal meshes form instanced runs.
+/// Sorts casters so equal meshes form instanced runs: plain casters first, then cutout ones by
+/// material (one pipeline switch and one material bind per material).
 pub(crate) fn sort_by_mesh(casters: &mut [Caster]) {
-    casters.sort_unstable_by_key(|caster| caster.mesh.data().index);
+    casters.sort_unstable_by_key(|caster| {
+        (
+            caster
+                .cutout
+                .map_or(0, |material| material.data().index as u64 + 1),
+            caster.mesh.data().index,
+        )
+    });
+}
+
+fn camera_entry() -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::VERTEX,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: true,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
+/// Depth write with polygon offset against self-shadowing (Filament's default approach).
+fn caster_depth_state(constant_bias: i32, slope_bias: f32) -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        format: DEPTH_TARGET_FORMAT,
+        depth_write_enabled: true,
+        depth_compare: wgpu::CompareFunction::Less,
+        stencil: wgpu::StencilState::default(),
+        bias: wgpu::DepthBiasState {
+            constant: constant_bias,
+            slope_scale: slope_bias,
+            clamp: 0.0,
+        },
+    }
 }
 
 #[cfg(test)]
@@ -355,6 +443,7 @@ mod tests {
             .map(|x| CasterCandidate {
                 caster: Caster {
                     mesh: RendererMeshHandle::default(),
+                    cutout: None,
                     transform: DrawTransform::from(&crate::ecs::TransformComponent::default()),
                 },
                 model: Matrix4f::IDENTITY,

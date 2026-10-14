@@ -3,7 +3,7 @@ use crate::{
     graphics::PassTextureHandle,
 };
 
-use pill_core::PillTypeMapKey;
+use pill_core::{PillTypeMapKey, Vector3f};
 
 /// HDR → display mapping applied by the tonemap pass.
 #[derive(Clone, Copy, Debug)]
@@ -182,6 +182,14 @@ pub struct Gi {
     pub intensity: f32,
     /// Shows only the indirect diffuse light.
     pub debug_indirect_only: bool,
+    /// World-space box (min, max) the probe grid covers; `None` = the whole scene. A box around
+    /// the playable area gives denser probes in large scenes (the grid is capped per axis).
+    /// Ignored with `follow_camera`.
+    pub bounds: Option<(Vector3f, Vector3f)>,
+    /// The grid follows the camera instead: the largest grid the caps allow, `probe_spacing`
+    /// apart, centred on the camera and moving in whole cells; probes it keeps keep their
+    /// history, newly covered ones are updated first and lit by the IBL until they are.
+    pub follow_camera: bool,
 }
 
 impl Default for Gi {
@@ -194,6 +202,8 @@ impl Default for Gi {
             blend_speed: 0.08,
             intensity: 1.0,
             debug_indirect_only: false,
+            bounds: None,
+            follow_camera: false,
         }
     }
 }
