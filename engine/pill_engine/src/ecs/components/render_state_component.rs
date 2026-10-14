@@ -163,6 +163,30 @@ impl Default for Shadow {
     }
 }
 
+/// Clustered shading of the scene's `LightComponent`s (point and spot lights): the view is split
+/// into screen tiles × exponential depth slices ("froxels"), each with the list of lights reaching
+/// it. Read every frame.
+#[derive(Clone, Copy, Debug)]
+pub struct PunctualLights {
+    /// View distance (m) the froxel grid covers; lights beyond it are not shaded.
+    pub light_far: f32,
+    /// Far end (m) of the first depth slice; the remaining slices are spaced exponentially from
+    /// it to `light_far`.
+    pub first_slice_depth: f32,
+    /// Replaces the shaded color with a heatmap of the light count per froxel.
+    pub debug_heatmap: bool,
+}
+
+impl Default for PunctualLights {
+    fn default() -> Self {
+        Self {
+            light_far: 100.0,
+            first_slice_depth: 5.0,
+            debug_heatmap: false,
+        }
+    }
+}
+
 /// Directional light; `direction` points from the light toward the scene.
 #[derive(Clone, Copy, Debug)]
 pub struct DirectionalLight {
@@ -201,6 +225,8 @@ pub struct RenderStateComponent {
     pub lights: [DirectionalLight; 3],
     /// Shadow map of the key light (`lights[0]`); off by default.
     pub shadow: Shadow,
+    /// Point and spot lights (`LightComponent`).
+    pub punctual_lights: PunctualLights,
     pub tonemap: Tonemap,
     /// PostFx chain: motion blur length as a fraction of the frame's motion (0.5 = 180° shutter,
     /// 0 = off).
@@ -249,6 +275,7 @@ impl RenderStateComponent {
                 },
             ],
             shadow: Shadow::default(),
+            punctual_lights: PunctualLights::default(),
             tonemap: Tonemap::Reinhard {
                 white_point: f32::INFINITY,
             },

@@ -5,6 +5,7 @@ use crate::config::{
 };
 use crate::{
     ecs::{CameraComponent, MeshRenderingComponent, RenderStateComponent, TransformComponent},
+    graphics::pass_lights::{LightBuffers, LightsFrame},
     graphics::shadow::ShadowFrame,
     graphics::{
         camera_forward, camera_view_projection, decompose_render_queue_key, BufferDesc,
@@ -197,6 +198,7 @@ struct PassPBROpaqueState {
     // Bound when no shadow map is published (the shader then skips it), and the comparison sampler
     shadow_stand_in: PassTextureHandle,
     shadow_sampler: wgpu::Sampler,
+    light_buffers: LightBuffers,
     per_draw_buffer: wgpu::Buffer,
     // Last frame's transforms; a single entry when the pass writes no motion vectors (never read)
     previous_per_draw_buffer: wgpu::Buffer,
@@ -241,6 +243,7 @@ fn build_globals_bind_group(
     brdf_lut_sampler: &wgpu::Sampler,
     shadow_view: &wgpu::TextureView,
     shadow_sampler: &wgpu::Sampler,
+    light_buffers: &LightBuffers,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("pass_pbr_opaque_globals_bind_group"),
@@ -286,8 +289,34 @@ fn build_globals_bind_group(
                 binding: 9,
                 resource: wgpu::BindingResource::Sampler(shadow_sampler),
             },
+            wgpu::BindGroupEntry {
+                binding: 10,
+                resource: light_buffers.lights.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 11,
+                resource: light_buffers.entries.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 12,
+                resource: light_buffers.records.as_entire_binding(),
+            },
         ],
     })
+}
+
+/// Fragment-stage read-only storage buffer (point/spot lights and their froxel lists).
+fn fragment_storage_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
 }
 
 /// Builds the background bind group (camera UBO + equirect view + sampler).
@@ -337,6 +366,8 @@ pub struct PassPBROpaque {
     max_instances: usize,
     // Key light shadow published by PassShadow each frame
     shadow: Option<Rc<RefCell<ShadowFrame>>>,
+    // Point/spot lights and froxel lists published by PassLights each frame
+    lights: Option<Rc<RefCell<LightsFrame>>>,
     // [diffuse, specular, brdf_lut] for the first frame's bind group
     initial_ibl: [PassTextureHandle; 3],
     capacity_warned: bool,
@@ -374,6 +405,7 @@ impl PassPBROpaque {
             ambient_target: None,
             max_instances,
             shadow: None,
+            lights: None,
             initial_ibl,
             capacity_warned: false,
             frame: 0,
@@ -442,6 +474,12 @@ impl PassPBROpaque {
     /// Also writes motion vectors (VELOCITY_TARGET_FORMAT): UV offset from last frame's position.
     pub fn with_velocity_target(mut self, target: PassTextureHandle) -> Self {
         self.velocity_target = Some(target);
+        self
+    }
+
+    /// Shades the point/spot lights `PassLights` publishes in `frame`.
+    pub(crate) fn with_lights(mut self, frame: Rc<RefCell<LightsFrame>>) -> Self {
+        self.lights = Some(frame);
         self
     }
 
@@ -525,6 +563,11 @@ impl PassPBRTranslucent {
     /// Writes motion vectors (replacing the opaque ones behind) into `target`.
     pub fn with_velocity_target(self, target: PassTextureHandle) -> Self {
         Self(self.0.with_velocity_target(target))
+    }
+
+    /// Shades the point/spot lights, like `PassPBROpaque::with_lights`.
+    pub(crate) fn with_lights(self, frame: Rc<RefCell<LightsFrame>>) -> Self {
+        Self(self.0.with_lights(frame))
     }
 
     /// Receives the key light's shadow, like `PassPBROpaque::with_shadow`.
@@ -652,6 +695,10 @@ impl Pass for PassPBROpaque {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
+                // Point/spot lights, froxel entries, froxel light indices
+                fragment_storage_entry(10),
+                fragment_storage_entry(11),
+                fragment_storage_entry(12),
             ],
             // 1: material textures (base_color, normal, metallic_roughness, emissive)
             material_textures_layout_entries(),
@@ -830,6 +877,12 @@ impl Pass for PassPBROpaque {
                 ..Default::default()
             });
 
+        // Without PassLights, minimal buffers fill the bindings (the light count stays 0)
+        let light_buffers = match &self.lights {
+            Some(frame) => frame.borrow().buffers.clone(),
+            None => LightBuffers::new(renderer, 1, 1, 2)?,
+        };
+
         let globals_bind_group = build_globals_bind_group(
             renderer.get_device(),
             &pipeline.bind_group_layouts[MATERIAL_BIND_GROUP_GLOBALS],
@@ -843,6 +896,7 @@ impl Pass for PassPBROpaque {
             &brdf_lut_sampler,
             &shadow_view,
             &shadow_sampler,
+            &light_buffers,
         );
         let cached_ibl = [irr_h, pre_h, lut_h];
 
@@ -973,6 +1027,7 @@ impl Pass for PassPBROpaque {
             brdf_lut_sampler,
             shadow_stand_in,
             shadow_sampler,
+            light_buffers,
             per_draw_buffer,
             previous_per_draw_buffer,
             per_draw_bind_group,
@@ -998,6 +1053,11 @@ impl Pass for PassPBROpaque {
             .shadow
             .as_ref()
             .map(|frame| *frame.borrow())
+            .unwrap_or_default();
+        let lights_params = self
+            .lights
+            .as_ref()
+            .map(|frame| frame.borrow().params)
             .unwrap_or_default();
 
         // Rebuild the globals bind group only when the component's IBL handles or the published
@@ -1035,6 +1095,7 @@ impl Pass for PassPBROpaque {
                     &state.brdf_lut_sampler,
                     &shadow_view,
                     &state.shadow_sampler,
+                    &state.light_buffers,
                 );
                 state.cached_ibl = ibl;
                 state.cached_shadow_map = shadow_frame.map;
@@ -1104,6 +1165,7 @@ impl Pass for PassPBROpaque {
                 bytemuck::bytes_of(&SceneUniform::from_render_state(
                     render_state,
                     &shadow_frame,
+                    &lights_params,
                 )),
             );
         }

@@ -8,6 +8,12 @@ define_component!(FlyCamera {
     pitch: f32,
 });
 
+// Point light drifting around its base position (light test)
+define_component!(DriftingLight {
+    base: Vector3f,
+    phase: f32,
+});
+
 pub struct Game {}
 
 // The background load (spawn_local task on WASM, thread on native) can't hold &mut Engine; it
@@ -60,6 +66,104 @@ fn fly_camera_system(engine: &mut Engine) -> Result<()> {
         transform.set_position(transform.position + step);
         let target = transform.position + forward;
         transform.look_at(target);
+    }
+    Ok(())
+}
+
+// Clustered lighting test: lanterns along the court and galleries, spots down from the arches
+const LANTERN_COLUMNS: usize = 32;
+const LANTERN_ROWS: [f32; 4] = [-6.5, -2.2, 2.2, 6.5]; // z
+const LANTERN_HEIGHTS: [f32; 2] = [1.2, 7.2]; // ground floor, gallery
+const SPOT_COUNT: usize = 8;
+
+/// Fraction in 0..1 from an integer (cheap hash, for jitter and hues).
+fn hash(value: usize) -> f32 {
+    ((value as f32 * 12.9898).sin() * 43_758.547).fract().abs()
+}
+
+/// Saturated color of a hue in 0..1.
+fn hue_color(hue: f32) -> [f32; 3] {
+    let channel =
+        |offset: f32| (((hue + offset) * std::f32::consts::TAU).cos() * 0.5 + 0.5).powf(2.0);
+    [channel(0.0), channel(1.0 / 3.0), channel(2.0 / 3.0)]
+}
+
+/// 256 point lights (32 × 4 rows × 2 floors) and 8 spot lights.
+fn spawn_lights(engine: &mut Engine, scene: SceneHandle) {
+    let mut index = 0;
+    for &height in &LANTERN_HEIGHTS {
+        for &row in &LANTERN_ROWS {
+            for column in 0..LANTERN_COLUMNS {
+                let x = -13.5 + 27.0 * column as f32 / (LANTERN_COLUMNS - 1) as f32;
+                let base = Vector3f::new(
+                    x + (hash(index) - 0.5) * 0.6,
+                    height + hash(index + 1000) * 1.5,
+                    row + (hash(index + 2000) - 0.5) * 0.8,
+                );
+                engine
+                    .build_entity(scene)
+                    .with_component(TransformComponent::builder().position(base).build())
+                    .with_component(
+                        LightComponent::builder()
+                            .color(hue_color(hash(index + 3000)))
+                            .intensity(3.0)
+                            .range(3.5)
+                            .build(),
+                    )
+                    .with_component(DriftingLight {
+                        base,
+                        phase: hash(index + 4000) * std::f32::consts::TAU,
+                    })
+                    .build();
+                index += 1;
+            }
+        }
+    }
+    // Spots shining straight down from above the court
+    for spot in 0..SPOT_COUNT {
+        let x = -12.0 + 24.0 * spot as f32 / (SPOT_COUNT - 1) as f32;
+        engine
+            .build_entity(scene)
+            .with_component(
+                TransformComponent::builder()
+                    .position(Vector3f::new(x, 10.0, 0.0))
+                    .rotation(Vector3f::new(-90.0, 0.0, 0.0))
+                    .build(),
+            )
+            .with_component(
+                LightComponent::builder()
+                    .light_type(LightType::Spot {
+                        inner_angle: 12.0,
+                        outer_angle: 20.0,
+                    })
+                    .color([1.0, 0.9, 0.75])
+                    .intensity(60.0)
+                    .range(14.0)
+                    .build(),
+            )
+            .build();
+    }
+}
+
+/// Lanterns bob and sway slowly; L toggles the froxel light-count heatmap.
+fn lights_system(engine: &mut Engine) -> Result<()> {
+    let time = engine.get_global_component::<TimeComponent>()?.time;
+    let toggle_heatmap = engine
+        .get_global_component::<InputComponent>()?
+        .get_key_pressed(KeyboardKey::KeyL);
+    if toggle_heatmap {
+        let lights = &mut engine
+            .get_global_component_mut::<RenderStateComponent>()?
+            .punctual_lights;
+        lights.debug_heatmap = !lights.debug_heatmap;
+    }
+    for (_, transform, drift) in
+        engine.iterate_two_components_mut::<TransformComponent, DriftingLight>()?
+    {
+        let t = time * 0.7 + drift.phase;
+        transform.set_position(
+            drift.base + Vector3f::new(t.cos() * 0.4, (t * 1.3).sin() * 0.3, (t * 0.9).sin() * 0.4),
+        );
     }
     Ok(())
 }
@@ -186,21 +290,25 @@ impl PillGame for Game {
         {
             let render_state = engine.get_global_component_mut::<RenderStateComponent>()?;
             render_state.background_color = [0.02, 0.02, 0.03];
-            // Shadow test: a high warm sun along the court's long axis (x) as the key light, so it
-            // reaches the court floor; dimmer IBL so the shadows read
+            // Dusk: a low-intensity sun along the court's long axis (x) as the shadowed key light,
+            // dim IBL, so the point/spot lights read
             render_state.shadow.enabled = true;
             render_state.lights[0] = DirectionalLight {
                 direction: [0.45, -1.0, 0.08],
-                color: [1.0, 0.92, 0.8],
-                intensity: 4.0,
+                color: [1.0, 0.75, 0.55],
+                intensity: 0.6,
             };
-            render_state.ibl_intensity = 0.3;
+            render_state.lights[1].intensity = 0.1;
+            render_state.lights[2].intensity = 0.05;
+            render_state.ibl_intensity = 0.08;
         }
 
         engine.register_component::<TransformComponent>(scene)?;
         engine.register_component::<CameraComponent>(scene)?;
         engine.register_component::<MeshRenderingComponent>(scene)?;
         engine.register_component::<FlyCamera>(scene)?;
+        engine.register_component::<LightComponent>(scene)?;
+        engine.register_component::<DriftingLight>(scene)?;
 
         // Build the camera up front so the window renders (clear color + sky once IBL lands)
         // while the ~50 MB model downloads.
@@ -220,6 +328,8 @@ impl PillGame for Game {
             .build();
 
         engine.add_system("fly_camera", fly_camera_system)?;
+        spawn_lights(engine, scene);
+        engine.add_system("lights", lights_system)?;
 
         // Load in the background; frames render meanwhile and the drain system uploads the result
         let store = |result| {

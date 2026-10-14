@@ -2,6 +2,7 @@
 
 #[cfg(feature = "headless")]
 mod dummy_renderer;
+mod froxelizer;
 mod fullscreen;
 #[cfg(feature = "post_fx")]
 mod pass_bloom;
@@ -13,6 +14,7 @@ mod pass_egui;
 mod pass_fxaa;
 #[cfg(feature = "post_fx")]
 mod pass_lens;
+pub(crate) mod pass_lights;
 #[cfg(feature = "post_fx")]
 mod pass_motion_blur;
 mod pass_pbr_opaque;
@@ -47,6 +49,7 @@ pub use pass_egui::PassEgui;
 pub use pass_fxaa::PassFxaa;
 #[cfg(feature = "post_fx")]
 pub use pass_lens::PassLens;
+pub(crate) use pass_lights::PassLights;
 #[cfg(feature = "post_fx")]
 pub use pass_motion_blur::PassMotionBlur;
 pub use pass_pbr_opaque::PassPBROpaque;

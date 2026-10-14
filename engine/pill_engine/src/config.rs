@@ -6,7 +6,9 @@ use crate::{
     },
     engine::Engine,
     graphics::{
-        shadow::ShadowFrame, Pass, PassPBROpaque, PassShadow, PassTextureHandle, PassTonemap,
+        pass_lights::{LightsFrame, LightsParams},
+        shadow::ShadowFrame,
+        Pass, PassLights, PassPBROpaque, PassShadow, PassTextureHandle, PassTonemap,
         RendererMaterialHandle, RendererTargetDesc, RendererTextureHandle, TargetSize,
     },
     renderer::resources::RendererTexture,
@@ -184,13 +186,17 @@ pub const LENS_FRAGMENT_SHADER: &str = include_str!("../res/shaders/lens_fragmen
 pub const MOTION_BLUR_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/motion_blur_fragment.wgsl");
 
-/// Frame composition: shadow map → opaque PBR → game-defined passes (`Engine::add_render_pass`) → tonemap → UI.
-/// Creates the shared HDR and depth targets and records them in `RenderStateComponent`.
+/// Frame composition: point/spot light lists → shadow map → opaque PBR → game-defined passes
+/// (`Engine::add_render_pass`) → tonemap → UI. Creates the shared HDR and depth targets and
+/// records them in `RenderStateComponent`.
 pub fn default_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
     let (hdr_target, depth_target) = create_scene_targets(engine)?;
+    let (lights, lights_frame) = lights_pass(engine)?;
     let (shadow, shadow_frame) = shadow_pass(engine)?;
-    let opaque = opaque_pass(engine, hdr_target, depth_target)?.with_shadow(shadow_frame);
-    let mut passes: Vec<Box<dyn Pass>> = vec![Box::new(shadow), Box::new(opaque)];
+    let opaque = opaque_pass(engine, hdr_target, depth_target)?
+        .with_shadow(shadow_frame)
+        .with_lights(lights_frame);
+    let mut passes: Vec<Box<dyn Pass>> = vec![Box::new(lights), Box::new(shadow), Box::new(opaque)];
     passes.append(&mut engine.custom_render_passes);
     passes.push(Box::new(PassTonemap::new(hdr_target)));
     push_ui_pass(engine, &mut passes)?;
@@ -200,8 +206,9 @@ pub fn default_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
 #[cfg(feature = "post_fx")]
 /// `PassChain::PostFx`: the default chain with post-processing between the scene passes and
 /// tonemapping; parameters live in `RenderStateComponent`:
-/// shadow map → opaque PBR (+ motion vectors, ambient) → SSAO → translucent PBR → game passes → depth of
-/// field → motion blur (+ DoF composite) → bloom → tonemap → FXAA → lens → UI.
+/// light lists → shadow map → opaque PBR (+ motion vectors, ambient) → SSAO → translucent PBR →
+/// game passes → depth of field → motion blur (+ DoF composite) → bloom → tonemap → FXAA → lens →
+/// UI.
 pub fn post_fx_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
     // The opaque pass renders into `opaque_target`; SSAO writes the shared HDR target that the
     // translucent and game passes then draw onto
@@ -222,9 +229,11 @@ pub fn post_fx_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
     // smooths 1-texel stair steps but not the 2-pixel steps of an upscaled image
     let fxaa_target = create_target(engine, "fxaa_target", HDR_TARGET_FORMAT)?;
 
+    let (lights, lights_frame) = lights_pass(engine)?;
     let (shadow, shadow_frame) = shadow_pass(engine)?;
-    let opaque =
-        opaque_pass(engine, opaque_target, depth_target)?.with_shadow(shadow_frame.clone());
+    let opaque = opaque_pass(engine, opaque_target, depth_target)?
+        .with_shadow(shadow_frame.clone())
+        .with_lights(lights_frame.clone());
     let translucent = PassPBRTranslucent::new(
         hdr_target,
         depth_target,
@@ -232,8 +241,10 @@ pub fn post_fx_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
         opaque.initial_ibl(),
     )
     .with_velocity_target(velocity_target)
-    .with_shadow(shadow_frame);
+    .with_shadow(shadow_frame)
+    .with_lights(lights_frame);
     let mut passes: Vec<Box<dyn Pass>> = vec![
+        Box::new(lights),
         Box::new(shadow),
         Box::new(
             opaque
@@ -311,6 +322,15 @@ fn shadow_pass(engine: &Engine) -> Result<(PassShadow, Rc<RefCell<ShadowFrame>>)
         settings.slope_bias,
     );
     Ok((pass, frame))
+}
+
+/// Point/spot light pass and the light buffers + froxel grid it publishes to the PBR passes.
+fn lights_pass(engine: &mut Engine) -> Result<(PassLights, Rc<RefCell<LightsFrame>>)> {
+    let frame = Rc::new(RefCell::new(LightsFrame {
+        buffers: PassLights::create_buffers(engine.renderer.as_mut())?,
+        params: LightsParams::default(),
+    }));
+    Ok((PassLights::new(frame.clone()), frame))
 }
 
 /// At most one mesh instance per entity.

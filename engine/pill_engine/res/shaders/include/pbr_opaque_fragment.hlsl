@@ -1,6 +1,6 @@
 // PBR fragment shader body, included by pbr_opaque_fragment.hlsl and (with POST_FX, which adds
 // the velocity and ambient outputs) pbr_opaque_post_fx_fragment.hlsl.
-// Full GGX microfacet BRDF with 3 directional lights and optional IBL fallback.
+// Full GGX microfacet BRDF with 3 directional lights, clustered point/spot lights and IBL.
 
 struct Camera {
     float4                position;
@@ -30,8 +30,22 @@ struct Scene {
     float4 light_color2;
     column_major float4x4 shadow_view_projection; // world → light clip space (key light)
     float4 shadow_params; // x = normal offset (world), y = shadow distance (0 = none), z = 1 / map size, w = map size
+    float4 froxel_grid;   // x, y = froxel columns, rows; z = tile size (px); w = light count
+    float4 froxel_depth;  // x = 1 / slice linearizer, y = light far, z = slice count, w = 1: heatmap
+    float4 camera_forward; // xyz
 };
 [[vk::binding(7, 0)]] ConstantBuffer<Scene> scene;
+
+// Point/spot lights and their froxel lists (froxelizer.rs) — mirrors GpuLight in pass_lights.rs
+struct PunctualLight {
+    float4 position_falloff;  // xyz = world position, w = 1 / range²
+    float4 direction;         // xyz = direction the spot shines in
+    float4 color_intensity;   // rgb = color, w = intensity
+    float4 spot_scale_offset; // x, y: angle term saturate(cos · x + y) (point light: 0, 1)
+};
+[[vk::binding(10, 0)]] StructuredBuffer<PunctualLight> punctual_lights;
+[[vk::binding(11, 0)]] StructuredBuffer<uint2>         froxel_entries; // (offset, count) per froxel
+[[vk::binding(12, 0)]] StructuredBuffer<uint>          froxel_records; // u16 light indices, 2 per uint
 
 // Key light shadow map; the comparison sampler (LessEqual, linear) makes every tap a 2×2 PCF
 [[vk::binding(8, 0)]] DepthTexture2D         shadow_map;
@@ -170,6 +184,60 @@ float3 accumulate_directional_light(
 }
 
 // POST_FX: targets 1 and 2 exist only when the pass has velocity / ambient targets; otherwise ignored.
+// Froxel of a fragment: its screen tile and the exponential depth slice of its view depth
+// (FroxelLayout::slice in froxelizer.rs).
+uint froxel_index(float2 pixel, float3 world_position) {
+    uint   columns = uint(scene.froxel_grid.x);
+    uint   rows    = uint(scene.froxel_grid.y);
+    uint2  tile    = min(uint2(pixel / scene.froxel_grid.z), uint2(columns - 1, rows - 1));
+    float  depth   = max(dot(world_position - camera.position.xyz, scene.camera_forward.xyz), 1e-6);
+    float  slices  = scene.froxel_depth.z;
+    float  slice   = clamp(floor(log2(depth / scene.froxel_depth.y) * scene.froxel_depth.x + slices), 0.0, slices - 1.0);
+    return tile.x + tile.y * columns + uint(slice) * columns * rows;
+}
+
+// Point/spot lights of the fragment's froxel: Filament's inverse-square falloff with a smooth
+// window to zero at the light's range, and the spot angle term. Returns the light count in `count`.
+float3 accumulate_punctual_lights(
+    float2 pixel, float3 world_position, float3 normal, float3 view_direction,
+    float3 base_reflectivity, float3 albedo, float roughness, float metallic,
+    float clearcoat, float coat_roughness, out uint count
+) {
+    count = 0;
+    float3 radiance = float3(0.0, 0.0, 0.0);
+    if (scene.froxel_grid.w < 0.5) {
+        return radiance; // uniform branch: no lights
+    }
+    uint2 entry = froxel_entries[froxel_index(pixel, world_position)];
+    count = entry.y;
+    for (uint index = 0; index < entry.y; index++) {
+        uint record = entry.x + index;
+        uint light_index = (froxel_records[record >> 1] >> ((record & 1u) * 16u)) & 0xFFFFu;
+        PunctualLight light = punctual_lights[light_index];
+        float3 to_light        = light.position_falloff.xyz - world_position;
+        float  distance_square = dot(to_light, to_light);
+        float  window          = saturate(1.0 - pow(distance_square * light.position_falloff.w, 2.0));
+        float3 incoming        = to_light * rsqrt(max(distance_square, 1e-8));
+        float  angle           = saturate(dot(light.direction.xyz, -incoming) * light.spot_scale_offset.x + light.spot_scale_offset.y);
+        float  attenuation     = window * window / max(distance_square, 1e-4) * angle * angle;
+        float4 light_color     = float4(light.color_intensity.rgb, light.color_intensity.w * attenuation);
+        radiance += accumulate_directional_light(normal, view_direction, base_reflectivity, albedo, roughness, metallic, -incoming, light_color);
+        if (clearcoat > 0.0) {
+            radiance += clearcoat_directional_light(normal, view_direction, clearcoat, coat_roughness, -incoming, light_color);
+        }
+    }
+    return radiance;
+}
+
+// Light count → blue (1) … green … red (≥ 32); black for none
+float3 froxel_heatmap(uint count) {
+    if (count == 0) {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float t = saturate(float(count) / 32.0);
+    return saturate(float3(t * 2.0 - 1.0, 1.0 - abs(t * 2.0 - 1.0), 1.0 - t * 2.0)) + 0.05;
+}
+
 struct FragmentOutput {
     [[vk::location(0)]] float4 color    : SV_TARGET0;
 #ifdef POST_FX
@@ -184,11 +252,12 @@ FragmentOutput fs_main(
     [[vk::location(1)]] float3 world_position      : TEXCOORD1,
     [[vk::location(2)]] float3 input_normal        : TEXCOORD2,
     [[vk::location(3)]] float3 input_tangent       : TEXCOORD3,
-    [[vk::location(4)]] float3 input_bitangent     : TEXCOORD4
+    [[vk::location(4)]] float3 input_bitangent     : TEXCOORD4,
 #ifdef POST_FX
-  , [[vk::location(5)]] float4 clip_position          : TEXCOORD5,
-    [[vk::location(6)]] float4 previous_clip_position : TEXCOORD6
+    [[vk::location(5)]] float4 clip_position          : TEXCOORD5,
+    [[vk::location(6)]] float4 previous_clip_position : TEXCOORD6,
 #endif
+                        float4 frag_coord             : SV_Position
 ) {
     float4 base_color         = base_color_texture.Sample(base_color_sampler, texture_coordinates);
     float3 albedo             = base_color.rgb * material.base_color_factor;
@@ -212,8 +281,10 @@ FragmentOutput fs_main(
     outgoing_radiance += accumulate_directional_light(normal, view_direction, base_reflectivity, albedo, roughness, metallic, scene.light_direction0.xyz, key_light_color);
     outgoing_radiance += accumulate_directional_light(normal, view_direction, base_reflectivity, albedo, roughness, metallic, scene.light_direction1.xyz, scene.light_color1);
     outgoing_radiance += accumulate_directional_light(normal, view_direction, base_reflectivity, albedo, roughness, metallic, scene.light_direction2.xyz, scene.light_color2);
+    float coat_roughness = clamp(material.clearcoat_roughness, 0.045, 0.99);
+    uint  punctual_count;
+    outgoing_radiance += accumulate_punctual_lights(frag_coord.xy, world_position, normal, view_direction, base_reflectivity, albedo, roughness, metallic, material.clearcoat, coat_roughness, punctual_count);
     if (material.clearcoat > 0.0) {
-        float coat_roughness = clamp(material.clearcoat_roughness, 0.045, 0.99);
         outgoing_radiance += clearcoat_directional_light(normal, view_direction, material.clearcoat, coat_roughness, scene.light_direction0.xyz, key_light_color);
         outgoing_radiance += clearcoat_directional_light(normal, view_direction, material.clearcoat, coat_roughness, scene.light_direction1.xyz, scene.light_color1);
         outgoing_radiance += clearcoat_directional_light(normal, view_direction, material.clearcoat, coat_roughness, scene.light_direction2.xyz, scene.light_color2);
@@ -236,6 +307,9 @@ FragmentOutput fs_main(
     float  fog      = 1.0 - exp(-fog_density * fog_density * distance * distance);
     FragmentOutput output;
     output.color    = float4(lerp(color, scene.fog_color_density.xyz, fog), material.opacity * base_color.a);
+    if (scene.froxel_depth.w > 0.5) {
+        output.color.rgb = froxel_heatmap(punctual_count);
+    }
 #ifdef POST_FX
     // Motion vector in UV units (NDC y points up, UV v points down); w clamped for points that were
     // at or behind the camera last frame

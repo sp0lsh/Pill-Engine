@@ -64,9 +64,9 @@ pub mod game {
         ecs::{
             Bloom, CameraAspectRatio, CameraComponent, Component, ComponentStorage, DepthOfField,
             DirectionalLight, EntityHandle, GamepadAxis, GamepadButton, GlobalComponent,
-            GlobalComponentStorage, InputComponent, Lens, MeshRenderingComponent, PassChain,
-            PlayerId, RenderStateComponent, SceneHandle, Shadow, Ssao, TimeComponent, Tonemap,
-            TransformComponent, UpdatePhase,
+            GlobalComponentStorage, InputComponent, Lens, LightComponent, LightType,
+            MeshRenderingComponent, PassChain, PlayerId, PunctualLights, RenderStateComponent,
+            SceneHandle, Shadow, Ssao, TimeComponent, Tonemap, TransformComponent, UpdatePhase,
         },
         engine::{Engine, KeyboardKey, MouseButton, PillGame},
         graphics::PassTextureHandle,

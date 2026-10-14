@@ -31,8 +31,8 @@ pub use components::audio_source_component::AudioSourceComponent;
 pub use components::egui_component::EguiComponent;
 
 pub use components::render_state_component::{
-    Bloom, DepthOfField, DirectionalLight, Lens, PassChain, RenderStateComponent, Shadow, Ssao,
-    Tonemap,
+    Bloom, DepthOfField, DirectionalLight, Lens, PassChain, PunctualLights, RenderStateComponent,
+    Shadow, Ssao, Tonemap,
 };
 
 #[cfg(feature = "ui")]
@@ -55,6 +55,7 @@ pub use components::input_component::{
 
 pub use components::transform_component::TransformComponent;
 
+pub use components::light_component::{LightComponent, LightType};
 pub use components::mesh_rendering_component::MeshRenderingComponent;
 
 pub use components::time_component::TimeComponent;

@@ -1,8 +1,10 @@
 use crate::ecs::RenderStateComponent;
+use crate::graphics::pass_lights::LightsParams;
 use crate::graphics::shadow::ShadowFrame;
 
 /// Scene globals of the PBR passes (group 0, binding 7): fog, IBL intensity, the three
-/// directional lights from `RenderStateComponent` and the key light's shadow. All float4 rows so the std140 layout is
+/// directional lights from `RenderStateComponent`, the key light's shadow and the froxel grid of
+/// the point/spot lights. All float4 rows so the std140 layout is
 /// unambiguous; mirrors `Scene` in pbr_opaque_fragment.hlsl.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -15,12 +17,16 @@ pub(crate) struct SceneUniform {
     // x = normal offset (world units), y = shadow distance (0 = no shadow), z = 1 / map size,
     // w = map size
     shadow_params: [f32; 4],
+    froxel_grid: [f32; 4],    // columns, rows, tile size (px), light count
+    froxel_depth: [f32; 4],   // 1 / slice linearizer, light far, slice count, 1 = heatmap
+    camera_forward: [f32; 4], // xyz
 }
 
 impl SceneUniform {
     pub(crate) fn from_render_state(
         render_state: &RenderStateComponent,
         shadow: &ShadowFrame,
+        punctual: &LightsParams,
     ) -> Self {
         let [r, g, b] = render_state.fog_color;
         let mut lights = [[0.0; 4]; 6];
@@ -49,6 +55,9 @@ impl SceneUniform {
             lights,
             shadow_view_projection,
             shadow_params,
+            froxel_grid: punctual.grid,
+            froxel_depth: punctual.depth,
+            camera_forward: punctual.camera_forward,
         }
     }
 }
