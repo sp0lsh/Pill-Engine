@@ -58,6 +58,13 @@ struct PunctualShadow {
 [[vk::binding(13, 0)]] StructuredBuffer<PunctualShadow> punctual_shadows;
 [[vk::binding(14, 0)]] DepthTexture2DArray              punctual_shadow_maps;
 
+// Diffuse GI probes (ddgi/pass_ddgi.rs); `ddgi.enabled` 0 = off (use the IBL), 2 = debug view
+#define DDGI_SAMPLER brdf_lut_sampler
+#include "ddgi_common.hlsl"
+[[vk::binding(15, 0)]] StructuredBuffer<DdgiProbe>  ddgi_probes;
+[[vk::binding(16, 0)]] Texture2D                    ddgi_depth;
+[[vk::binding(17, 0)]] ConstantBuffer<DdgiParams>   ddgi;
+
 // 3×3 tent filter from 4 bilinear comparison taps (Castaño 2013, Filament PCF_Low): tap
 // coordinates and weights (sum 16) around `uv` in a map of `size` texels (`texel` = 1 / size).
 struct TentTaps {
@@ -361,8 +368,11 @@ FragmentOutput fs_main(
     // Diffuse IBL ambient.
     float3 specular_factor = fresnel_schlick(max(dot(normal, view_direction), 0.0), base_reflectivity);
     float3 diffuse_factor  = (float3(1.0, 1.0, 1.0) - specular_factor) * (1.0 - metallic);
-    float3 irradiance      = irradiance_texture.Sample(irradiance_sampler, dir_to_equirect_uv(normal)).rgb;
-    float3 ambient_diffuse = diffuse_factor * irradiance * albedo * scene.ibl_intensity.x;
+    // Indirect diffuse: DDGI probes when on (their rays that miss already see the IBL), else IBL
+    float3 irradiance      = ddgi.enabled > 0
+        ? ddgi_irradiance(world_position, normal) * ddgi.intensity
+        : irradiance_texture.Sample(irradiance_sampler, dir_to_equirect_uv(normal)).rgb * scene.ibl_intensity.x;
+    float3 ambient_diffuse = diffuse_factor * irradiance * albedo;
     // Specular IBL.
     float3 reflection        = reflect(-view_direction, normal);
     float3 prefiltered_color = prefilter_texture.SampleLevel(prefilter_sampler, dir_to_equirect_uv(reflection), roughness * MAX_REFLECTION_LOD).rgb;
@@ -376,6 +386,9 @@ FragmentOutput fs_main(
     float  fog      = 1.0 - exp(-fog_density * fog_density * distance * distance);
     FragmentOutput output;
     output.color    = float4(lerp(color, scene.fog_color_density.xyz, fog), material.opacity * base_color.a);
+    if (ddgi.enabled == 2) {
+        output.color.rgb = ambient_diffuse;
+    }
     if (scene.froxel_depth.w > 0.5) {
         output.color.rgb = froxel_heatmap(punctual_count);
     }

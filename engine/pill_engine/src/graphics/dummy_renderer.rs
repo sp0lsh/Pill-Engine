@@ -2,8 +2,8 @@ use crate::{
     app_config::EngineConfig,
     ecs::{EntityHandle, Scene},
     graphics::{
-        BufferDesc, Pass, PassTextureHandle, PillRenderer, Pipeline, PipelineDesc,
-        RendererTargetDesc, TextureData, WorldQuery,
+        BufferDesc, ComputePipeline, ComputePipelineDesc, Pass, PassTextureHandle, PillRenderer,
+        Pipeline, PipelineDesc, RendererTargetDesc, TextureData, WorldQuery,
     },
     resources::ResourceManager,
 };
@@ -78,6 +78,10 @@ impl PillRenderer for DummyRenderer {
     }
 
     fn create_pipeline(&mut self, _desc: PipelineDesc) -> Result<Pipeline> {
+        unimplemented!("DummyRenderer has no wgpu Device")
+    }
+
+    fn create_compute_pipeline(&mut self, _desc: ComputePipelineDesc) -> Result<ComputePipeline> {
         unimplemented!("DummyRenderer has no wgpu Device")
     }
 

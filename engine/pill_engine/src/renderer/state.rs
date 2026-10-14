@@ -3,8 +3,9 @@ use crate::{
     app_config::EngineConfig,
     ecs::{EntityHandle, Scene},
     graphics::{
-        BufferDesc, FrameTarget, Pass, PassPBROpaque, PassTextureHandle, PillRenderer, Pipeline,
-        PipelineDesc, RendererTargetDesc, TargetSize, TextureData, WorldQuery,
+        BufferDesc, ComputePipeline, ComputePipelineDesc, FrameTarget, Pass, PassPBROpaque,
+        PassTextureHandle, PillRenderer, Pipeline, PipelineDesc, RendererTargetDesc, TargetSize,
+        TextureData, WorldQuery,
     },
     renderer::resources::{RendererMesh, RendererTexture, Vertex},
     resources::ResourceManager,
@@ -243,6 +244,69 @@ impl PillRenderer for Renderer {
             mapped_at_creation: false,
         });
         Ok(buffer)
+    }
+
+    fn create_compute_pipeline(&mut self, desc: ComputePipelineDesc) -> Result<ComputePipeline> {
+        // Validation errors (bad WGSL, layout mismatch) as Err, as in create_pipeline
+        #[cfg(not(target_arch = "wasm32"))]
+        self.state
+            .device
+            .push_error_scope(wgpu::ErrorFilter::Validation);
+
+        let bind_group_layouts: Vec<wgpu::BindGroupLayout> = desc
+            .bind_groups
+            .iter()
+            .map(|entries| {
+                self.state
+                    .device
+                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                        label: None,
+                        entries,
+                    })
+            })
+            .collect();
+        let bind_group_layout_refs: Vec<&wgpu::BindGroupLayout> =
+            bind_group_layouts.iter().collect();
+        let pipeline_layout =
+            self.state
+                .device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: desc.label,
+                    bind_group_layouts: &bind_group_layout_refs,
+                    push_constant_ranges: &[],
+                });
+        let module = self
+            .state
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(desc.cs.entry_func),
+                source: wgpu::ShaderSource::Wgsl(desc.cs.source.into()),
+            });
+        let pipeline =
+            self.state
+                .device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: desc.label,
+                    layout: Some(&pipeline_layout),
+                    module: &module,
+                    entry_point: Some(desc.cs.entry_func),
+                    compilation_options: Default::default(),
+                    cache: None,
+                });
+
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(error) = pollster::block_on(self.state.device.pop_error_scope()) {
+            return Err(format!(
+                "Failed to create compute pipeline {}: {}",
+                desc.label.unwrap_or("<unnamed>"),
+                error
+            )
+            .into());
+        }
+        Ok(ComputePipeline {
+            pipeline,
+            bind_group_layouts,
+        })
     }
 
     fn create_pipeline(&mut self, desc: PipelineDesc) -> Result<Pipeline> {

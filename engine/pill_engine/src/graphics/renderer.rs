@@ -235,6 +235,19 @@ pub struct Pipeline {
     pub bind_group_layouts: Vec<wgpu::BindGroupLayout>,
 }
 
+/// Compute pipeline: one WGSL entry point and its bind group layouts.
+#[derive(Clone, Debug)]
+pub struct ComputePipelineDesc<'a> {
+    pub label: Option<&'a str>,
+    pub cs: ShaderDesc<'a>,
+    pub bind_groups: Vec<Vec<wgpu::BindGroupLayoutEntry>>,
+}
+
+pub struct ComputePipeline {
+    pub pipeline: wgpu::ComputePipeline,
+    pub bind_group_layouts: Vec<wgpu::BindGroupLayout>,
+}
+
 /// Swapchain image of the current frame, as two views of the same texture.
 pub struct FrameTarget {
     /// View in the surface format (what egui and other UI passes expect).
@@ -318,6 +331,9 @@ pub trait PillRenderer {
 
     /// Compiles a render pipeline from WGSL sources and bind group layout descriptors.
     fn create_pipeline(&mut self, desc: PipelineDesc) -> Result<Pipeline>;
+
+    /// Compiles a compute pipeline from a WGSL source and bind group layout descriptors.
+    fn create_compute_pipeline(&mut self, desc: ComputePipelineDesc) -> Result<ComputePipeline>;
 
     /// Creates an off-screen render target texture and returns its handle.
     fn create_render_target(&mut self, desc: RendererTargetDesc) -> Result<PassTextureHandle>;

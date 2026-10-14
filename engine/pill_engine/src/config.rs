@@ -6,9 +6,11 @@ use crate::{
     },
     engine::Engine,
     graphics::{
-        pass_lights::LightsFrame, shadow::ShadowFrame, Pass, PassLights, PassPBROpaque,
-        PassPunctualShadows, PassShadow, PassTextureHandle, PassTonemap, RendererMaterialHandle,
-        RendererTargetDesc, RendererTextureHandle, TargetSize,
+        ddgi::{DdgiFrame, PassDdgi},
+        pass_lights::LightsFrame,
+        shadow::ShadowFrame,
+        Pass, PassLights, PassPBROpaque, PassPunctualShadows, PassShadow, PassTextureHandle,
+        PassTonemap, RendererMaterialHandle, RendererTargetDesc, RendererTextureHandle, TargetSize,
     },
     renderer::resources::RendererTexture,
     resources::{MaterialHandle, TextureHandle, TextureType},
@@ -140,6 +142,9 @@ pub const BACKGROUND_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/background_post_fx_fragment.wgsl");
 pub const SHADOW_CASTER_VERTEX_SHADER: &str =
     include_str!("../res/shaders/shadow_caster_vertex.wgsl");
+pub const DDGI_TRACE_COMPUTE_SHADER: &str = include_str!("../res/shaders/ddgi_trace_compute.wgsl");
+pub const DDGI_COLOR_COMPUTE_SHADER: &str = include_str!("../res/shaders/ddgi_color_compute.wgsl");
+pub const DDGI_DEPTH_COMPUTE_SHADER: &str = include_str!("../res/shaders/ddgi_depth_compute.wgsl");
 pub const SHADOW_CASTER_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/shadow_caster_fragment.wgsl");
 pub const FULLSCREEN_VERTEX_SHADER: &str = include_str!("../res/shaders/fullscreen_vertex.wgsl");
@@ -192,13 +197,16 @@ pub fn default_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
     let (hdr_target, depth_target) = create_scene_targets(engine)?;
     let (lights, punctual_shadows, lights_frame) = lights_pass(engine)?;
     let (shadow, shadow_frame) = shadow_pass(engine)?;
+    let (ddgi, ddgi_frame) = ddgi_pass(engine, lights_frame.clone())?;
     let opaque = opaque_pass(engine, hdr_target, depth_target)?
         .with_shadow(shadow_frame)
-        .with_lights(lights_frame);
+        .with_lights(lights_frame)
+        .with_ddgi(ddgi_frame);
     let mut passes: Vec<Box<dyn Pass>> = vec![
         Box::new(lights),
         Box::new(punctual_shadows),
         Box::new(shadow),
+        Box::new(ddgi),
         Box::new(opaque),
     ];
     passes.append(&mut engine.custom_render_passes);
@@ -235,9 +243,11 @@ pub fn post_fx_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
 
     let (lights, punctual_shadows, lights_frame) = lights_pass(engine)?;
     let (shadow, shadow_frame) = shadow_pass(engine)?;
+    let (ddgi, ddgi_frame) = ddgi_pass(engine, lights_frame.clone())?;
     let opaque = opaque_pass(engine, opaque_target, depth_target)?
         .with_shadow(shadow_frame.clone())
-        .with_lights(lights_frame.clone());
+        .with_lights(lights_frame.clone())
+        .with_ddgi(ddgi_frame.clone());
     let translucent = PassPBRTranslucent::new(
         hdr_target,
         depth_target,
@@ -246,11 +256,13 @@ pub fn post_fx_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
     )
     .with_velocity_target(velocity_target)
     .with_shadow(shadow_frame)
-    .with_lights(lights_frame);
+    .with_lights(lights_frame)
+    .with_ddgi(ddgi_frame);
     let mut passes: Vec<Box<dyn Pass>> = vec![
         Box::new(lights),
         Box::new(punctual_shadows),
         Box::new(shadow),
+        Box::new(ddgi),
         Box::new(
             opaque
                 .without_translucent()
@@ -348,6 +360,18 @@ fn lights_pass(
         settings.shadow_slope_bias,
     );
     Ok((PassLights::new(frame.clone()), shadows, frame))
+}
+
+/// Diffuse GI probe pass and the probes it publishes to the PBR passes.
+fn ddgi_pass(
+    engine: &mut Engine,
+    lights: Rc<RefCell<LightsFrame>>,
+) -> Result<(PassDdgi, Rc<RefCell<DdgiFrame>>)> {
+    let fallback_sky = engine
+        .get_global_component::<RenderStateComponent>()?
+        .default_ibl[0];
+    let frame = Rc::new(RefCell::new(DdgiFrame::new(engine.renderer.as_mut())?));
+    Ok((PassDdgi::new(frame.clone(), lights, fallback_sky), frame))
 }
 
 /// At most one mesh instance per entity.

@@ -163,6 +163,40 @@ impl Default for Shadow {
     }
 }
 
+/// Diffuse global illumination from a grid of DDGI probes over the scene's opaque, shadow-casting
+/// meshes (traced against a BVH built once per set of meshes: static geometry). Replaces the
+/// diffuse IBL term; ray misses see the IBL. Read every frame.
+#[derive(Clone, Copy, Debug)]
+pub struct Gi {
+    pub enabled: bool,
+    /// Distance (m) between probes; the grid is capped at 32 × 16 × 32 probes.
+    pub probe_spacing: f32,
+    /// Rays traced per probe update (at most 256).
+    pub rays_per_probe: u32,
+    /// Probes updated per frame, round robin; 0 = all.
+    pub probes_per_frame: u32,
+    /// How fast probes follow lighting changes (short-window blend of the probe estimator).
+    pub blend_speed: f32,
+    /// Scales the indirect diffuse light.
+    pub intensity: f32,
+    /// Shows only the indirect diffuse light.
+    pub debug_indirect_only: bool,
+}
+
+impl Default for Gi {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            probe_spacing: 1.5,
+            rays_per_probe: 64,
+            probes_per_frame: 0,
+            blend_speed: 0.08,
+            intensity: 1.0,
+            debug_indirect_only: false,
+        }
+    }
+}
+
 /// Clustered shading of the scene's `LightComponent`s (point and spot lights): the view is split
 /// into screen tiles × exponential depth slices ("froxels"), each with the list of lights reaching
 /// it. Read every frame.
@@ -247,6 +281,8 @@ pub struct RenderStateComponent {
     pub shadow: Shadow,
     /// Point and spot lights (`LightComponent`).
     pub punctual_lights: PunctualLights,
+    /// Diffuse global illumination (DDGI probes); off by default.
+    pub gi: Gi,
     pub tonemap: Tonemap,
     /// PostFx chain: motion blur length as a fraction of the frame's motion (0.5 = 180° shutter,
     /// 0 = off).
@@ -296,6 +332,7 @@ impl RenderStateComponent {
             ],
             shadow: Shadow::default(),
             punctual_lights: PunctualLights::default(),
+            gi: Gi::default(),
             tonemap: Tonemap::Reinhard {
                 white_point: f32::INFINITY,
             },

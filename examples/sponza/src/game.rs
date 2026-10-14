@@ -202,13 +202,24 @@ fn spawn_lights(engine: &mut Engine, scene: SceneHandle) {
 }
 
 /// Moves the lights. L toggles the froxel light-count heatmap, K the point/spot shadows, J the
-/// lanterns.
+/// lanterns, G diffuse GI, H the indirect-light-only view.
 fn lights_system(engine: &mut Engine) -> Result<()> {
     let time = engine.get_global_component::<TimeComponent>()?.time;
     let input = engine.get_global_component::<InputComponent>()?;
     let toggle_heatmap = input.get_key_pressed(KeyboardKey::KeyL);
     let toggle_shadows = input.get_key_pressed(KeyboardKey::KeyK);
     let toggle_lanterns = input.get_key_pressed(KeyboardKey::KeyJ);
+    let toggle_gi = input.get_key_pressed(KeyboardKey::KeyG);
+    let toggle_indirect_only = input.get_key_pressed(KeyboardKey::KeyH);
+    let gi = &mut engine
+        .get_global_component_mut::<RenderStateComponent>()?
+        .gi;
+    if toggle_gi {
+        gi.enabled = !gi.enabled;
+    }
+    if toggle_indirect_only {
+        gi.debug_indirect_only = !gi.debug_indirect_only;
+    }
     let lights = &mut engine
         .get_global_component_mut::<RenderStateComponent>()?
         .punctual_lights;
@@ -377,6 +388,8 @@ impl PillGame for Game {
             render_state.ibl_intensity = 0.0;
             // 3 point lights (6 cube faces each) + 2 spot lights (1 map each)
             render_state.punctual_lights.max_shadow_maps = 20;
+            // Diffuse GI: light bouncing off the court floor onto columns and arches
+            render_state.gi.enabled = true;
         }
 
         engine.register_component::<TransformComponent>(scene)?;

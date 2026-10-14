@@ -215,6 +215,10 @@ impl PassLights {
             let (Some(light), Some(transform)) = (light, transform) else {
                 continue;
             };
+            // Dark lights add nothing (and would dilute random light picks of GI rays)
+            if light.intensity <= 0.0 || light.color.iter().all(|&channel| channel <= 0.0) {
+                continue;
+            }
             let range = light.range.max(1e-3);
             let direction = transform
                 .get_forward_direction()

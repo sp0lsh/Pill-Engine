@@ -31,8 +31,8 @@ pub use components::audio_source_component::AudioSourceComponent;
 pub use components::egui_component::EguiComponent;
 
 pub use components::render_state_component::{
-    Bloom, DepthOfField, DirectionalLight, Lens, PassChain, PunctualLights, RenderStateComponent,
-    Shadow, Ssao, Tonemap,
+    Bloom, DepthOfField, DirectionalLight, Gi, Lens, PassChain, PunctualLights,
+    RenderStateComponent, Shadow, Ssao, Tonemap,
 };
 
 #[cfg(feature = "ui")]

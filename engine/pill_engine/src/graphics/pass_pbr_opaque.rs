@@ -5,6 +5,8 @@ use crate::config::{
 };
 use crate::{
     ecs::{CameraComponent, MeshRenderingComponent, RenderStateComponent, TransformComponent},
+    graphics::ddgi::DdgiFrame,
+    graphics::fullscreen::uniform_entry_for,
     graphics::pass_lights::{LightBuffers, LightsFrame},
     graphics::shadow::ShadowFrame,
     graphics::{
@@ -201,6 +203,8 @@ struct PassPBROpaqueState {
     light_buffers: LightBuffers,
     // Bound until PassPunctualShadows publishes its texture array
     punctual_shadow_stand_in: wgpu::TextureView,
+    // Bound without PassDdgi (its uniform stays zeroed: GI off)
+    ddgi_stand_in: DdgiFrame,
     per_draw_buffer: wgpu::Buffer,
     // Last frame's transforms; a single entry when the pass writes no motion vectors (never read)
     previous_per_draw_buffer: wgpu::Buffer,
@@ -211,6 +215,7 @@ struct PassPBROpaqueState {
     cached_ibl: [PassTextureHandle; 3],
     cached_shadow_map: Option<PassTextureHandle>,
     cached_punctual_shadows: u64,
+    cached_ddgi: u64,
 }
 
 /// View of a game-set RenderStateComponent texture; an invalid handle logs and uses `fallback`.
@@ -248,6 +253,7 @@ fn build_globals_bind_group(
     shadow_sampler: &wgpu::Sampler,
     light_buffers: &LightBuffers,
     punctual_shadow_view: &wgpu::TextureView,
+    ddgi: &DdgiFrame,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("pass_pbr_opaque_globals_bind_group"),
@@ -312,6 +318,18 @@ fn build_globals_bind_group(
             wgpu::BindGroupEntry {
                 binding: 14,
                 resource: wgpu::BindingResource::TextureView(punctual_shadow_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 15,
+                resource: ddgi.probes.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 16,
+                resource: wgpu::BindingResource::TextureView(&ddgi.depth_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 17,
+                resource: ddgi.params.as_entire_binding(),
             },
         ],
     })
@@ -380,6 +398,8 @@ pub struct PassPBROpaque {
     shadow: Option<Rc<RefCell<ShadowFrame>>>,
     // Point/spot lights and froxel lists published by PassLights each frame
     lights: Option<Rc<RefCell<LightsFrame>>>,
+    // Diffuse GI probes published by PassDdgi
+    ddgi: Option<Rc<RefCell<DdgiFrame>>>,
     // [diffuse, specular, brdf_lut] for the first frame's bind group
     initial_ibl: [PassTextureHandle; 3],
     capacity_warned: bool,
@@ -418,6 +438,7 @@ impl PassPBROpaque {
             max_instances,
             shadow: None,
             lights: None,
+            ddgi: None,
             initial_ibl,
             capacity_warned: false,
             frame: 0,
@@ -492,6 +513,12 @@ impl PassPBROpaque {
     /// Shades the point/spot lights `PassLights` publishes in `frame`.
     pub(crate) fn with_lights(mut self, frame: Rc<RefCell<LightsFrame>>) -> Self {
         self.lights = Some(frame);
+        self
+    }
+
+    /// Takes indirect diffuse light from the DDGI probes `PassDdgi` publishes in `frame`.
+    pub(crate) fn with_ddgi(mut self, frame: Rc<RefCell<DdgiFrame>>) -> Self {
+        self.ddgi = Some(frame);
         self
     }
 
@@ -575,6 +602,11 @@ impl PassPBRTranslucent {
     /// Writes motion vectors (replacing the opaque ones behind) into `target`.
     pub fn with_velocity_target(self, target: PassTextureHandle) -> Self {
         Self(self.0.with_velocity_target(target))
+    }
+
+    /// Takes indirect diffuse light from the DDGI probes, like `PassPBROpaque::with_ddgi`.
+    pub(crate) fn with_ddgi(self, frame: Rc<RefCell<DdgiFrame>>) -> Self {
+        Self(self.0.with_ddgi(frame))
     }
 
     /// Shades the point/spot lights, like `PassPBROpaque::with_lights`.
@@ -723,6 +755,19 @@ impl Pass for PassPBROpaque {
                     },
                     count: None,
                 },
+                // Diffuse GI probes: SH radiance, depth-moment atlas, grid uniform
+                fragment_storage_entry(15),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 16,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                uniform_entry_for(17, wgpu::ShaderStages::FRAGMENT),
             ],
             // 1: material textures (base_color, normal, metallic_roughness, emissive)
             material_textures_layout_entries(),
@@ -906,6 +951,7 @@ impl Pass for PassPBROpaque {
             Some(frame) => frame.borrow().buffers.clone(),
             None => LightBuffers::new(renderer, 1, 1, 2, 1)?,
         };
+        let ddgi_stand_in = DdgiFrame::new(renderer)?;
         let punctual_shadow_stand_in = renderer
             .get_device()
             .create_texture(&wgpu::TextureDescriptor {
@@ -942,6 +988,7 @@ impl Pass for PassPBROpaque {
             &shadow_sampler,
             &light_buffers,
             &punctual_shadow_stand_in,
+            &ddgi_stand_in,
         );
         let cached_ibl = [irr_h, pre_h, lut_h];
 
@@ -1074,6 +1121,7 @@ impl Pass for PassPBROpaque {
             shadow_sampler,
             light_buffers,
             punctual_shadow_stand_in,
+            ddgi_stand_in,
             per_draw_buffer,
             previous_per_draw_buffer,
             per_draw_bind_group,
@@ -1081,6 +1129,7 @@ impl Pass for PassPBROpaque {
             cached_ibl,
             cached_shadow_map: None,
             cached_punctual_shadows: 0,
+            cached_ddgi: 0,
         });
 
         Ok(())
@@ -1117,6 +1166,8 @@ impl Pass for PassPBROpaque {
         let punctual_generation = punctual_shadows
             .as_ref()
             .map_or(0, |(_, generation)| *generation);
+        let ddgi = self.ddgi.clone();
+        let ddgi_generation = ddgi.as_ref().map_or(0, |frame| frame.borrow().generation);
 
         // Rebuild the globals bind group only when the component's IBL handles or the published
         // shadow map change (steady state: 0).
@@ -1130,6 +1181,7 @@ impl Pass for PassPBROpaque {
             if state.cached_ibl != ibl
                 || state.cached_shadow_map != shadow_frame.map
                 || state.cached_punctual_shadows != punctual_generation
+                || state.cached_ddgi != ddgi_generation
             {
                 let shadow_view = renderer
                     .get_texture_view(shadow_frame.map.unwrap_or(state.shadow_stand_in))
@@ -1143,6 +1195,7 @@ impl Pass for PassPBROpaque {
                     view_or_fallback(renderer, ibl[2], fallback[2], "ibl_brdf_lut")?;
                 let device = renderer.get_device();
                 let state = get_state(self);
+                let ddgi_frame = ddgi.as_ref().map(|frame| frame.borrow());
                 state.globals_bind_group = build_globals_bind_group(
                     device,
                     &state.pipeline.bind_group_layouts[MATERIAL_BIND_GROUP_GLOBALS],
@@ -1160,7 +1213,9 @@ impl Pass for PassPBROpaque {
                     punctual_shadows
                         .as_ref()
                         .map_or(&state.punctual_shadow_stand_in, |(view, _)| view),
+                    ddgi_frame.as_deref().unwrap_or(&state.ddgi_stand_in),
                 );
+                state.cached_ddgi = ddgi_generation;
                 state.cached_ibl = ibl;
                 state.cached_shadow_map = shadow_frame.map;
                 state.cached_punctual_shadows = punctual_generation;

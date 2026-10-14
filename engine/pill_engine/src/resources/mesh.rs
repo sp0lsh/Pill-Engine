@@ -49,6 +49,11 @@ impl Mesh {
         }
     }
 
+    /// CPU-side vertices and indices, kept after GPU upload.
+    pub(crate) fn data(&self) -> Option<&MeshData> {
+        self.mesh_data.as_ref()
+    }
+
     pub fn with_uv_flip(mut self, flip: bool) -> Self {
         self.flip_uv_y = flip;
         self
@@ -236,6 +241,12 @@ pub struct MeshVertex {
     normal: [f32; 3],
     tangent: [f32; 3],
     bitangent: [f32; 3],
+}
+
+impl MeshVertex {
+    pub(crate) fn position(&self) -> [f32; 3] {
+        self.position
+    }
 }
 
 pub struct MeshData {

@@ -29,6 +29,9 @@ pub struct Texture {
     pub resource_loader: ResourceLoader,
     #[readonly]
     pub texture_type: TextureType,
+    /// Mean linear RGB of a color texture, measured at load (diffuse GI uses it as the surface
+    /// albedo at ray hits).
+    pub(crate) average_color: Option<[f32; 3]>,
 }
 
 impl Texture {
@@ -37,6 +40,7 @@ impl Texture {
             name: name.to_string(),
             resource_loader,
             texture_type,
+            average_color: None,
         }
     }
 
@@ -120,6 +124,32 @@ pub(crate) fn parse_cooked_tex(bytes: &[u8]) -> Result<CookedTexture<'_>> {
         format,
         mips,
     })
+}
+
+/// Mean linear RGB of sRGB RGBA8 pixels, from at most ~64k evenly strided samples.
+fn average_srgb8_color(rgba: &[u8]) -> [f32; 3] {
+    let pixel_count = rgba.len() / 4;
+    if pixel_count == 0 {
+        return [1.0; 3];
+    }
+    let stride = pixel_count.div_ceil(65_536);
+    let to_linear = |byte: u8| {
+        let value = byte as f32 / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let mut sum = [0.0f64; 3];
+    let mut samples = 0u32;
+    for pixel in rgba.chunks_exact(4).step_by(stride) {
+        for (channel, total) in sum.iter_mut().enumerate() {
+            *total += to_linear(pixel[channel]) as f64;
+        }
+        samples += 1;
+    }
+    sum.map(|total| (total / samples as f64) as f32)
 }
 
 fn owned((pixels, width, height): (Cow<'_, [u8]>, u32, u32)) -> (Cow<'static, [u8]>, u32, u32) {
@@ -244,6 +274,10 @@ impl Resource for Texture {
                 }
             }
         };
+
+        if self.texture_type == TextureType::Color {
+            self.average_color = Some(average_srgb8_color(&rgba));
+        }
 
         // Create renderer texture resource
         #[cfg(not(feature = "headless"))]

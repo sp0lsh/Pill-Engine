@@ -63,7 +63,7 @@ pub mod game {
     pub use crate::{
         ecs::{
             Bloom, CameraAspectRatio, CameraComponent, Component, ComponentStorage, DepthOfField,
-            DirectionalLight, EntityHandle, GamepadAxis, GamepadButton, GlobalComponent,
+            DirectionalLight, EntityHandle, GamepadAxis, GamepadButton, Gi, GlobalComponent,
             GlobalComponentStorage, InputComponent, Lens, LightComponent, LightType,
             MeshRenderingComponent, PassChain, PlayerId, PunctualLights, RenderStateComponent,
             SceneHandle, Shadow, Ssao, TimeComponent, Tonemap, TransformComponent, UpdatePhase,

@@ -9,9 +9,10 @@ use crate::Rule;
 /// filename suffix:
 ///   `*_vertex.hlsl`   → `-stage vertex   -entry vs_main`
 ///   `*_fragment.hlsl` → `-stage fragment -entry fs_main`
+///   `*_compute.hlsl`  → `-stage compute  -entry cs_main`
 ///
 /// Other suffixes fail fast with a clear message; add a new naming convention
-/// (or a richer rule) before introducing compute / mesh stages.
+/// (or a richer rule) before introducing mesh stages.
 pub struct HlslToWgsl;
 
 impl Rule for HlslToWgsl {
@@ -80,9 +81,11 @@ fn infer_stage(input: &Path) -> Result<(&'static str, &'static str)> {
         Ok(("vs_main", "vertex"))
     } else if stem.ends_with("_fragment") {
         Ok(("fs_main", "fragment"))
+    } else if stem.ends_with("_compute") {
+        Ok(("cs_main", "compute"))
     } else {
         bail!(
-            "{input:?}: can't infer shader stage from filename. Expected suffix `_vertex` or `_fragment`."
+            "{input:?}: can't infer shader stage from filename. Expected suffix `_vertex`, `_fragment` or `_compute`."
         )
     }
 }

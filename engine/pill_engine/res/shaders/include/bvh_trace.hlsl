@@ -1,0 +1,133 @@
+#ifndef BVH_TRACE_HLSL
+#define BVH_TRACE_HLSL
+// Triangle BVH traversal in compute (no ray-tracing hardware), after WickedEngine's
+// TraceRay_Closest / TraceRay_Any (raytracingHF.hlsli): a stack of node indices, slab test per
+// node, Möller–Trumbore per triangle. Layout mirrors GpuBvhNode / GpuTriangle in ddgi/bvh.rs.
+// The includer declares `bvh_nodes` and `bvh_triangles`.
+
+struct BvhNode {
+    float3 min;
+    uint   left_or_first; // interior: right child (left = this + 1); leaf: first triangle
+    float3 max;
+    uint   count;         // 0 = interior
+};
+struct BvhTriangle {
+    float3 v0;
+    uint   albedo; // RGBA8, r in the low byte
+    float3 e1;
+    uint   pad0;
+    float3 e2;
+    uint   pad1;
+};
+struct BvhHit {
+    float distance; // ray length to the hit; `found` false = miss
+    uint  triangle;
+    bool  found;
+    bool  backface;
+};
+
+static const uint BVH_STACK_SIZE = 32;
+
+// Entry distance of the ray into the box, or a huge value when it misses or starts beyond `tmax`
+float bvh_box_entry(BvhNode node, float3 origin, float3 inv_direction, float tmax) {
+    float3 t0   = (node.min - origin) * inv_direction;
+    float3 t1   = (node.max - origin) * inv_direction;
+    float3 near = min(t0, t1);
+    float3 far  = max(t0, t1);
+    float  t_in  = max(max(near.x, near.y), max(near.z, 0.0));
+    float  t_out = min(min(far.x, far.y), min(far.z, tmax));
+    return t_in <= t_out ? t_in : 3.4e38;
+}
+
+// Möller–Trumbore; returns the ray length to the hit or a huge value, and whether the hit side
+// faces away from the ray (counter-clockwise front faces, as the PBR pipeline culls)
+float bvh_triangle(BvhTriangle triangle, float3 origin, float3 direction, out bool backface) {
+    backface = false;
+    float3 pvec = cross(direction, triangle.e2);
+    float  det  = dot(triangle.e1, pvec);
+    if (abs(det) < 1e-9) {
+        return 3.4e38;
+    }
+    float  inv_det = 1.0 / det;
+    float3 tvec    = origin - triangle.v0;
+    float  u       = dot(tvec, pvec) * inv_det;
+    float3 qvec    = cross(tvec, triangle.e1);
+    float  v       = dot(direction, qvec) * inv_det;
+    float  t       = dot(triangle.e2, qvec) * inv_det;
+    backface = det < 0.0;
+    return (u < 0.0 || u > 1.0 || v < 0.0 || u + v > 1.0 || t <= 0.0) ? 3.4e38 : t;
+}
+
+BvhHit bvh_trace_closest(float3 origin, float3 direction, float tmax) {
+    BvhHit hit;
+    hit.distance = tmax;
+    hit.triangle = 0;
+    hit.found    = false;
+    hit.backface = false;
+    float3 inv_direction = 1.0 / direction;
+    uint stack[BVH_STACK_SIZE];
+    uint depth = 0;
+    stack[depth++] = 0;
+    while (depth > 0) {
+        uint    index = stack[--depth];
+        BvhNode node  = bvh_nodes[index];
+        if (bvh_box_entry(node, origin, inv_direction, hit.distance) > hit.distance) {
+            continue;
+        }
+        if (node.count > 0) {
+            for (uint i = 0; i < node.count; i++) {
+                uint triangle_index = node.left_or_first + i;
+                bool backface;
+                float t = bvh_triangle(bvh_triangles[triangle_index], origin, direction, backface);
+                if (t < hit.distance) {
+                    hit.distance = t;
+                    hit.triangle = triangle_index;
+                    hit.found    = true;
+                    hit.backface = backface;
+                }
+            }
+        } else if (depth + 2 <= BVH_STACK_SIZE) {
+            stack[depth++] = node.left_or_first;
+            stack[depth++] = index + 1;
+        }
+    }
+    return hit;
+}
+
+// Whether anything blocks the ray before `tmax` (shadow rays)
+bool bvh_trace_any(float3 origin, float3 direction, float tmax) {
+    float3 inv_direction = 1.0 / direction;
+    uint stack[BVH_STACK_SIZE];
+    uint depth = 0;
+    stack[depth++] = 0;
+    while (depth > 0) {
+        uint    index = stack[--depth];
+        BvhNode node  = bvh_nodes[index];
+        if (bvh_box_entry(node, origin, inv_direction, tmax) > tmax) {
+            continue;
+        }
+        if (node.count > 0) {
+            for (uint i = 0; i < node.count; i++) {
+                bool backface;
+                if (bvh_triangle(bvh_triangles[node.left_or_first + i], origin, direction, backface) < tmax) {
+                    return true;
+                }
+            }
+        } else if (depth + 2 <= BVH_STACK_SIZE) {
+            stack[depth++] = node.left_or_first;
+            stack[depth++] = index + 1;
+        }
+    }
+    return false;
+}
+
+float3 bvh_triangle_albedo(uint triangle_index) {
+    uint packed = bvh_triangles[triangle_index].albedo;
+    return float3(packed & 0xFF, (packed >> 8) & 0xFF, (packed >> 16) & 0xFF) / 255.0;
+}
+
+float3 bvh_triangle_normal(uint triangle_index) {
+    BvhTriangle triangle = bvh_triangles[triangle_index];
+    return normalize(cross(triangle.e1, triangle.e2));
+}
+#endif

@@ -1,5 +1,6 @@
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports))]
 
+pub(crate) mod ddgi;
 #[cfg(feature = "headless")]
 mod dummy_renderer;
 mod froxelizer;
@@ -35,9 +36,10 @@ mod shadow_casters;
 // --- Use ---
 
 pub use renderer::{
-    camera_forward, camera_view_projection, BufferDesc, FrameTarget, Pass, PassTextureHandle,
-    PillRenderer, Pipeline, PipelineDesc, Renderer, RendererMaterialHandle, RendererMeshHandle,
-    RendererTargetDesc, RendererTextureHandle, ShaderDesc, TargetSize, TextureData, WorldQuery,
+    camera_forward, camera_view_projection, BufferDesc, ComputePipeline, ComputePipelineDesc,
+    FrameTarget, Pass, PassTextureHandle, PillRenderer, Pipeline, PipelineDesc, Renderer,
+    RendererMaterialHandle, RendererMeshHandle, RendererTargetDesc, RendererTextureHandle,
+    ShaderDesc, TargetSize, TextureData, WorldQuery,
 };
 
 #[cfg(feature = "headless")]
