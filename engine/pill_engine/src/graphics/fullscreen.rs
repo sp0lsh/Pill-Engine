@@ -112,6 +112,9 @@ pub(crate) fn uniform_buffer<T>(renderer: &dyn PillRenderer, label: &str) -> wgp
 /// One bind group resource, in binding order.
 pub(crate) enum Binding<'a> {
     Target(PassTextureHandle),
+    /// A texture that is not a pass target (e.g. an IBL map); its view is created only when
+    /// the bind group is (re)built.
+    Texture(PassTextureHandle),
     Sampler(&'a wgpu::Sampler),
     Buffer(&'a wgpu::Buffer),
 }
@@ -206,16 +209,31 @@ fn create_bind_group(
     pipeline: &Pipeline,
     bindings: &[Binding],
 ) -> Result<wgpu::BindGroup> {
+    // Views of `Binding::Texture`s, owned here for the entries to borrow
+    let mut texture_views = Vec::with_capacity(bindings.len());
+    for binding in bindings {
+        texture_views.push(match binding {
+            Binding::Texture(handle) => Some(
+                renderer
+                    .get_texture_view(*handle)
+                    .ok_or_else(|| format!("{label}: input texture missing"))?,
+            ),
+            _ => None,
+        });
+    }
     let mut entries = Vec::with_capacity(bindings.len());
-    for (index, binding) in bindings.iter().enumerate() {
-        let resource = match binding {
-            Binding::Target(handle) => wgpu::BindingResource::TextureView(
+    for (index, (binding, texture_view)) in bindings.iter().zip(&texture_views).enumerate() {
+        let resource = match (binding, texture_view) {
+            (Binding::Target(handle), _) => wgpu::BindingResource::TextureView(
                 renderer
                     .get_render_target_view(*handle)
                     .ok_or_else(|| format!("{label}: input target missing"))?,
             ),
-            Binding::Sampler(sampler) => wgpu::BindingResource::Sampler(sampler),
-            Binding::Buffer(buffer) => buffer.as_entire_binding(),
+            (Binding::Texture(_), view) => wgpu::BindingResource::TextureView(
+                view.as_ref().expect("texture views resolved above"),
+            ),
+            (Binding::Sampler(sampler), _) => wgpu::BindingResource::Sampler(sampler),
+            (Binding::Buffer(buffer), _) => buffer.as_entire_binding(),
         };
         entries.push(wgpu::BindGroupEntry {
             binding: index as u32,

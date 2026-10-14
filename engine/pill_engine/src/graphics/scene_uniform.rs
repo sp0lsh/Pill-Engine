@@ -10,7 +10,7 @@ use crate::graphics::shadow::ShadowFrame;
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct SceneUniform {
     fog_color_density: [f32; 4], // xyz = fog color, w = fog density
-    ibl_intensity: [f32; 4],     // x
+    ibl_intensity: [f32; 4],     // x, y = 1 when PassSsr adds the specular IBL term
     // Per light: direction (xyz) row, then color (rgb) + intensity (w) row
     lights: [[f32; 4]; 6],
     shadow_view_projection: [[f32; 4]; 4], // world → light clip space (column-major)
@@ -27,6 +27,7 @@ impl SceneUniform {
         render_state: &RenderStateComponent,
         shadow: &ShadowFrame,
         punctual: &LightsParams,
+        ssr: bool,
     ) -> Self {
         let [r, g, b] = render_state.fog_color;
         let mut lights = [[0.0; 4]; 6];
@@ -51,7 +52,7 @@ impl SceneUniform {
         };
         Self {
             fog_color_density: [r, g, b, render_state.fog_density],
-            ibl_intensity: [render_state.ibl_intensity, 0.0, 0.0, 0.0],
+            ibl_intensity: [render_state.ibl_intensity, ssr as u32 as f32, 0.0, 0.0],
             lights,
             shadow_view_projection,
             shadow_params,

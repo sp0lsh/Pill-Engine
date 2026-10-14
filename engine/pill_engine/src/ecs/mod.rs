@@ -32,7 +32,7 @@ pub use components::egui_component::EguiComponent;
 
 pub use components::render_state_component::{
     Bloom, DepthOfField, DirectionalLight, Gi, Lens, PassChain, PunctualLights,
-    RenderStateComponent, Shadow, Ssao, Tonemap,
+    RenderStateComponent, Shadow, Ssao, Ssr, Tonemap,
 };
 
 #[cfg(feature = "ui")]

@@ -26,6 +26,8 @@ struct BvhHit {
     bool  backface;
 };
 
+// Mirrors bvh.rs BVH_STACK_SIZE: the builder caps the tree depth so both children of every
+// interior node fit
 static const uint BVH_STACK_SIZE = 32;
 
 // Entry distance of the ray into the box, or a huge value when it misses or starts beyond `tmax`
@@ -86,7 +88,7 @@ BvhHit bvh_trace_closest(float3 origin, float3 direction, float tmax) {
                     hit.backface = backface;
                 }
             }
-        } else if (depth + 2 <= BVH_STACK_SIZE) {
+        } else {
             stack[depth++] = node.left_or_first;
             stack[depth++] = index + 1;
         }
@@ -113,7 +115,7 @@ bool bvh_trace_any(float3 origin, float3 direction, float tmax) {
                     return true;
                 }
             }
-        } else if (depth + 2 <= BVH_STACK_SIZE) {
+        } else {
             stack[depth++] = node.left_or_first;
             stack[depth++] = index + 1;
         }

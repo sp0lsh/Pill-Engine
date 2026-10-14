@@ -28,7 +28,7 @@ void cs_main(uint3 group : SV_GroupID, uint2 thread : SV_GroupThreadID, uint thr
     uint3 probe_coord  = ddgi_probe_coord(probe_index);
     uint  ray_count    = ddgi.rays_per_probe;
     float max_distance = ddgi.max_distance;
-    float3 texel_direction = ddgi_decode_oct(((float2(thread) + 0.5) / DDGI_DEPTH_RESOLUTION) * 2.0 - 1.0);
+    float3 texel_direction = oct_decode(((float2(thread) + 0.5) / DDGI_DEPTH_RESOLUTION) * 2.0 - 1.0);
 
     float2 sum = float2(0.0, 0.0);
     float  total_weight = 0.0;

@@ -110,4 +110,8 @@ impl PillRenderer for DummyRenderer {
     fn get_texture_view(&self, _handle: PassTextureHandle) -> Option<wgpu::TextureView> {
         None
     }
+
+    fn has_texture(&self, _handle: PassTextureHandle) -> bool {
+        false
+    }
 }

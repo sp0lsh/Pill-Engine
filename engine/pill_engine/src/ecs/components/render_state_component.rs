@@ -164,8 +164,9 @@ impl Default for Shadow {
 }
 
 /// Diffuse global illumination from a grid of DDGI probes over the scene's opaque, shadow-casting
-/// meshes (traced against a BVH built once per set of meshes: static geometry). Replaces the
-/// diffuse IBL term; ray misses see the IBL. Read every frame.
+/// meshes (traced against a BVH built once per set of meshes: static geometry, so moving them or
+/// editing material colors is not picked up). Replaces the diffuse IBL term once every probe
+/// has been updated (the IBL until then); ray misses see the IBL. Read every frame.
 #[derive(Clone, Copy, Debug)]
 pub struct Gi {
     pub enabled: bool,
@@ -193,6 +194,42 @@ impl Default for Gi {
             blend_speed: 0.08,
             intensity: 1.0,
             debug_indirect_only: false,
+        }
+    }
+}
+
+/// PostFx chain: screen-space reflections of the opaque scene, by a ray march against the depth
+/// buffer along the mirror direction (no history, so no noise and no TAA). Fades out with
+/// roughness; rays that miss or leave the screen fall back to the specular IBL. While on, SSAO
+/// darkens only the diffuse ambient light, not the specular term. Its three full-screen targets
+/// stay allocated in the PostFx chain when off. Read every frame.
+#[derive(Clone, Copy, Debug)]
+pub struct Ssr {
+    pub enabled: bool,
+    /// Evenly spaced depth tests along the ray to find a first crossing.
+    pub linear_steps: u32,
+    /// Binary-search steps refining the crossing.
+    pub bisection_steps: u32,
+    /// Assumed thickness (m) of the surfaces in the depth buffer; rays farther behind pass on.
+    pub thickness: f32,
+    /// Roughness range over which reflections fade to the IBL (full below start, none above end).
+    pub roughness_fade: (f32, f32),
+    /// Screen-border width (fraction of the screen) over which hits fade to the IBL.
+    pub edge_fade: f32,
+    /// Shows only the reflected light.
+    pub debug_reflections_only: bool,
+}
+
+impl Default for Ssr {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            linear_steps: 16,
+            bisection_steps: 6,
+            thickness: 0.25,
+            roughness_fade: (0.3, 0.5),
+            edge_fade: 0.05,
+            debug_reflections_only: false,
         }
     }
 }
@@ -283,6 +320,8 @@ pub struct RenderStateComponent {
     pub punctual_lights: PunctualLights,
     /// Diffuse global illumination (DDGI probes); off by default.
     pub gi: Gi,
+    /// PostFx chain: screen-space reflections; off by default.
+    pub ssr: Ssr,
     pub tonemap: Tonemap,
     /// PostFx chain: motion blur length as a fraction of the frame's motion (0.5 = 180° shutter,
     /// 0 = off).
@@ -333,6 +372,7 @@ impl RenderStateComponent {
             shadow: Shadow::default(),
             punctual_lights: PunctualLights::default(),
             gi: Gi::default(),
+            ssr: Ssr::default(),
             tonemap: Tonemap::Reinhard {
                 white_point: f32::INFINITY,
             },

@@ -21,7 +21,7 @@ struct Camera {
 // Scene globals (set 0, binding 7) — mirrors SceneUniform in scene_uniform.rs; all float4 rows.
 struct Scene {
     float4 fog_color_density; // xyz = fog color, w = fog density
-    float4 ibl_intensity;     // x
+    float4 ibl_intensity;     // x = IBL scale, y = 1 when PassSsr adds the specular IBL term
     float4 light_direction0;  // xyz = direction from the light toward the scene
     float4 light_color0;      // rgb = color, w = intensity
     float4 light_direction1;
@@ -319,6 +319,9 @@ struct FragmentOutput {
 #ifdef POST_FX
     [[vk::location(1)]] float2 velocity : SV_TARGET1; // UV offset to last frame's position
     [[vk::location(2)]] float4 ambient  : SV_TARGET2; // fogged IBL term alone, darkened by SSAO
+    // PassSsr inputs: rgb = fogged specular weight F·A + B of the IBL term, a = roughness
+    [[vk::location(3)]] float4 ssr_surface : SV_TARGET3;
+    [[vk::location(4)]] float2 ssr_normal  : SV_TARGET4; // octahedral-encoded shading normal
 #endif
 };
 
@@ -378,9 +381,12 @@ FragmentOutput fs_main(
     float3 prefiltered_color = prefilter_texture.SampleLevel(prefilter_sampler, dir_to_equirect_uv(reflection), roughness * MAX_REFLECTION_LOD).rgb;
     float2 environment_brdf  = brdf_lut_texture.Sample(brdf_lut_sampler, float2(max(dot(normal, view_direction), 0.0), roughness)).rg;
     float3 fresnel           = fresnel_schlick_roughness(max(dot(normal, view_direction), 0.0), base_reflectivity, roughness);
-    float3 specular_ibl      = prefiltered_color * (fresnel * environment_brdf.x + environment_brdf.y) * scene.ibl_intensity.x;
+    float3 specular_weight   = fresnel * environment_brdf.x + environment_brdf.y;
+    float3 specular_ibl      = prefiltered_color * specular_weight * scene.ibl_intensity.x;
     float3 emissive = emissive_texture.Sample(emissive_sampler, texture_coordinates).rgb * material.emissive_factor;
-    float3 color = outgoing_radiance + ambient_diffuse + specular_ibl + emissive;
+    // With SSR (ibl_intensity.y) PassSsr adds the specular term: reflection where its ray hits, IBL elsewhere
+    bool   ssr   = scene.ibl_intensity.y > 0.5;
+    float3 color = outgoing_radiance + ambient_diffuse + (ssr ? float3(0.0, 0.0, 0.0) : specular_ibl) + emissive;
     float  distance = length(camera.position.xyz - world_position);
     float  fog_density = scene.fog_color_density.w;
     float  fog      = 1.0 - exp(-fog_density * fog_density * distance * distance);
@@ -398,7 +404,11 @@ FragmentOutput fs_main(
     float2 ndc          = clip_position.xy / max(clip_position.w, 1e-4);
     float2 previous_ndc = previous_clip_position.xy / max(previous_clip_position.w, 1e-4);
     output.velocity = (ndc - previous_ndc) * float2(0.5, -0.5);
-    output.ambient  = float4((ambient_diffuse + specular_ibl) * (1.0 - fog), 0.0);
+    // What SSAO takes back must be in `color`; with SSR, PassSsr adds the specular term instead
+    output.ambient  = float4((ambient_diffuse + (ssr ? float3(0.0, 0.0, 0.0) : specular_ibl)) * (1.0 - fog), 0.0);
+    bool debug_view = ddgi.enabled == 2 || scene.froxel_depth.w > 0.5;
+    output.ssr_surface = float4(ssr && !debug_view ? specular_weight * (1.0 - fog) : float3(0.0, 0.0, 0.0), roughness);
+    output.ssr_normal  = oct_encode(normal);
 #endif
     return output;
 }

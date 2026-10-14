@@ -1,7 +1,8 @@
 use crate::config::{
     AMBIENT_TARGET_FORMAT, BACKGROUND_FRAGMENT_SHADER, BACKGROUND_VERTEX_SHADER,
     DEFAULT_EQUIRECT_FALLBACK_PIXEL, DEPTH_TARGET_FORMAT, HDR_TARGET_FORMAT,
-    PBR_OPAQUE_FRAGMENT_SHADER, PBR_OPAQUE_VERTEX_SHADER, VELOCITY_TARGET_FORMAT,
+    PBR_OPAQUE_FRAGMENT_SHADER, PBR_OPAQUE_VERTEX_SHADER, SSR_NORMAL_TARGET_FORMAT,
+    SSR_SURFACE_TARGET_FORMAT, VELOCITY_TARGET_FORMAT,
 };
 use crate::{
     ecs::{CameraComponent, MeshRenderingComponent, RenderStateComponent, TransformComponent},
@@ -178,6 +179,8 @@ struct BgCameraUbo {
 /// GPU-side state for the background sub-draw within the PBR render pass.
 struct BgSubState {
     pipeline: Pipeline,
+    // With the PassSsr outputs; built on the first frame with SSR on
+    ssr_pipeline: Option<Pipeline>,
     camera_buf: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     sampler: wgpu::Sampler,
@@ -194,6 +197,8 @@ struct PassPBROpaqueState {
     scene_buffer: wgpu::Buffer,
     globals_bind_group: wgpu::BindGroup,
     pipeline: Pipeline,
+    // With the PassSsr outputs; built on the first frame with SSR on
+    ssr_pipeline: Option<Pipeline>,
     ibl_sampler: wgpu::Sampler,
     prefilter_sampler: wgpu::Sampler,
     brdf_lut_sampler: wgpu::Sampler,
@@ -392,6 +397,8 @@ pub struct PassPBROpaque {
     depth_target: PassTextureHandle,
     velocity_target: Option<PassTextureHandle>,
     ambient_target: Option<PassTextureHandle>,
+    // PassSsr inputs: [specular weight + roughness, octahedral normal]
+    ssr_targets: Option<[PassTextureHandle; 2]>,
     // Per-draw storage capacity; at most one instance per entity
     max_instances: usize,
     // Key light shadow published by PassShadow each frame
@@ -435,6 +442,7 @@ impl PassPBROpaque {
             depth_target,
             velocity_target: None,
             ambient_target: None,
+            ssr_targets: None,
             max_instances,
             shadow: None,
             lights: None,
@@ -535,8 +543,27 @@ impl PassPBROpaque {
         self
     }
 
-    /// Color targets in shader output order (color, velocity, ambient); absent outputs are `None`.
-    fn color_targets(&self, blend: wgpu::BlendState) -> [Option<wgpu::ColorTargetState>; 3] {
+    #[cfg(feature = "post_fx")]
+    /// Also writes the inputs of `PassSsr` (SSR_SURFACE_TARGET_FORMAT, SSR_NORMAL_TARGET_FORMAT)
+    /// and, while `RenderStateComponent::ssr` is on, leaves the specular IBL term to it.
+    pub fn with_ssr_targets(
+        mut self,
+        surface: PassTextureHandle,
+        normal: PassTextureHandle,
+    ) -> Self {
+        self.ssr_targets = Some([surface, normal]);
+        self
+    }
+
+    /// Color targets in shader output order (color, velocity, ambient, SSR surface, SSR normal);
+    /// absent outputs are `None`, the SSR ones also while `ssr` is false.
+    fn color_targets(&self, ssr: bool) -> [Option<wgpu::ColorTargetState>; 5] {
+        let blend = if self.translucent {
+            wgpu::BlendState::ALPHA_BLENDING
+        } else {
+            wgpu::BlendState::REPLACE
+        };
+        let ssr_targets = self.ssr_targets.filter(|_| ssr);
         [
             Some(wgpu::ColorTargetState {
                 format: HDR_TARGET_FORMAT,
@@ -553,104 +580,26 @@ impl PassPBROpaque {
                 blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             }),
+            ssr_targets.map(|_| wgpu::ColorTargetState {
+                format: SSR_SURFACE_TARGET_FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            }),
+            ssr_targets.map(|_| wgpu::ColorTargetState {
+                format: SSR_NORMAL_TARGET_FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            }),
         ]
     }
-}
 
-/// Returns the initialized pass state; panics in debug if `init` was not called.
-fn get_state(pass: &mut PassPBROpaque) -> &mut PassPBROpaqueState {
-    debug_assert!(pass.state.is_some());
-    pass.state
-        .as_mut()
-        .expect("PassPBROpaque: state not initialized — call init() before draw()")
-}
-
-/// Whether the material of a render key has opacity < 1; a missing material counts as opaque.
-pub(crate) fn is_translucent(world: &WorldQuery<'_>, key: RenderQueueKey) -> bool {
-    let key_fields = decompose_render_queue_key(key);
-    let Some(version) = NonZeroU32::new(key_fields.material_version.into()) else {
-        return false;
-    };
-    let handle = RendererMaterialHandle::new(key_fields.material_index.into(), version);
-    world
-        .resources
-        .get_resource::<RendererMaterial>(&handle)
-        .is_ok_and(|material| material.translucent)
-}
-
-#[cfg(feature = "post_fx")]
-/// Translucent PBR: materials with opacity < 1, sorted back to front and alpha-blended over the
-/// HDR target after the opaque pass, depth-tested against the opaque depth. Also writes depth and,
-/// with `with_velocity_target`, motion vectors, so depth of field and motion blur treat the glass
-/// surface as the nearest one. Shares PassPBROpaque's shaders.
-pub struct PassPBRTranslucent(PassPBROpaque);
-
-#[cfg(feature = "post_fx")]
-impl PassPBRTranslucent {
-    /// Same targets and IBL defaults as the opaque pass it follows.
-    pub fn new(
-        color_target: PassTextureHandle,
-        depth_target: PassTextureHandle,
-        max_instances: usize,
-        initial_ibl: [PassTextureHandle; 3],
-    ) -> Self {
-        let mut pass = PassPBROpaque::new(color_target, depth_target, max_instances, initial_ibl);
-        pass.translucent = true;
-        Self(pass)
-    }
-
-    /// Writes motion vectors (replacing the opaque ones behind) into `target`.
-    pub fn with_velocity_target(self, target: PassTextureHandle) -> Self {
-        Self(self.0.with_velocity_target(target))
-    }
-
-    /// Takes indirect diffuse light from the DDGI probes, like `PassPBROpaque::with_ddgi`.
-    pub(crate) fn with_ddgi(self, frame: Rc<RefCell<DdgiFrame>>) -> Self {
-        Self(self.0.with_ddgi(frame))
-    }
-
-    /// Shades the point/spot lights, like `PassPBROpaque::with_lights`.
-    pub(crate) fn with_lights(self, frame: Rc<RefCell<LightsFrame>>) -> Self {
-        Self(self.0.with_lights(frame))
-    }
-
-    /// Receives the key light's shadow, like `PassPBROpaque::with_shadow`.
-    pub(crate) fn with_shadow(self, frame: Rc<RefCell<ShadowFrame>>) -> Self {
-        Self(self.0.with_shadow(frame))
-    }
-}
-
-#[cfg(feature = "post_fx")]
-impl Pass for PassPBRTranslucent {
-    fn get_label(&self) -> &str {
-        self.0.get_label()
-    }
-
-    fn init(&mut self, renderer: &mut dyn PillRenderer) -> Result<()> {
-        self.0.init(renderer)
-    }
-
-    fn draw(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
+    /// Scene pipeline; `ssr` adds the `PassSsr` outputs (`with_ssr_targets`), built on the first
+    /// frame with SSR on.
+    fn create_scene_pipeline(
+        &self,
         renderer: &mut dyn PillRenderer,
-        frame_target: &FrameTarget,
-        world: &WorldQuery<'_>,
-    ) -> Result<()> {
-        self.0.draw(encoder, renderer, frame_target, world)
-    }
-}
-
-impl Pass for PassPBROpaque {
-    fn get_label(&self) -> &str {
-        if self.translucent {
-            "pass_pbr_translucent"
-        } else {
-            "pass_pbr_opaque"
-        }
-    }
-
-    fn init(&mut self, renderer: &mut dyn PillRenderer) -> Result<()> {
+        ssr: bool,
+    ) -> Result<Pipeline> {
         let bind_groups: Vec<Vec<wgpu::BindGroupLayoutEntry>> = vec![
             // 0: globals (camera + IBL irradiance + prefilter + BRDF LUT + scene)
             vec![
@@ -778,11 +727,7 @@ impl Pass for PassPBROpaque {
             (0..2).map(per_draw_storage_entry).collect(),
         ];
 
-        let color_targets = self.color_targets(if self.translucent {
-            wgpu::BlendState::ALPHA_BLENDING
-        } else {
-            wgpu::BlendState::REPLACE
-        });
+        let color_targets = self.color_targets(ssr);
         let desc = PipelineDesc {
             label: Some("pass_pbr_opaque_pipeline"),
             vs: ShaderDesc {
@@ -817,7 +762,175 @@ impl Pass for PassPBROpaque {
             },
         };
 
-        let pipeline = renderer.create_pipeline(desc)?;
+        renderer.create_pipeline(desc)
+    }
+
+    /// Background sub-draw pipeline over the same attachments as the scene pipeline.
+    fn create_bg_pipeline(&self, renderer: &mut dyn PillRenderer, ssr: bool) -> Result<Pipeline> {
+        let bg_bind_groups = vec![vec![
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    multisampled: false,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ]];
+        // Same attachments as the scene draw; the sky writes color and velocity, ambient and
+        // the SSR inputs stay 0
+        let mut bg_targets = self.color_targets(ssr);
+        for target in bg_targets[2..].iter_mut().flatten() {
+            target.write_mask = wgpu::ColorWrites::empty();
+        }
+        renderer.create_pipeline(PipelineDesc {
+            label: Some("pass_pbr_opaque_bg_pipeline"),
+            vs: ShaderDesc {
+                source: BACKGROUND_VERTEX_SHADER,
+                entry_func: "vs_main",
+            },
+            ps: ShaderDesc {
+                source: BACKGROUND_FRAGMENT_SHADER,
+                entry_func: "fs_main",
+            },
+            vertex_buffers: &[],
+            bind_groups: bg_bind_groups,
+            targets: &bg_targets,
+            // LessEqual + write disabled: fills only pixels where depth == 1.0 (far plane).
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_TARGET_FORMAT,
+                depth_write_enabled: false,
+                depth_compare: wgpu::CompareFunction::LessEqual,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+                unclipped_depth: false,
+            },
+        })
+    }
+}
+
+/// Returns the initialized pass state; panics in debug if `init` was not called.
+fn get_state(pass: &mut PassPBROpaque) -> &mut PassPBROpaqueState {
+    debug_assert!(pass.state.is_some());
+    pass.state
+        .as_mut()
+        .expect("PassPBROpaque: state not initialized — call init() before draw()")
+}
+
+/// Whether the material of a render key has opacity < 1; a missing material counts as opaque.
+pub(crate) fn is_translucent(world: &WorldQuery<'_>, key: RenderQueueKey) -> bool {
+    let key_fields = decompose_render_queue_key(key);
+    let Some(version) = NonZeroU32::new(key_fields.material_version.into()) else {
+        return false;
+    };
+    let handle = RendererMaterialHandle::new(key_fields.material_index.into(), version);
+    world
+        .resources
+        .get_resource::<RendererMaterial>(&handle)
+        .is_ok_and(|material| material.translucent)
+}
+
+#[cfg(feature = "post_fx")]
+/// Translucent PBR: materials with opacity < 1, sorted back to front and alpha-blended over the
+/// HDR target after the opaque pass, depth-tested against the opaque depth. Also writes depth and,
+/// with `with_velocity_target`, motion vectors, so depth of field and motion blur treat the glass
+/// surface as the nearest one. Shares PassPBROpaque's shaders.
+pub struct PassPBRTranslucent(PassPBROpaque);
+
+#[cfg(feature = "post_fx")]
+impl PassPBRTranslucent {
+    /// Same targets and IBL defaults as the opaque pass it follows.
+    pub fn new(
+        color_target: PassTextureHandle,
+        depth_target: PassTextureHandle,
+        max_instances: usize,
+        initial_ibl: [PassTextureHandle; 3],
+    ) -> Self {
+        let mut pass = PassPBROpaque::new(color_target, depth_target, max_instances, initial_ibl);
+        pass.translucent = true;
+        Self(pass)
+    }
+
+    /// Writes motion vectors (replacing the opaque ones behind) into `target`.
+    pub fn with_velocity_target(self, target: PassTextureHandle) -> Self {
+        Self(self.0.with_velocity_target(target))
+    }
+
+    /// Takes indirect diffuse light from the DDGI probes, like `PassPBROpaque::with_ddgi`.
+    pub(crate) fn with_ddgi(self, frame: Rc<RefCell<DdgiFrame>>) -> Self {
+        Self(self.0.with_ddgi(frame))
+    }
+
+    /// Shades the point/spot lights, like `PassPBROpaque::with_lights`.
+    pub(crate) fn with_lights(self, frame: Rc<RefCell<LightsFrame>>) -> Self {
+        Self(self.0.with_lights(frame))
+    }
+
+    /// Receives the key light's shadow, like `PassPBROpaque::with_shadow`.
+    pub(crate) fn with_shadow(self, frame: Rc<RefCell<ShadowFrame>>) -> Self {
+        Self(self.0.with_shadow(frame))
+    }
+}
+
+#[cfg(feature = "post_fx")]
+impl Pass for PassPBRTranslucent {
+    fn get_label(&self) -> &str {
+        self.0.get_label()
+    }
+
+    fn init(&mut self, renderer: &mut dyn PillRenderer) -> Result<()> {
+        self.0.init(renderer)
+    }
+
+    fn draw(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        renderer: &mut dyn PillRenderer,
+        frame_target: &FrameTarget,
+        world: &WorldQuery<'_>,
+    ) -> Result<()> {
+        self.0.draw(encoder, renderer, frame_target, world)
+    }
+}
+
+impl Pass for PassPBROpaque {
+    fn get_label(&self) -> &str {
+        if self.translucent {
+            "pass_pbr_translucent"
+        } else {
+            "pass_pbr_opaque"
+        }
+    }
+
+    fn init(&mut self, renderer: &mut dyn PillRenderer) -> Result<()> {
+        let pipeline = self.create_scene_pipeline(renderer, false)?;
 
         let camera_buffer = {
             let device = renderer.get_device();
@@ -995,71 +1108,7 @@ impl Pass for PassPBROpaque {
         // Background sub-draw; draw() rebinds its equirect when RenderStateComponent.background
         // changes, starting from a 1px fallback.
         let bg = {
-            let bg_bind_groups = vec![vec![
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ]];
-            // Same attachments as the scene draw; the sky writes color and velocity, ambient stays 0
-            let mut bg_targets = color_targets.clone();
-            if let Some(ambient) = &mut bg_targets[2] {
-                ambient.write_mask = wgpu::ColorWrites::empty();
-            }
-            let bg_pipeline = renderer.create_pipeline(PipelineDesc {
-                label: Some("pass_pbr_opaque_bg_pipeline"),
-                vs: ShaderDesc {
-                    source: BACKGROUND_VERTEX_SHADER,
-                    entry_func: "vs_main",
-                },
-                ps: ShaderDesc {
-                    source: BACKGROUND_FRAGMENT_SHADER,
-                    entry_func: "fs_main",
-                },
-                vertex_buffers: &[],
-                bind_groups: bg_bind_groups,
-                targets: &bg_targets,
-                // LessEqual + write disabled: fills only pixels where depth == 1.0 (far plane).
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_TARGET_FORMAT,
-                    depth_write_enabled: false,
-                    depth_compare: wgpu::CompareFunction::LessEqual,
-                    stencil: wgpu::StencilState::default(),
-                    bias: wgpu::DepthBiasState::default(),
-                }),
-                multisample: wgpu::MultisampleState::default(),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    strip_index_format: None,
-                    front_face: wgpu::FrontFace::Ccw,
-                    cull_mode: None,
-                    polygon_mode: wgpu::PolygonMode::Fill,
-                    conservative: false,
-                    unclipped_depth: false,
-                },
-            })?;
+            let bg_pipeline = self.create_bg_pipeline(renderer, false)?;
             let equirect_fallback_h = renderer.create_texture_from_pixels(
                 "bg_equirect_fallback",
                 TextureData {
@@ -1100,6 +1149,7 @@ impl Pass for PassPBROpaque {
             );
             BgSubState {
                 pipeline: bg_pipeline,
+                ssr_pipeline: None,
                 camera_buf: bg_camera_buf,
                 bind_group: bg_bind_group,
                 sampler: bg_sampler,
@@ -1114,6 +1164,7 @@ impl Pass for PassPBROpaque {
             scene_buffer,
             globals_bind_group,
             pipeline,
+            ssr_pipeline: None,
             ibl_sampler,
             prefilter_sampler,
             brdf_lut_sampler,
@@ -1244,6 +1295,15 @@ impl Pass for PassPBROpaque {
         }
 
         let (active_camera_component, active_camera_transform) = world.active_camera()?;
+        // SSR on: the pipelines and attachments with the PassSsr outputs, else without them
+        let ssr = self.ssr_targets.is_some() && render_state.ssr.enabled;
+        if ssr && get_state(self).ssr_pipeline.is_none() {
+            let scene = self.create_scene_pipeline(renderer, true)?;
+            let bg = self.create_bg_pipeline(renderer, true)?;
+            let state = get_state(self);
+            state.ssr_pipeline = Some(scene);
+            state.bg.ssr_pipeline = Some(bg);
+        }
 
         // Motion history: a reset (camera cut) or another scene makes this frame's previous
         // transforms = current
@@ -1286,6 +1346,7 @@ impl Pass for PassPBROpaque {
                     render_state,
                     &shadow_frame,
                     &lights_params,
+                    ssr,
                 )),
             );
         }
@@ -1426,6 +1487,12 @@ impl Pass for PassPBROpaque {
             Some(cleared(self.color_target)),
             self.velocity_target.map(cleared),
             self.ambient_target.map(cleared),
+            self.ssr_targets
+                .filter(|_| ssr)
+                .map(|[surface, _]| cleared(surface)),
+            self.ssr_targets
+                .filter(|_| ssr)
+                .map(|[_, normal]| cleared(normal)),
         ];
 
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1451,7 +1518,11 @@ impl Pass for PassPBROpaque {
             .state
             .as_ref()
             .expect("PassPBROpaque: state not initialized — call init() before draw()");
-        render_pass.set_pipeline(&state_ref.pipeline.pipeline);
+        let pipeline = match (&state_ref.ssr_pipeline, ssr) {
+            (Some(ssr_pipeline), true) => ssr_pipeline,
+            _ => &state_ref.pipeline,
+        };
+        render_pass.set_pipeline(&pipeline.pipeline);
         // Per-draw array bound once; each batch's instance range selects its entries.
         render_pass.set_bind_group(
             MATERIAL_BIND_GROUP_PERDRAW as u32,
@@ -1529,7 +1600,11 @@ impl Pass for PassPBROpaque {
             renderer
                 .get_queue()
                 .write_buffer(&bg.camera_buf, 0, bytemuck::bytes_of(&ubo));
-            render_pass.set_pipeline(&bg.pipeline.pipeline);
+            let pipeline = match (&bg.ssr_pipeline, ssr) {
+                (Some(ssr_pipeline), true) => ssr_pipeline,
+                _ => &bg.pipeline,
+            };
+            render_pass.set_pipeline(&pipeline.pipeline);
             render_pass.set_bind_group(0, &bg.bind_group, &[]);
             render_pass.draw(0..3, 0..1);
         }

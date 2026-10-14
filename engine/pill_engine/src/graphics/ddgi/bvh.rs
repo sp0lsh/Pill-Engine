@@ -11,6 +11,12 @@ use pill_core::Vector3f;
 const LEAF_SIZE: usize = 4;
 /// SAH bins per split axis.
 const BIN_COUNT: usize = 12;
+/// Node-index stack of the traversal in include/bvh_trace.hlsl (`BVH_STACK_SIZE`). It pushes
+/// both children of an interior node, so the stack holds at most one entry per level plus one.
+pub(crate) const BVH_STACK_SIZE: usize = 32;
+/// Deepest node level (root = 0); deeper subtrees become one leaf so traversal never needs more
+/// than `BVH_STACK_SIZE` entries.
+pub(crate) const MAX_DEPTH: usize = BVH_STACK_SIZE - 2;
 
 /// A world-space triangle with the diffuse albedo of its material (linear RGB).
 #[derive(Clone, Copy, Debug)]
@@ -42,10 +48,12 @@ pub(crate) struct GpuTriangle {
     pub(crate) _pad1: u32,
 }
 
-/// A built BVH, ready to upload.
+/// A built BVH, ready to upload; no nodes when there are no triangles.
 pub(crate) struct Bvh {
     pub(crate) nodes: Vec<GpuBvhNode>,
     pub(crate) triangles: Vec<GpuTriangle>,
+    /// Deepest node level (root = 0).
+    pub(crate) depth: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -95,19 +103,12 @@ impl Bvh {
             triangles: &triangles,
             centroids: &centroids,
             nodes: Vec::with_capacity(triangles.len() * 2 / LEAF_SIZE + 1),
+            depth: 0,
         };
-        if triangles.is_empty() {
-            // An inverted box no ray enters, so traversal never reads a child
-            builder.nodes.push(GpuBvhNode {
-                min: [f32::MAX; 3],
-                left_or_first: 0,
-                max: [-f32::MAX; 3],
-                count: 0,
-            });
-        } else {
-            builder.build(&mut order, 0);
+        if !triangles.is_empty() {
+            builder.build(&mut order, 0, 0);
         }
-        let nodes = builder.nodes;
+        let (nodes, depth) = (builder.nodes, builder.depth);
         let triangles = order
             .iter()
             .map(|&index| {
@@ -123,7 +124,11 @@ impl Bvh {
                 }
             })
             .collect();
-        Self { nodes, triangles }
+        Self {
+            nodes,
+            triangles,
+            depth,
+        }
     }
 
     /// Bounds of the whole scene, `None` when empty.
@@ -148,12 +153,14 @@ struct Builder<'a> {
     triangles: &'a [&'a Triangle],
     centroids: &'a [Vector3f],
     nodes: Vec<GpuBvhNode>,
+    depth: usize,
 }
 
 impl Builder<'_> {
     /// Builds the subtree of `order` (triangle indices, reordered in place) whose first
-    /// triangle has index `first` in the final triangle array; returns its node index.
-    fn build(&mut self, order: &mut [u32], first: usize) -> usize {
+    /// triangle has index `first` in the final triangle array, at node level `depth`; returns
+    /// its node index.
+    fn build(&mut self, order: &mut [u32], first: usize, depth: usize) -> usize {
         let mut bounds = Bounds::EMPTY;
         let mut centroid_bounds = Bounds::EMPTY;
         for &index in order.iter() {
@@ -169,15 +176,16 @@ impl Builder<'_> {
             max: bounds.max.to_array(),
             count: order.len() as u32,
         });
-        if order.len() <= LEAF_SIZE {
+        self.depth = self.depth.max(depth);
+        if order.len() <= LEAF_SIZE || depth == MAX_DEPTH {
             return node_index;
         }
         let Some(split) = self.split(order, &bounds, &centroid_bounds) else {
             return node_index;
         };
         let (left, right) = order.split_at_mut(split);
-        self.build(left, first);
-        let right_index = self.build(right, first + split);
+        self.build(left, first, depth + 1);
+        let right_index = self.build(right, first + split, depth + 1);
         self.nodes[node_index].left_or_first = right_index as u32;
         self.nodes[node_index].count = 0;
         node_index
@@ -285,12 +293,17 @@ mod tests {
         far >= near.max(0.0)
     }
 
-    /// Stack traversal in the shader's order.
+    /// Stack traversal in the shader's order, with its fixed stack: panics where the shader
+    /// would have to drop a subtree.
     fn trace(bvh: &Bvh, origin: Vector3f, direction: Vector3f) -> Option<f32> {
         let inv_direction = direction.recip();
         let mut best: Option<f32> = None;
         let mut stack = vec![0usize];
         while let Some(index) = stack.pop() {
+            assert!(
+                stack.len() + 2 <= BVH_STACK_SIZE,
+                "traversal stack overflow"
+            );
             let node = &bvh.nodes[index];
             if !intersect_box(origin, inv_direction, node) {
                 continue;
@@ -412,10 +425,42 @@ mod tests {
     }
 
     #[test]
-    fn empty_scene_has_one_empty_root_and_no_bounds() {
+    fn empty_scene_has_no_nodes_and_no_bounds() {
         let bvh = Bvh::build(&[]);
-        assert_eq!(bvh.nodes.len(), 1);
+        assert!(bvh.nodes.is_empty());
         assert!(bvh.bounds().is_none());
+    }
+
+    #[test]
+    fn deep_input_is_capped_at_max_depth_and_traces_within_the_stack() {
+        // Triangles at geometrically shrinking offsets: each SAH split peels off a few, so an
+        // uncapped tree would be about as deep as the triangle count
+        let triangles: Vec<Triangle> = (0..400)
+            .map(|index| {
+                let x = 0.9f32.powi(index) * 100.0;
+                Triangle {
+                    vertices: [
+                        Vector3f::new(x, 0.0, 0.0),
+                        Vector3f::new(x, 1.0, 0.0),
+                        Vector3f::new(x, 0.0, 1.0),
+                    ],
+                    albedo: [0.5; 3],
+                }
+            })
+            .collect();
+        let bvh = Bvh::build(&triangles);
+        assert!(bvh.depth <= MAX_DEPTH, "depth {}", bvh.depth);
+        for index in 0..100 {
+            let y = 0.1 + index as f32 * 0.003;
+            let origin = Vector3f::new(-1.0, y, 0.2);
+            let brute = bvh
+                .triangles
+                .iter()
+                .filter_map(|triangle| intersect(origin, Vector3f::X, triangle))
+                .reduce(f32::min);
+            let traced = trace(&bvh, origin, Vector3f::X);
+            assert_eq!(brute.is_some(), traced.is_some(), "ray {index}");
+        }
     }
 
     #[test]
