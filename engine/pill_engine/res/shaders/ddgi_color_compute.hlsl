@@ -65,7 +65,7 @@ void cs_main(uint3 group : SV_GroupID, uint2 thread : SV_GroupThreadID, uint thr
     uint   slot        = group.x;
     uint   probe_index = (ddgi.probe_offset + slot) % ddgi.probe_count;
     uint   ray_count   = ddgi.rays_per_probe;
-    float3 texel_direction = ddgi_decode_oct(((float2(thread) + 0.5) / DDGI_COLOR_RESOLUTION) * 2.0 - 1.0);
+    float3 texel_direction = oct_decode(((float2(thread) + 0.5) / DDGI_COLOR_RESOLUTION) * 2.0 - 1.0);
 
     float3 sum = float3(0.0, 0.0, 0.0);
     float  total_weight = 0.0;
@@ -108,7 +108,7 @@ void cs_main(uint3 group : SV_GroupID, uint2 thread : SV_GroupThreadID, uint thr
         float3 sh3 = float3(0.0, 0.0, 0.0);
         for (uint y = 0; y < DDGI_COLOR_RESOLUTION; y++) {
             for (uint x = 0; x < DDGI_COLOR_RESOLUTION; x++) {
-                float3 direction = ddgi_decode_oct(((float2(x, y) + 0.5) / DDGI_COLOR_RESOLUTION) * 2.0 - 1.0);
+                float3 direction = oct_decode(((float2(x, y) + 0.5) / DDGI_COLOR_RESOLUTION) * 2.0 - 1.0);
                 float3 value = texel_radiance[y * DDGI_COLOR_RESOLUTION + x];
                 sh0 += 0.2820948 * value;
                 sh1 += 0.4886025 * direction.y * value;

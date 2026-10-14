@@ -24,7 +24,8 @@ const MAX_PROBES_PER_AXIS: [u32; 3] = [32, 16, 32];
 /// Widest depth atlas (WebGPU default `maxTextureDimension2D`).
 const MAX_ATLAS_SIZE: u32 = 8192;
 
-/// Axis-aligned probe grid: probe (x, y, z) sits at `min + (x, y, z) · cell`.
+/// Axis-aligned probe grid: probe (x, y, z) sits at `min + (x, y, z) · cell`, the centre of a
+/// cell of the scene bounds.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ProbeGrid {
     pub(crate) min: Vector3f,
@@ -33,13 +34,15 @@ pub(crate) struct ProbeGrid {
 }
 
 impl ProbeGrid {
-    /// Grid spanning `bounds` with about `spacing` between probes, at least 2 and at most
-    /// `MAX_PROBES_PER_AXIS` per axis, and a depth atlas no wider than `MAX_ATLAS_SIZE`.
+    /// Grid over `bounds` with about `spacing` between probes, at least 2 and at most
+    /// `MAX_PROBES_PER_AXIS` per axis, and a depth atlas no wider than `MAX_ATLAS_SIZE`. Probes
+    /// sit at cell centres, half a cell inside the bounds: not on the floor and the outer walls,
+    /// where rays would start coplanar with the geometry.
     pub(crate) fn fit((min, max): (Vector3f, Vector3f), spacing: f32) -> Self {
         let extent = (max - min).max(Vector3f::splat(1e-3));
         let spacing = spacing.max(0.05);
         let mut dims = [0, 1, 2].map(|axis| {
-            ((extent[axis] / spacing).ceil() as u32 + 1).clamp(2, MAX_PROBES_PER_AXIS[axis])
+            ((extent[axis] / spacing).ceil() as u32).clamp(2, MAX_PROBES_PER_AXIS[axis])
         });
         // The atlas lays probes out x-then-y along its width (Wicked's layout)
         while dims[0] * dims[1] * DEPTH_TEXELS > MAX_ATLAS_SIZE {
@@ -47,11 +50,15 @@ impl ProbeGrid {
             dims[wider] -= 1;
         }
         let cell = Vector3f::new(
-            extent.x / (dims[0] - 1) as f32,
-            extent.y / (dims[1] - 1) as f32,
-            extent.z / (dims[2] - 1) as f32,
+            extent.x / dims[0] as f32,
+            extent.y / dims[1] as f32,
+            extent.z / dims[2] as f32,
         );
-        Self { min, cell, dims }
+        Self {
+            min: min + cell * 0.5,
+            cell,
+            dims,
+        }
     }
 
     pub(crate) fn probe_count(&self) -> u32 {
@@ -166,15 +173,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn grid_spans_the_bounds_within_caps_and_atlas_limit() {
+    fn grid_probes_sit_half_a_cell_inside_the_bounds_within_caps_and_atlas_limit() {
         let bounds = (
             Vector3f::new(-15.0, -1.0, -9.5),
             Vector3f::new(14.5, 11.5, 8.8),
         );
         let grid = ProbeGrid::fit(bounds, 1.5);
-        assert_eq!(grid.position([0, 0, 0]), bounds.0);
+        let first = grid.position([0, 0, 0]);
+        assert!(
+            first.abs_diff_eq(bounds.0 + grid.cell * 0.5, 1e-4),
+            "{first}"
+        );
         let last = grid.position([grid.dims[0] - 1, grid.dims[1] - 1, grid.dims[2] - 1]);
-        assert!(last.abs_diff_eq(bounds.1, 1e-4), "{last}");
+        assert!(last.abs_diff_eq(bounds.1 - grid.cell * 0.5, 1e-4), "{last}");
         assert!(grid
             .dims
             .iter()

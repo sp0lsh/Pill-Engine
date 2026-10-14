@@ -23,6 +23,8 @@ mod pass_punctual_shadows;
 mod pass_shadow;
 #[cfg(feature = "post_fx")]
 mod pass_ssao;
+#[cfg(feature = "post_fx")]
+mod pass_ssr;
 mod pass_tonemap;
 #[cfg(feature = "post_fx")]
 mod projection;
@@ -64,6 +66,8 @@ pub(crate) use pass_punctual_shadows::PassPunctualShadows;
 pub(crate) use pass_shadow::PassShadow;
 #[cfg(feature = "post_fx")]
 pub use pass_ssao::PassSsao;
+#[cfg(feature = "post_fx")]
+pub use pass_ssr::PassSsr;
 pub use pass_tonemap::PassTonemap;
 pub(crate) use scene_uniform::SceneUniform;
 

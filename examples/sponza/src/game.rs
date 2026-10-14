@@ -201,8 +201,16 @@ fn spawn_lights(engine: &mut Engine, scene: SceneHandle) {
     }
 }
 
+/// glTF material of the ground and gallery floors (Khronos Sponza).
+const FLOOR_MATERIAL: usize = 9;
+/// Scales the floor's roughness texture: polished, wet stone.
+const WET_FLOOR_ROUGHNESS: f32 = 0.1;
+/// Scales the floor's albedo: wet stone is darker.
+const WET_FLOOR_DARKENING: f32 = 0.5;
+
 /// Moves the lights. L toggles the froxel light-count heatmap, K the point/spot shadows, J the
-/// lanterns, G diffuse GI, H the indirect-light-only view.
+/// lanterns, G diffuse GI, H the indirect-light-only view, R screen-space reflections, T the
+/// reflections-only view.
 fn lights_system(engine: &mut Engine) -> Result<()> {
     let time = engine.get_global_component::<TimeComponent>()?.time;
     let input = engine.get_global_component::<InputComponent>()?;
@@ -211,6 +219,17 @@ fn lights_system(engine: &mut Engine) -> Result<()> {
     let toggle_lanterns = input.get_key_pressed(KeyboardKey::KeyJ);
     let toggle_gi = input.get_key_pressed(KeyboardKey::KeyG);
     let toggle_indirect_only = input.get_key_pressed(KeyboardKey::KeyH);
+    let toggle_ssr = input.get_key_pressed(KeyboardKey::KeyR);
+    let toggle_reflections_only = input.get_key_pressed(KeyboardKey::KeyT);
+    let ssr = &mut engine
+        .get_global_component_mut::<RenderStateComponent>()?
+        .ssr;
+    if toggle_ssr {
+        ssr.enabled = !ssr.enabled;
+    }
+    if toggle_reflections_only {
+        ssr.debug_reflections_only = !ssr.debug_reflections_only;
+    }
     let gi = &mut engine
         .get_global_component_mut::<RenderStateComponent>()?
         .gi;
@@ -328,16 +347,25 @@ fn spawn_assets(engine: &mut Engine, scene: SceneHandle, cpu: SponzaCpu) -> Resu
 
     // --- Materials ---
     let mut material_handles: Vec<MaterialHandle> = Vec::with_capacity(materials.len());
-    for material in &materials {
+    for (index, material) in materials.iter().enumerate() {
+        // Wet floor: darker, near-mirror stone that shows the screen-space reflections
+        let (roughness, darkening) = if index == FLOOR_MATERIAL {
+            (
+                material.roughness * WET_FLOOR_ROUGHNESS,
+                WET_FLOOR_DARKENING,
+            )
+        } else {
+            (material.roughness, 1.0)
+        };
         let [red, green, blue] = material.emissive_color;
         let mut pbr = Material::new(&material.name)
             .albedo(Color::new(
-                material.base_color[0],
-                material.base_color[1],
-                material.base_color[2],
+                material.base_color[0] * darkening,
+                material.base_color[1] * darkening,
+                material.base_color[2] * darkening,
             ))
             .metallic(material.metallic)
-            .roughness(material.roughness)
+            .roughness(roughness)
             .emissive(Color::new(red, green, blue));
         if let Some(i) = material.albedo {
             pbr = pbr.albedo_texture(texture_handles[i]);
@@ -390,6 +418,10 @@ impl PillGame for Game {
             render_state.punctual_lights.max_shadow_maps = 20;
             // Diffuse GI: light bouncing off the court floor onto columns and arches
             render_state.gi.enabled = true;
+            // Post chain for the screen-space reflections in the wet floor; motion blur off
+            render_state.pass_chain = PassChain::PostFx;
+            render_state.motion_blur = 0.0;
+            render_state.ssr.enabled = true;
         }
 
         engine.register_component::<TransformComponent>(scene)?;
@@ -406,14 +438,15 @@ impl PillGame for Game {
             .build_entity(scene)
             .with_component(
                 TransformComponent::builder()
-                    .position(Vector3f::new(9.5, 1.7, COURT_Z))
+                    .position(Vector3f::new(7.5, 0.7, COURT_Z))
                     .build(),
             )
             .with_component(CameraComponent::builder().enabled(true).fov(60.0).build())
-            // At floor level looking down the court toward -X, between the column rows
+            // Low, looking down the court toward -X between the column rows, at a grazing angle to
+            // the wet floor that shows its reflections
             .with_component(FlyCamera {
                 yaw: 90.0,
-                pitch: -4.0,
+                pitch: -7.0,
             })
             .build();
 

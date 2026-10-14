@@ -502,6 +502,10 @@ impl PillRenderer for Renderer {
                 .create_view(&wgpu::TextureViewDescriptor::default())
         })
     }
+
+    fn has_texture(&self, handle: PassTextureHandle) -> bool {
+        self.state.pass_textures.get(handle).is_some()
+    }
 }
 
 /// Surface-sized pass texture, rebuilt in place (same handle) when the surface is resized.

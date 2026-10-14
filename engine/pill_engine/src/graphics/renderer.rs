@@ -362,6 +362,8 @@ pub trait PillRenderer {
     /// Creates a new `TextureView` for a previously registered texture handle.
     /// Returns `None` if the handle is not found.
     fn get_texture_view(&self, handle: PassTextureHandle) -> Option<wgpu::TextureView>;
+    /// Whether `handle` names a live texture, without creating a view.
+    fn has_texture(&self, handle: PassTextureHandle) -> bool;
 }
 
 pub type Renderer = Box<dyn PillRenderer>;

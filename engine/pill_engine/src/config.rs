@@ -22,6 +22,7 @@ use crate::ecs::egui_system;
 #[cfg(feature = "post_fx")]
 use crate::graphics::{
     PassBloom, PassDepthOfField, PassFxaa, PassLens, PassMotionBlur, PassPBRTranslucent, PassSsao,
+    PassSsr,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -36,7 +37,7 @@ use pill_core::Result;
 
 use lazy_static::lazy_static;
 use std::any::TypeId;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 // --- General ---
@@ -119,6 +120,11 @@ pub const DEPTH_TARGET_FORMAT: wgpu::TextureFormat = RendererTexture::DEPTH_FORM
 pub const VELOCITY_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
 /// Indirect (IBL) lighting alone, written by the PBR opaque pass for SSAO.
 pub const AMBIENT_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// SSR inputs from the PBR opaque pass: specular weight (rgb) + roughness (a), and the
+/// octahedral-encoded normal. With color, velocity and ambient: 32 bytes per sample, WebGPU's
+/// default `maxColorAttachmentBytesPerSample`.
+pub const SSR_SURFACE_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+pub const SSR_NORMAL_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
 
 // WGSL is generated from res/shaders/*.hlsl by pill_assets (build.rs)
 // The post_fx variants also write motion vectors and the ambient term
@@ -176,6 +182,8 @@ pub const DOF_NEAR_BLUR_FRAGMENT_SHADER: &str =
 pub const DOF_NEAR_COMPOSITE_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/dof_near_composite_fragment.wgsl");
 #[cfg(feature = "post_fx")]
+pub const SSR_FRAGMENT_SHADER: &str = include_str!("../res/shaders/ssr_fragment.wgsl");
+#[cfg(feature = "post_fx")]
 pub const SSAO_FRAGMENT_SHADER: &str = include_str!("../res/shaders/ssao_fragment.wgsl");
 #[cfg(feature = "post_fx")]
 pub const SSAO_BLUR_FRAGMENT_SHADER: &str = include_str!("../res/shaders/ssao_blur_fragment.wgsl");
@@ -218,16 +226,21 @@ pub fn default_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
 #[cfg(feature = "post_fx")]
 /// `PassChain::PostFx`: the default chain with post-processing between the scene passes and
 /// tonemapping; parameters live in `RenderStateComponent`:
-/// light lists → shadow maps → opaque PBR (+ motion vectors, ambient) → SSAO → translucent PBR →
+/// light lists → shadow maps → opaque PBR (+ motion vectors, ambient, SSR inputs) → SSR → SSAO →
+/// translucent PBR →
 /// game passes → depth of field → motion blur (+ DoF composite) → bloom → tonemap → FXAA → lens →
 /// UI.
 pub fn post_fx_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
-    // The opaque pass renders into `opaque_target`; SSAO writes the shared HDR target that the
-    // translucent and game passes then draw onto
+    // The opaque pass renders into `opaque_target`, SSR into `ssr_target`; SSAO writes the shared
+    // HDR target that the translucent and game passes then draw onto
     let (hdr_target, depth_target) = create_scene_targets(engine)?;
     let opaque_target = create_target(engine, "opaque_target", HDR_TARGET_FORMAT)?;
     let ambient_target = create_target(engine, "ambient_target", AMBIENT_TARGET_FORMAT)?;
     let velocity_target = create_target(engine, "velocity_target", VELOCITY_TARGET_FORMAT)?;
+    let ssr_surface_target =
+        create_target(engine, "ssr_surface_target", SSR_SURFACE_TARGET_FORMAT)?;
+    let ssr_normal_target = create_target(engine, "ssr_normal_target", SSR_NORMAL_TARGET_FORMAT)?;
+    let ssr_target = create_target(engine, "ssr_target", HDR_TARGET_FORMAT)?;
     let depth_of_field_target = engine.renderer.create_render_target(RendererTargetDesc {
         name: "depth_of_field_target".to_string(),
         format: HDR_TARGET_FORMAT,
@@ -258,6 +271,15 @@ pub fn post_fx_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
     .with_shadow(shadow_frame)
     .with_lights(lights_frame)
     .with_ddgi(ddgi_frame);
+    let ssr_active = Rc::new(Cell::new(false));
+    let ssr = PassSsr::new(
+        opaque_target,
+        depth_target,
+        [ssr_surface_target, ssr_normal_target],
+        opaque.initial_ibl()[1],
+        ssr_target,
+        ssr_active.clone(),
+    );
     let mut passes: Vec<Box<dyn Pass>> = vec![
         Box::new(lights),
         Box::new(punctual_shadows),
@@ -267,14 +289,14 @@ pub fn post_fx_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
             opaque
                 .without_translucent()
                 .with_velocity_target(velocity_target)
-                .with_ambient_target(ambient_target),
+                .with_ambient_target(ambient_target)
+                .with_ssr_targets(ssr_surface_target, ssr_normal_target),
         ),
-        Box::new(PassSsao::new(
-            opaque_target,
-            ambient_target,
-            depth_target,
-            hdr_target,
-        )),
+        Box::new(ssr),
+        Box::new(
+            PassSsao::new(ssr_target, ambient_target, depth_target, hdr_target)
+                .with_color_when_inactive(opaque_target, ssr_active),
+        ),
         Box::new(translucent),
     ];
     passes.append(&mut engine.custom_render_passes);

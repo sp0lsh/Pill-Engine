@@ -126,13 +126,12 @@ pub(crate) fn parse_cooked_tex(bytes: &[u8]) -> Result<CookedTexture<'_>> {
     })
 }
 
-/// Mean linear RGB of sRGB RGBA8 pixels, from at most ~64k evenly strided samples.
+/// Mean linear RGB of sRGB RGBA8 pixels weighted by alpha (the color of what is visible, not of
+/// cut-out texels), from at most ~64k evenly strided samples; white when fully transparent.
+/// Computed for every Color texture, emissive maps included (the type does not tell them apart).
 fn average_srgb8_color(rgba: &[u8]) -> [f32; 3] {
     let pixel_count = rgba.len() / 4;
-    if pixel_count == 0 {
-        return [1.0; 3];
-    }
-    let stride = pixel_count.div_ceil(65_536);
+    let stride = pixel_count.div_ceil(65_536).max(1);
     let to_linear = |byte: u8| {
         let value = byte as f32 / 255.0;
         if value <= 0.04045 {
@@ -142,14 +141,18 @@ fn average_srgb8_color(rgba: &[u8]) -> [f32; 3] {
         }
     };
     let mut sum = [0.0f64; 3];
-    let mut samples = 0u32;
+    let mut weight = 0.0f64;
     for pixel in rgba.chunks_exact(4).step_by(stride) {
+        let alpha = pixel[3] as f64 / 255.0;
         for (channel, total) in sum.iter_mut().enumerate() {
-            *total += to_linear(pixel[channel]) as f64;
+            *total += to_linear(pixel[channel]) as f64 * alpha;
         }
-        samples += 1;
+        weight += alpha;
     }
-    sum.map(|total| (total / samples as f64) as f32)
+    if weight <= 0.0 {
+        return [1.0; 3];
+    }
+    sum.map(|total| (total / weight) as f32)
 }
 
 fn owned((pixels, width, height): (Cow<'_, [u8]>, u32, u32)) -> (Cow<'static, [u8]>, u32, u32) {
@@ -339,7 +342,16 @@ impl Resource for Texture {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_cooked_tex;
+    use super::{average_srgb8_color, parse_cooked_tex};
+
+    #[test]
+    fn average_color_half_transparent_texture_averages_opaque_texels_only() {
+        // Opaque red and fully transparent white texels
+        let pixels = [255, 0, 0, 255, 255, 255, 255, 0].repeat(8);
+        let [r, g, b] = average_srgb8_color(&pixels);
+        assert!((r - 1.0).abs() < 1e-6 && g.abs() < 1e-6 && b.abs() < 1e-6);
+        assert_eq!(average_srgb8_color(&[10, 20, 30, 0]), [1.0; 3]);
+    }
 
     fn rtex_v4(width: u32, height: u32, mip_count: u32, payload_bytes: usize) -> Vec<u8> {
         let mut bytes = b"RTEX".to_vec();

@@ -5,6 +5,8 @@
 // and, for the irradiance query, `ddgi_probes` (StructuredBuffer<DdgiProbe>), `ddgi_depth`
 // (Texture2D) and DDGI_SAMPLER (a linear clamp sampler, defined before the include).
 
+#include "octahedral.hlsl"
+
 static const float DDGI_PI = 3.14159265;
 static const uint  DDGI_COLOR_RESOLUTION = 8;
 static const uint  DDGI_DEPTH_RESOLUTION = 16;
@@ -56,23 +58,9 @@ uint2 ddgi_depth_pixel(uint3 coord) {
                  coord.z * DDGI_DEPTH_TEXELS + 1);
 }
 
-// Octahedral mapping of a unit direction to [-1, 1]²
-float2 ddgi_encode_oct(float3 direction) {
-    float3 n = direction / (abs(direction.x) + abs(direction.y) + abs(direction.z));
-    float2 folded = (1.0 - abs(n.yx)) * float2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
-    return n.z >= 0.0 ? n.xy : folded;
-}
-
-float3 ddgi_decode_oct(float2 encoded) {
-    float3 n = float3(encoded, 1.0 - abs(encoded.x) - abs(encoded.y));
-    float  t = saturate(-n.z);
-    n.x += n.x >= 0.0 ? -t : t;
-    n.y += n.y >= 0.0 ? -t : t;
-    return normalize(n);
-}
 
 float2 ddgi_depth_uv(uint3 coord, float3 direction) {
-    float2 pixel = float2(ddgi_depth_pixel(coord)) + (ddgi_encode_oct(normalize(direction)) * 0.5 + 0.5) * DDGI_DEPTH_RESOLUTION;
+    float2 pixel = float2(ddgi_depth_pixel(coord)) + (oct_encode(normalize(direction)) * 0.5 + 0.5) * DDGI_DEPTH_RESOLUTION;
     return pixel * ddgi.depth_texel_size;
 }
 
