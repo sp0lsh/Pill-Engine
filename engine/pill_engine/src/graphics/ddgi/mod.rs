@@ -19,6 +19,8 @@ pub(crate) const DEPTH_RESOLUTION: u32 = 16;
 pub(crate) const DEPTH_TEXELS: u32 = DEPTH_RESOLUTION + 2;
 /// Upper bound of `Gi::rays_per_probe`.
 pub(crate) const MAX_RAYS_PER_PROBE: u32 = 256;
+/// `ProbeGrid::exposed` source of a probe with no neighbour to start from.
+pub(crate) const NO_SOURCE: u32 = u32::MAX;
 /// Upper bound of probes per axis.
 const MAX_PROBES_PER_AXIS: [u32; 3] = [32, 16, 32];
 /// Widest depth atlas (WebGPU default `maxTextureDimension2D`).
@@ -111,16 +113,36 @@ impl ProbeGrid {
         x + y * self.dims[0] + z * self.dims[0] * self.dims[1]
     }
 
-    /// Storage indices of the probes this grid has and a grid at `previous_origin` (same storage)
-    /// did not: the slabs a move exposes, every probe after a jump of a grid size or more.
-    pub(crate) fn exposed(&self, previous_origin: [i32; 3]) -> Vec<u32> {
+    /// The probes this grid has and a grid at `previous_origin` (same storage) did not — the slabs
+    /// a move exposes, every probe after a jump of a grid size or more — as `[storage index,
+    /// source]`. The source is the storage index of the nearest probe both grids have, which the
+    /// exposed probe starts from (as Godot's SDFGI fills scrolled probes from the coarser cascade);
+    /// `NO_SOURCE` when there is none.
+    pub(crate) fn exposed(&self, previous_origin: [i32; 3]) -> Vec<[u32; 2]> {
         (0..self.probe_count())
-            .filter(|&index| {
+            .filter_map(|index| {
                 let logical = self.logical_coord(self.coord(index));
-                (0..3).any(|axis| {
-                    let previous = logical[axis] as i32 + self.origin[axis] - previous_origin[axis];
-                    previous < 0 || previous >= self.dims[axis] as i32
-                })
+                // World cell of the exposed probe, and of the previous grid's probe nearest to it
+                let cell = [0, 1, 2].map(|axis| logical[axis] as i32 + self.origin[axis]);
+                let nearest = [0, 1, 2].map(|axis| {
+                    cell[axis].clamp(
+                        previous_origin[axis],
+                        previous_origin[axis] + self.dims[axis] as i32 - 1,
+                    )
+                });
+                if nearest == cell {
+                    return None;
+                }
+                let in_both = (0..3).all(|axis| {
+                    (self.origin[axis]..self.origin[axis] + self.dims[axis] as i32)
+                        .contains(&nearest[axis])
+                });
+                let source = if in_both {
+                    self.index([0, 1, 2].map(|axis| wrap(nearest[axis], self.dims[axis])))
+                } else {
+                    NO_SOURCE
+                };
+                Some([index, source])
             })
             .collect()
     }
@@ -177,8 +199,7 @@ pub(crate) struct GpuDdgiParams {
     pub(crate) enabled: u32,
     pub(crate) frame: u32,
     pub(crate) _padding: u32,
-    /// Probes updated this frame (entries of the probe list).
-    pub(crate) probes_this_frame: u32,
+    pub(crate) _padding_rays: u32,
     pub(crate) rays_per_probe: u32,
     pub(crate) light_count: u32,
     /// Direction from the key light toward the scene.
@@ -189,51 +210,9 @@ pub(crate) struct GpuDdgiParams {
     pub(crate) sun_radiance: [f32; 3],
     /// IBL scale for rays that miss (sky).
     pub(crate) sky_intensity: f32,
-    /// Random rotation of the ray pattern this frame (columns).
-    pub(crate) rotation: [[f32; 4]; 3],
     /// World cell of logical probe (0, 0, 0) (`ProbeGrid::origin`).
     pub(crate) grid_origin: [i32; 3],
     pub(crate) _padding_origin: i32,
-}
-
-/// Uniformly random rotation (columns) from a frame number (Shoemake's quaternion method).
-pub(crate) fn random_rotation(frame: u32) -> [[f32; 4]; 3] {
-    let mut state = frame.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
-    let mut next = || {
-        state ^= state << 13;
-        state ^= state >> 17;
-        state ^= state << 5;
-        state as f32 / u32::MAX as f32
-    };
-    let (u1, u2, u3) = (next(), next(), next());
-    let tau = std::f32::consts::TAU;
-    let (x, y, z, w) = (
-        (1.0 - u1).sqrt() * (tau * u2).sin(),
-        (1.0 - u1).sqrt() * (tau * u2).cos(),
-        u1.sqrt() * (tau * u3).sin(),
-        u1.sqrt() * (tau * u3).cos(),
-    );
-    // Unit quaternion → rotation matrix columns
-    [
-        [
-            1.0 - 2.0 * (y * y + z * z),
-            2.0 * (x * y + w * z),
-            2.0 * (x * z - w * y),
-            0.0,
-        ],
-        [
-            2.0 * (x * y - w * z),
-            1.0 - 2.0 * (x * x + z * z),
-            2.0 * (y * z + w * x),
-            0.0,
-        ],
-        [
-            2.0 * (x * z + w * y),
-            2.0 * (y * z - w * x),
-            1.0 - 2.0 * (x * x + y * y),
-            0.0,
-        ],
-    ]
 }
 
 #[cfg(test)]
@@ -326,12 +305,43 @@ mod tests {
     }
 
     #[test]
-    fn jump_of_a_grid_size_exposes_every_probe() {
+    fn jump_of_a_grid_size_exposes_every_probe_without_sources() {
         let grid = ProbeGrid::around(Vector3f::ZERO, 2.0);
         let mut moved = grid;
         moved.origin[2] += grid.dims[2] as i32;
-        assert_eq!(moved.exposed(grid.origin).len() as u32, grid.probe_count());
+        let exposed = moved.exposed(grid.origin);
+        assert_eq!(exposed.len() as u32, grid.probe_count());
+        assert!(exposed.iter().all(|&[_, source]| source == NO_SOURCE));
         assert!(grid.exposed(grid.origin).is_empty());
+    }
+
+    #[test]
+    fn one_cell_step_sources_are_the_adjacent_surviving_probes() {
+        let grid = ProbeGrid::around(Vector3f::ZERO, 2.0);
+        for axis in 0..3 {
+            for step in [1, -1] {
+                let mut moved = grid;
+                moved.origin[axis] += step;
+                let exposed = moved.exposed(grid.origin);
+                let targets: Vec<u32> = exposed.iter().map(|&[target, _]| target).collect();
+                for &[target, source] in &exposed {
+                    assert!(
+                        !targets.contains(&source),
+                        "axis {axis} {step}: source exposed"
+                    );
+                    let target = moved.logical_coord(moved.coord(target));
+                    let source = moved.logical_coord(moved.coord(source));
+                    for other in 0..3 {
+                        let expected = if other == axis {
+                            target[axis] as i32 - step
+                        } else {
+                            target[other] as i32
+                        };
+                        assert_eq!(source[other] as i32, expected, "axis {axis} {step}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -341,15 +351,5 @@ mod tests {
         let last = grid.position([grid.dims[0] - 1, grid.dims[1] - 1, grid.dims[2] - 1]);
         assert!(grid.min.cmple(center).all() && last.cmpge(center).all());
         assert!(grid.depth_atlas_size().0 <= MAX_ATLAS_SIZE);
-    }
-
-    #[test]
-    fn random_rotation_is_orthonormal() {
-        for frame in 0..20 {
-            let [x, y, z] =
-                random_rotation(frame).map(|column| Vector3f::new(column[0], column[1], column[2]));
-            assert!((x.length() - 1.0).abs() < 1e-4 && (y.length() - 1.0).abs() < 1e-4);
-            assert!(x.dot(y).abs() < 1e-4 && x.cross(y).abs_diff_eq(z, 1e-4));
-        }
     }
 }

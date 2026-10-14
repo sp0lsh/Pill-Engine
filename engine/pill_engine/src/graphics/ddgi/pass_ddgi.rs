@@ -5,8 +5,7 @@ use crate::config::{
 use crate::ecs::{MeshRenderingComponent, RenderStateComponent, TransformComponent};
 use crate::graphics::ddgi::bvh::{Bvh, Triangle};
 use crate::graphics::ddgi::{
-    random_rotation, GpuDdgiParams, ProbeGrid, COLOR_RESOLUTION, DEPTH_RESOLUTION,
-    MAX_RAYS_PER_PROBE,
+    GpuDdgiParams, ProbeGrid, COLOR_RESOLUTION, DEPTH_RESOLUTION, MAX_RAYS_PER_PROBE,
 };
 use crate::graphics::fullscreen::uniform_entry_for;
 use crate::graphics::pass_lights::LightsFrame;
@@ -19,7 +18,6 @@ use crate::resources::{Material, Mesh, Texture};
 
 use pill_core::{info, LogContext, Result, Vector3f};
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::rc::Rc;
 
 /// Bytes of one probe ray (direction + depth, radiance) — `DdgiRay` in the DDGI shaders.
@@ -131,11 +129,8 @@ struct ProbeStorage {
     /// Also published in `DdgiFrame`.
     probes: wgpu::Buffer,
     depth_view: wgpu::TextureView,
-    /// Probes a grid move exposed (reset, not yet updated), updated before the round robin.
-    pending: VecDeque<u32>,
-    /// Next probe of the round robin.
-    cursor: u32,
-    /// Storage indices to reset this frame, and the reset kernel's bind group.
+    /// `[storage index, source]` of the probes to reset this frame (`ProbeGrid::exposed`), and
+    /// the reset kernel's bind group.
     reset_list: wgpu::Buffer,
     reset_group: wgpu::BindGroup,
 }
@@ -144,7 +139,6 @@ struct ProbeStorage {
 #[derive(Clone, Copy, PartialEq)]
 struct BindingKey {
     rays_per_probe: u32,
-    probes_per_frame: u32,
     sky: PassTextureHandle,
     bvh_generation: u64,
     storage_generation: u64,
@@ -152,8 +146,6 @@ struct BindingKey {
 
 struct ProbeBindings {
     key: BindingKey,
-    /// Storage indices of the probes updated this frame (`probes_per_frame` entries).
-    probe_list: wgpu::Buffer,
     // The bind groups keep the ray buffer alive
     trace_group: wgpu::BindGroup,
     color_group: wgpu::BindGroup,
@@ -176,8 +168,9 @@ struct SceneBvh {
 }
 
 /// Diffuse GI probes (see `ddgi/mod.rs`): rebuilds the BVH when the set of meshes changes (static
-/// geometry), traces and updates `Gi::probes_per_frame` probes per frame and publishes them in
-/// `frame` for the PBR passes. Settings: `RenderStateComponent::gi`. Compiles its pipelines on
+/// geometry), traces `Gi::rays_per_probe` rays from every probe each frame (the cost is spread over
+/// rays, not probes, as Godot's SDFGI: the pattern rotates per frame and the estimators average
+/// over frames) and publishes the probes in `frame` for the PBR passes. Settings: `RenderStateComponent::gi`. Compiles its pipelines on
 /// the first frame with GI on.
 pub(crate) struct PassDdgi {
     frame: Rc<RefCell<DdgiFrame>>,
@@ -369,7 +362,7 @@ impl PassDdgi {
         let probes = storage_buffer(renderer, "ddgi_probes", probe_count * PROBE_BYTES)?;
         let (width, height) = grid.depth_atlas_size();
         let depth_view = depth_atlas(renderer.get_device(), width, height);
-        let reset_list = storage_buffer(renderer, "ddgi_reset_list", probe_count * 4)?;
+        let reset_list = storage_buffer(renderer, "ddgi_reset_list", probe_count * 8)?;
         let pipelines = self
             .pipelines
             .as_ref()
@@ -399,8 +392,6 @@ impl PassDdgi {
             depth_history,
             probes,
             depth_view,
-            pending: VecDeque::new(),
-            cursor: 0,
             reset_list,
             reset_group,
         });
@@ -412,13 +403,17 @@ impl PassDdgi {
 
     /// Ray buffer and the three bind groups for `key`.
     fn create_bindings(&mut self, renderer: &mut dyn PillRenderer, key: BindingKey) -> Result<()> {
+        let probe_count = self
+            .storage
+            .as_ref()
+            .expect("PassDdgi: probe storage before bindings")
+            .grid
+            .probe_count();
         let rays = storage_buffer(
             renderer,
             "ddgi_rays",
-            key.probes_per_frame as u64 * key.rays_per_probe as u64 * RAY_BYTES,
+            probe_count as u64 * key.rays_per_probe as u64 * RAY_BYTES,
         )?;
-        let probe_list =
-            storage_buffer(renderer, "ddgi_probe_list", key.probes_per_frame as u64 * 4)?;
         let sky = renderer
             .get_texture_view(key.sky)
             .ok_or("PassDdgi: IBL irradiance missing")?;
@@ -460,7 +455,6 @@ impl PassDdgi {
                 lights.buffers.lights.as_entire_binding(),
                 wgpu::BindingResource::TextureView(&sky),
                 rays.as_entire_binding(),
-                probe_list.as_entire_binding(),
             ],
         );
         let color_group = group(
@@ -470,7 +464,6 @@ impl PassDdgi {
                 rays.as_entire_binding(),
                 storage.color_history.as_entire_binding(),
                 storage.probes.as_entire_binding(),
-                probe_list.as_entire_binding(),
             ],
         );
         let depth_group = group(
@@ -480,14 +473,12 @@ impl PassDdgi {
                 rays.as_entire_binding(),
                 storage.depth_history.as_entire_binding(),
                 wgpu::BindingResource::TextureView(&storage.depth_view),
-                probe_list.as_entire_binding(),
             ],
         );
         drop(frame);
         drop(lights);
         self.bindings = Some(ProbeBindings {
             key,
-            probe_list,
             trace_group,
             color_group,
             depth_group,
@@ -540,7 +531,6 @@ fn create_pipelines(renderer: &mut dyn PillRenderer) -> Result<Pipelines> {
             storage_entry(6, true),
             texture_entry(7),
             storage_entry(8, false),
-            storage_entry(9, true),
         ]],
     })?;
     let color = renderer.create_compute_pipeline(ComputePipelineDesc {
@@ -554,7 +544,6 @@ fn create_pipelines(renderer: &mut dyn PillRenderer) -> Result<Pipelines> {
             storage_entry(1, true),
             storage_entry(2, false),
             storage_entry(3, false),
-            storage_entry(4, true),
         ]],
     })?;
     let depth = renderer.create_compute_pipeline(ComputePipelineDesc {
@@ -575,7 +564,6 @@ fn create_pipelines(renderer: &mut dyn PillRenderer) -> Result<Pipelines> {
                     view_dimension: wgpu::TextureViewDimension::D2,
                 },
             ),
-            storage_entry(4, true),
         ]],
     })?;
     let sampler = renderer
@@ -642,14 +630,12 @@ impl Pass for PassDdgi {
                 settings.probe_spacing,
             )
         };
-        let mut reset: Vec<u32> = Vec::new();
+        let mut reset: Vec<[u32; 2]> = Vec::new();
         match &mut self.storage {
             Some(storage) if storage.grid.same_storage(&grid) => {
                 if storage.grid.origin != grid.origin {
+                    // Exposed probes start from their nearest surviving neighbour
                     reset = grid.exposed(storage.grid.origin);
-                    for &index in reset.iter().rev() {
-                        storage.pending.push_front(index);
-                    }
                     storage.grid = grid;
                 }
             }
@@ -657,10 +643,6 @@ impl Pass for PassDdgi {
         }
         let key = BindingKey {
             rays_per_probe: settings.rays_per_probe.clamp(1, MAX_RAYS_PER_PROBE),
-            probes_per_frame: match settings.probes_per_frame {
-                0 => grid.probe_count(),
-                count => count.min(grid.probe_count()),
-            },
             sky: if renderer.has_texture(render_state.ibl_diffuse) {
                 render_state.ibl_diffuse
             } else {
@@ -685,21 +667,10 @@ impl Pass for PassDdgi {
             .as_ref()
             .expect("PassDdgi: bindings created above");
 
-        // This frame's probes: the ones a move exposed first, then the round robin
-        let mut probe_list: Vec<u32> = Vec::with_capacity(key.probes_per_frame as usize);
-        while probe_list.len() < key.probes_per_frame as usize {
-            match storage.pending.pop_front() {
-                Some(index) => probe_list.push(index),
-                None => {
-                    probe_list.push(storage.cursor);
-                    storage.cursor = (storage.cursor + 1) % grid.probe_count();
-                }
-            }
-        }
-        let queue = renderer.get_queue();
-        queue.write_buffer(&bindings.probe_list, 0, bytemuck::cast_slice(&probe_list));
         if !reset.is_empty() {
-            queue.write_buffer(&storage.reset_list, 0, bytemuck::cast_slice(&reset));
+            renderer
+                .get_queue()
+                .write_buffer(&storage.reset_list, 0, bytemuck::cast_slice(&reset));
         }
         let light_count = self.lights.borrow().params.grid[3] as u32;
         let sun = render_state.lights[0];
@@ -714,11 +685,11 @@ impl Pass for PassDdgi {
                 let (width, height) = grid.depth_atlas_size();
                 [1.0 / width as f32, 1.0 / height as f32]
             },
-            // Probes without an estimate yet are skipped per probe (`DdgiProbe::sh[0].w`)
+            // New probes are weighted in per probe (`DdgiProbe::sh[0].w`)
             enabled: if settings.debug_indirect_only { 2 } else { 1 },
             frame: self.frame_index,
             _padding: 0,
-            probes_this_frame: key.probes_per_frame,
+            _padding_rays: 0,
             rays_per_probe: key.rays_per_probe,
             light_count,
             sun_direction: Vector3f::from_array(sun.direction)
@@ -727,7 +698,6 @@ impl Pass for PassDdgi {
             blend_speed: settings.blend_speed,
             sun_radiance: (Vector3f::from_array(sun.color) * sun.intensity).to_array(),
             sky_intensity: render_state.ibl_intensity,
-            rotation: random_rotation(self.frame_index),
             grid_origin: grid.origin,
             _padding_origin: 0,
         };
@@ -750,14 +720,18 @@ impl Pass for PassDdgi {
             pass.set_bind_group(0, &storage.reset_group, &[]);
             pass.dispatch_workgroups(reset.len() as u32, 1, 1);
         }
-        for (pipeline, group) in [
-            (&pipelines.trace, &bindings.trace_group),
-            (&pipelines.color, &bindings.color_group),
-            (&pipelines.depth, &bindings.depth_group),
+        let probe_count = grid.probe_count();
+        // Trace: one thread per ray of every probe (128 per workgroup, `THREADS` in the shader;
+        // the largest grid × 256 rays stays within 65535 workgroups)
+        let ray_groups = (probe_count * key.rays_per_probe).div_ceil(128);
+        for (pipeline, group, groups) in [
+            (&pipelines.trace, &bindings.trace_group, ray_groups),
+            (&pipelines.color, &bindings.color_group, probe_count),
+            (&pipelines.depth, &bindings.depth_group, probe_count),
         ] {
             pass.set_pipeline(&pipeline.pipeline);
             pass.set_bind_group(0, group, &[]);
-            pass.dispatch_workgroups(key.probes_per_frame, 1, 1);
+            pass.dispatch_workgroups(groups, 1, 1);
         }
         drop(pass);
 

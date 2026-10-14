@@ -15,7 +15,6 @@ struct DdgiRay {
 // History of the moments (mean, mean²) per inner texel; the atlas can't be read back in place
 [[vk::binding(2, 0)]] RWStructuredBuffer<float2>        ddgi_depth_history;
 [[vk::binding(3, 0)]] [format("rgba16f")] WTexture2D<float4> ddgi_depth_out;
-[[vk::binding(4, 0)]] StructuredBuffer<uint>            ddgi_probe_list;
 
 static const uint TEXELS = DDGI_DEPTH_RESOLUTION * DDGI_DEPTH_RESOLUTION;
 groupshared float4 ray_cache[TEXELS]; // xyz = direction, w = distance
@@ -24,8 +23,7 @@ groupshared float2 tile[TEXELS];
 [shader("compute")]
 [numthreads(DDGI_DEPTH_RESOLUTION, DDGI_DEPTH_RESOLUTION, 1)]
 void cs_main(uint3 group : SV_GroupID, uint2 thread : SV_GroupThreadID, uint thread_index : SV_GroupIndex) {
-    uint  slot         = group.x;
-    uint  probe_index  = ddgi_probe_list[slot];
+    uint  probe_index  = group.x;
     uint3 probe_coord  = ddgi_probe_coord(probe_index);
     uint  ray_count    = ddgi.rays_per_probe;
     float max_distance = ddgi.max_distance;
@@ -36,7 +34,7 @@ void cs_main(uint3 group : SV_GroupID, uint2 thread : SV_GroupThreadID, uint thr
     for (uint first = 0; first < ray_count; first += TEXELS) {
         uint count = min(TEXELS, ray_count - first);
         if (thread_index < count) {
-            ray_cache[thread_index] = ddgi_rays[slot * ray_count + first + thread_index].direction_depth;
+            ray_cache[thread_index] = ddgi_rays[probe_index * ray_count + first + thread_index].direction_depth;
         }
         GroupMemoryBarrierWithGroupSync();
         for (uint r = 0; r < count; r++) {
@@ -50,15 +48,21 @@ void cs_main(uint3 group : SV_GroupID, uint2 thread : SV_GroupThreadID, uint thr
         }
         GroupMemoryBarrierWithGroupSync();
     }
-    float2 result = total_weight > 0.0001 ? sum / total_weight : float2(max_distance, max_distance * max_distance);
-
     uint   history_index = probe_index * TEXELS + thread_index;
     float2 previous = ddgi_depth_history[history_index];
-    // Zeroed history: start from this frame's value; else Wicked's 2 % blend
-    if (previous.y > 0.0) {
-        result = lerp(previous, result, 0.02);
+    float2 result = previous;
+    // No ray in this texel's narrow lobe this frame (few rays per probe): keep its history
+    if (total_weight > 0.0001) {
+        result = sum / total_weight;
+        // Zeroed history: start from this frame's value; else Wicked's 2 % blend
+        if (previous.y > 0.0) {
+            result = lerp(previous, result, 0.02);
+        }
+        ddgi_depth_history[history_index] = result;
+    } else if (previous.y == 0.0) {
+        // Nothing seen yet: unoccluded until a ray arrives
+        result = float2(max_distance, max_distance * max_distance);
     }
-    ddgi_depth_history[history_index] = result;
     tile[thread_index] = result;
 
     uint2 inner = ddgi_depth_pixel(probe_coord);

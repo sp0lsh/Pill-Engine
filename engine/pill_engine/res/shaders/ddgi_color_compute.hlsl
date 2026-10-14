@@ -1,6 +1,6 @@
 // DDGI radiance update (port of WickedEngine ddgi_updateCS without DDGI_UPDATE_DEPTH): one
 // workgroup per probe; each of the 8×8 octahedral texels averages this frame's rays around its
-// direction, is blended with its history by Wicked's multiscale mean estimator, then thread 0
+// direction (a texel no ray reached keeps its history), is blended with its history by Wicked's multiscale mean estimator, then thread 0
 // projects the 64 texels onto L1 SH for the probe.
 
 #include "include/ddgi_common.hlsl"
@@ -20,9 +20,9 @@ struct DdgiTexelHistory {
 [[vk::binding(1, 0)]] StructuredBuffer<DdgiRay>               ddgi_rays;
 [[vk::binding(2, 0)]] RWStructuredBuffer<DdgiTexelHistory>    ddgi_history;
 [[vk::binding(3, 0)]] RWStructuredBuffer<DdgiProbe>           ddgi_probes_out;
-[[vk::binding(4, 0)]] StructuredBuffer<uint>                  ddgi_probe_list;
 
 static const uint TEXELS = DDGI_COLOR_RESOLUTION * DDGI_COLOR_RESOLUTION;
+static const float DDGI_WARMUP_UPDATES = 32.0;
 groupshared float3 ray_directions[TEXELS];
 groupshared float3 ray_radiance[TEXELS];
 groupshared float3 texel_radiance[TEXELS];
@@ -63,8 +63,7 @@ void multiscale_mean_estimator(float3 y, inout DdgiTexelHistory data, float shor
 [shader("compute")]
 [numthreads(DDGI_COLOR_RESOLUTION, DDGI_COLOR_RESOLUTION, 1)]
 void cs_main(uint3 group : SV_GroupID, uint2 thread : SV_GroupThreadID, uint thread_index : SV_GroupIndex) {
-    uint   slot        = group.x;
-    uint   probe_index = ddgi_probe_list[slot];
+    uint   probe_index = group.x;
     uint   ray_count   = ddgi.rays_per_probe;
     float3 texel_direction = oct_decode(((float2(thread) + 0.5) / DDGI_COLOR_RESOLUTION) * 2.0 - 1.0);
 
@@ -73,7 +72,7 @@ void cs_main(uint3 group : SV_GroupID, uint2 thread : SV_GroupThreadID, uint thr
     for (uint first = 0; first < ray_count; first += TEXELS) {
         uint count = min(TEXELS, ray_count - first);
         if (thread_index < count) {
-            DdgiRay ray = ddgi_rays[slot * ray_count + first + thread_index];
+            DdgiRay ray = ddgi_rays[probe_index * ray_count + first + thread_index];
             ray_directions[thread_index] = ray.direction_depth.xyz;
             ray_radiance[thread_index]   = ray.radiance.rgb;
         }
@@ -87,18 +86,20 @@ void cs_main(uint3 group : SV_GroupID, uint2 thread : SV_GroupThreadID, uint thr
         }
         GroupMemoryBarrierWithGroupSync();
     }
-    float3 result = total_weight > 0.0001 ? sum / total_weight : float3(0.0, 0.0, 0.0);
-
     uint history_index = probe_index * TEXELS + thread_index;
     DdgiTexelHistory history = ddgi_history[history_index];
-    // Zeroed history (vbbr is never 0 once written): start from this frame's value
-    if (history.mean_vbbr.w == 0.0) {
-        history.mean_vbbr = float4(result, 0.0);
-        history.short_mean_inconsistency = float4(result, 1.0);
-        history.variance = float4(0.0, 0.0, 0.0, 0.0);
+    // No ray near this texel this frame (few rays per probe): keep its history
+    if (total_weight > 0.0001) {
+        float3 result = sum / total_weight;
+        // Zeroed history (vbbr is never 0 once written): start from this frame's value
+        if (history.mean_vbbr.w == 0.0) {
+            history.mean_vbbr = float4(result, 0.0);
+            history.short_mean_inconsistency = float4(result, 1.0);
+            history.variance = float4(0.0, 0.0, 0.0, 0.0);
+        }
+        multiscale_mean_estimator(result, history, ddgi.blend_speed);
+        ddgi_history[history_index] = history;
     }
-    multiscale_mean_estimator(result, history, ddgi.blend_speed);
-    ddgi_history[history_index] = history;
     texel_radiance[thread_index] = history.mean_vbbr.xyz;
     GroupMemoryBarrierWithGroupSync();
 
@@ -119,9 +120,13 @@ void cs_main(uint3 group : SV_GroupID, uint2 thread : SV_GroupThreadID, uint thr
         }
         // Monte Carlo over the sphere: × 4π / texel count
         float scale = 4.0 * DDGI_PI / float(TEXELS);
+        // Updates since the probe's reset (sh[1].w); its weight (sh[0].w) ramps in over the first
+        // DDGI_WARMUP_UPDATES, so a probe a grid move exposed fades in from few-ray estimates
+        // while its older neighbours carry the lighting, instead of popping in
+        float updates = min(ddgi_probes_out[probe_index].sh[1].w + 1.0, DDGI_WARMUP_UPDATES);
         DdgiProbe probe;
-        probe.sh[0] = float4(sh0 * scale, 1.0); // w: has an estimate
-        probe.sh[1] = float4(sh1 * scale, 0.0);
+        probe.sh[0] = float4(sh0 * scale, updates / DDGI_WARMUP_UPDATES);
+        probe.sh[1] = float4(sh1 * scale, updates);
         probe.sh[2] = float4(sh2 * scale, 0.0);
         probe.sh[3] = float4(sh3 * scale, 0.0);
         ddgi_probes_out[probe_index] = probe;

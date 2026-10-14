@@ -24,7 +24,8 @@ Not a web example: the assets are too large and the BC7 cooker (Intel ISPC kerne
 - P: wet street
 - O / B / F / M: SSAO / bloom / depth of field / motion blur
 
-The "Bistro" panel (folded, top left) has the sun's direction and intensity and the same toggles.
+The "Bistro" panel (folded, top left) has an Hour slider (0–24: sun path of Rome on the spring
+equinox, golden hour by default) and the same toggles.
 
 ## Attribution
 

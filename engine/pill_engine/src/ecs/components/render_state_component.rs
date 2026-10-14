@@ -172,10 +172,8 @@ pub struct Gi {
     pub enabled: bool,
     /// Distance (m) between probes; the grid is capped at 32 × 16 × 32 probes.
     pub probe_spacing: f32,
-    /// Rays traced per probe update (at most 256).
+    /// Rays traced from every probe each frame (at most 256); the pattern rotates per frame.
     pub rays_per_probe: u32,
-    /// Probes updated per frame, round robin; 0 = all.
-    pub probes_per_frame: u32,
     /// How fast probes follow lighting changes (short-window blend of the probe estimator).
     pub blend_speed: f32,
     /// Scales the indirect diffuse light.
@@ -198,7 +196,6 @@ impl Default for Gi {
             enabled: false,
             probe_spacing: 1.5,
             rays_per_probe: 64,
-            probes_per_frame: 0,
             blend_speed: 0.08,
             intensity: 1.0,
             debug_indirect_only: false,
