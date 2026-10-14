@@ -40,6 +40,12 @@ impl MeshRenderingComponentBuilder {
         self
     }
 
+    /// Whether the mesh is drawn into the shadow map (default true).
+    pub fn cast_shadows(mut self, cast_shadows: bool) -> Self {
+        self.component.cast_shadows = cast_shadows;
+        self
+    }
+
     pub fn build(self) -> MeshRenderingComponent {
         self.component
     }
@@ -54,6 +60,8 @@ pub struct MeshRenderingComponent {
     #[readonly]
     pub material_handle: Option<MaterialHandle>,
     pub(crate) render_queue_key: Option<RenderQueueKey>,
+    /// Drawn into the shadow map of the key light.
+    pub cast_shadows: bool,
 
     entity_handle: Option<EntityHandle>,
     scene_handle: Option<SceneHandle>,
@@ -76,6 +84,7 @@ impl MeshRenderingComponent {
             mesh_handle: None,
             material_handle: None,
             render_queue_key: None,
+            cast_shadows: true,
             entity_handle: None,
             scene_handle: None,
             deferred_update_manager: None,

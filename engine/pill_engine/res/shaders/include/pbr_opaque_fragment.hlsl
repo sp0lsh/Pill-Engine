@@ -28,8 +28,47 @@ struct Scene {
     float4 light_color1;
     float4 light_direction2;
     float4 light_color2;
+    column_major float4x4 shadow_view_projection; // world → light clip space (key light)
+    float4 shadow_params; // x = normal offset (world), y = shadow distance (0 = none), z = 1 / map size, w = map size
 };
 [[vk::binding(7, 0)]] ConstantBuffer<Scene> scene;
+
+// Key light shadow map; the comparison sampler (LessEqual, linear) makes every tap a 2×2 PCF
+[[vk::binding(8, 0)]] DepthTexture2D         shadow_map;
+[[vk::binding(9, 0)]] SamplerComparisonState shadow_sampler;
+
+// Fraction of the key light reaching `world_position` (1 = lit). The receiver is pushed along its
+// geometric normal by a texel-sized offset against acne. 3×3 tent filter from 4 bilinear compare
+// taps (Castaño 2013, Filament PCF_Low). Outside the map, or with shadows off, it is lit; it fades
+// to lit over the last 10% of the shadow distance.
+float shadow_visibility(float3 world_position, float3 geometric_normal) {
+    float shadow_distance = scene.shadow_params.y;
+    if (shadow_distance <= 0.0) {
+        return 1.0; // uniform branch: shadows off
+    }
+
+    float3 receiver = world_position + geometric_normal * scene.shadow_params.x;
+    float4 clip     = mul(scene.shadow_view_projection, float4(receiver, 1.0));
+    float2 uv       = clip.xy * float2(0.5, -0.5) + 0.5; // NDC y up, texture v down
+    float  depth    = clip.z;
+
+    float  texel = scene.shadow_params.z;
+    float2 scaled = uv * scene.shadow_params.w + 0.5;
+    float2 base   = (floor(scaled) - 0.5) * texel;
+    float2 st     = frac(scaled);
+    float2 uw     = float2(3.0 - 2.0 * st.x, 1.0 + 2.0 * st.x);
+    float2 vw     = float2(3.0 - 2.0 * st.y, 1.0 + 2.0 * st.y);
+    float2 u      = float2((2.0 - st.x) / uw.x - 1.0, st.x / uw.y + 1.0) * texel;
+    float2 v      = float2((2.0 - st.y) / vw.x - 1.0, st.y / vw.y + 1.0) * texel;
+    // SampleCmpLevelZero (textureSampleCompareLevel) is valid in non-uniform control flow
+    float sum = uw.x * vw.x * shadow_map.SampleCmpLevelZero(shadow_sampler, base + float2(u.x, v.x), depth)
+              + uw.y * vw.x * shadow_map.SampleCmpLevelZero(shadow_sampler, base + float2(u.y, v.x), depth)
+              + uw.x * vw.y * shadow_map.SampleCmpLevelZero(shadow_sampler, base + float2(u.x, v.y), depth)
+              + uw.y * vw.y * shadow_map.SampleCmpLevelZero(shadow_sampler, base + float2(u.y, v.y), depth);
+    bool  outside = any(uv < 0.0) || any(uv > 1.0) || depth > 1.0;
+    float fade    = saturate((length(world_position - camera.position.xyz) - 0.9 * shadow_distance) / (0.1 * shadow_distance));
+    return outside ? 1.0 : lerp(sum / 16.0, 1.0, fade);
+}
 
 // PBR material textures (set 1) — bindings match RendererMaterial texture layout (0-7).
 [[vk::binding(0, 1)]] Texture2D    base_color_texture;
@@ -167,12 +206,15 @@ FragmentOutput fs_main(
     float3 view_direction    = normalize(camera.position.xyz - world_position);
     float3 base_reflectivity = lerp(float3(0.04, 0.04, 0.04), albedo, float3(metallic, metallic, metallic));
     float3 outgoing_radiance = float3(0.0, 0.0, 0.0);
-    outgoing_radiance += accumulate_directional_light(normal, view_direction, base_reflectivity, albedo, roughness, metallic, scene.light_direction0.xyz, scene.light_color0);
+    // Only the key light (0) casts shadows
+    float  key_visibility    = shadow_visibility(world_position, normalize(input_normal));
+    float4 key_light_color   = float4(scene.light_color0.rgb, scene.light_color0.w * key_visibility);
+    outgoing_radiance += accumulate_directional_light(normal, view_direction, base_reflectivity, albedo, roughness, metallic, scene.light_direction0.xyz, key_light_color);
     outgoing_radiance += accumulate_directional_light(normal, view_direction, base_reflectivity, albedo, roughness, metallic, scene.light_direction1.xyz, scene.light_color1);
     outgoing_radiance += accumulate_directional_light(normal, view_direction, base_reflectivity, albedo, roughness, metallic, scene.light_direction2.xyz, scene.light_color2);
     if (material.clearcoat > 0.0) {
         float coat_roughness = clamp(material.clearcoat_roughness, 0.045, 0.99);
-        outgoing_radiance += clearcoat_directional_light(normal, view_direction, material.clearcoat, coat_roughness, scene.light_direction0.xyz, scene.light_color0);
+        outgoing_radiance += clearcoat_directional_light(normal, view_direction, material.clearcoat, coat_roughness, scene.light_direction0.xyz, key_light_color);
         outgoing_radiance += clearcoat_directional_light(normal, view_direction, material.clearcoat, coat_roughness, scene.light_direction1.xyz, scene.light_color1);
         outgoing_radiance += clearcoat_directional_light(normal, view_direction, material.clearcoat, coat_roughness, scene.light_direction2.xyz, scene.light_color2);
     }

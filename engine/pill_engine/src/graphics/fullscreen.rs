@@ -30,9 +30,17 @@ pub(crate) fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
 }
 
 pub(crate) fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    uniform_entry_for(binding, wgpu::ShaderStages::FRAGMENT)
+}
+
+/// Uniform buffer entry visible to `visibility`.
+pub(crate) fn uniform_entry_for(
+    binding: u32,
+    visibility: wgpu::ShaderStages,
+) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
+        visibility,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,

@@ -6,8 +6,8 @@ use crate::{
     },
     engine::Engine,
     graphics::{
-        Pass, PassPBROpaque, PassTextureHandle, PassTonemap, RendererMaterialHandle,
-        RendererTargetDesc, RendererTextureHandle, TargetSize,
+        shadow::ShadowFrame, Pass, PassPBROpaque, PassShadow, PassTextureHandle, PassTonemap,
+        RendererMaterialHandle, RendererTargetDesc, RendererTextureHandle, TargetSize,
     },
     renderer::resources::RendererTexture,
     resources::{MaterialHandle, TextureHandle, TextureType},
@@ -33,6 +33,8 @@ use pill_core::Result;
 
 use lazy_static::lazy_static;
 use std::any::TypeId;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 // --- General ---
 
@@ -135,6 +137,10 @@ pub const BACKGROUND_FRAGMENT_SHADER: &str =
 #[cfg(feature = "post_fx")]
 pub const BACKGROUND_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/background_post_fx_fragment.wgsl");
+pub const SHADOW_CASTER_VERTEX_SHADER: &str =
+    include_str!("../res/shaders/shadow_caster_vertex.wgsl");
+pub const SHADOW_CASTER_FRAGMENT_SHADER: &str =
+    include_str!("../res/shaders/shadow_caster_fragment.wgsl");
 pub const FULLSCREEN_VERTEX_SHADER: &str = include_str!("../res/shaders/fullscreen_vertex.wgsl");
 pub const TONEMAP_FRAGMENT_SHADER: &str = include_str!("../res/shaders/tonemap_fragment.wgsl");
 #[cfg(feature = "post_fx")]
@@ -178,12 +184,13 @@ pub const LENS_FRAGMENT_SHADER: &str = include_str!("../res/shaders/lens_fragmen
 pub const MOTION_BLUR_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/motion_blur_fragment.wgsl");
 
-/// Frame composition: opaque PBR → game-defined passes (`Engine::add_render_pass`) → tonemap → UI.
+/// Frame composition: shadow map → opaque PBR → game-defined passes (`Engine::add_render_pass`) → tonemap → UI.
 /// Creates the shared HDR and depth targets and records them in `RenderStateComponent`.
 pub fn default_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
     let (hdr_target, depth_target) = create_scene_targets(engine)?;
-    let mut passes: Vec<Box<dyn Pass>> =
-        vec![Box::new(opaque_pass(engine, hdr_target, depth_target)?)];
+    let (shadow, shadow_frame) = shadow_pass(engine)?;
+    let opaque = opaque_pass(engine, hdr_target, depth_target)?.with_shadow(shadow_frame);
+    let mut passes: Vec<Box<dyn Pass>> = vec![Box::new(shadow), Box::new(opaque)];
     passes.append(&mut engine.custom_render_passes);
     passes.push(Box::new(PassTonemap::new(hdr_target)));
     push_ui_pass(engine, &mut passes)?;
@@ -193,7 +200,7 @@ pub fn default_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
 #[cfg(feature = "post_fx")]
 /// `PassChain::PostFx`: the default chain with post-processing between the scene passes and
 /// tonemapping; parameters live in `RenderStateComponent`:
-/// opaque PBR (+ motion vectors, ambient) → SSAO → translucent PBR → game passes → depth of
+/// shadow map → opaque PBR (+ motion vectors, ambient) → SSAO → translucent PBR → game passes → depth of
 /// field → motion blur (+ DoF composite) → bloom → tonemap → FXAA → lens → UI.
 pub fn post_fx_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
     // The opaque pass renders into `opaque_target`; SSAO writes the shared HDR target that the
@@ -215,15 +222,19 @@ pub fn post_fx_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
     // smooths 1-texel stair steps but not the 2-pixel steps of an upscaled image
     let fxaa_target = create_target(engine, "fxaa_target", HDR_TARGET_FORMAT)?;
 
-    let opaque = opaque_pass(engine, opaque_target, depth_target)?;
+    let (shadow, shadow_frame) = shadow_pass(engine)?;
+    let opaque =
+        opaque_pass(engine, opaque_target, depth_target)?.with_shadow(shadow_frame.clone());
     let translucent = PassPBRTranslucent::new(
         hdr_target,
         depth_target,
         opaque.max_instances(),
         opaque.initial_ibl(),
     )
-    .with_velocity_target(velocity_target);
+    .with_velocity_target(velocity_target)
+    .with_shadow(shadow_frame);
     let mut passes: Vec<Box<dyn Pass>> = vec![
+        Box::new(shadow),
         Box::new(
             opaque
                 .without_translucent()
@@ -286,6 +297,30 @@ fn create_scene_targets(engine: &mut Engine) -> Result<(PassTextureHandle, PassT
     Ok((hdr_target, depth_target))
 }
 
+/// Shadow caster pass of the key light and the frame it publishes to the PBR passes. Always in
+/// the chain: it renders only while `RenderStateComponent::shadow.enabled`.
+fn shadow_pass(engine: &Engine) -> Result<(PassShadow, Rc<RefCell<ShadowFrame>>)> {
+    let settings = engine
+        .get_global_component::<RenderStateComponent>()?
+        .shadow;
+    let frame = Rc::new(RefCell::new(ShadowFrame::default()));
+    let pass = PassShadow::new(
+        frame.clone(),
+        max_instances(engine),
+        settings.constant_bias,
+        settings.slope_bias,
+    );
+    Ok((pass, frame))
+}
+
+/// At most one mesh instance per entity.
+fn max_instances(engine: &Engine) -> usize {
+    engine
+        .config
+        .get_int("MAX_ENTITIES")
+        .unwrap_or(MAX_ENTITIES as i64) as usize
+}
+
 fn opaque_pass(
     engine: &Engine,
     hdr_target: PassTextureHandle,
@@ -295,15 +330,10 @@ fn opaque_pass(
     let initial_ibl = engine
         .get_global_component::<RenderStateComponent>()?
         .default_ibl;
-    // At most one mesh instance per entity
-    let max_instances = engine
-        .config
-        .get_int("MAX_ENTITIES")
-        .unwrap_or(MAX_ENTITIES as i64) as usize;
     Ok(PassPBROpaque::new(
         hdr_target,
         depth_target,
-        max_instances,
+        max_instances(engine),
         initial_ibl,
     ))
 }

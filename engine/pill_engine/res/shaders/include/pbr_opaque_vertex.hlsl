@@ -1,6 +1,7 @@
 // PBR vertex shader body, included by pbr_opaque_vertex.hlsl and (with POST_FX, which adds the
-// motion-vector outputs) pbr_opaque_post_fx_vertex.hlsl. The model matrix is built here from
-// per-draw position / rotation (radians) / scale, so the CPU uploads raw transforms.
+// motion-vector outputs) pbr_opaque_post_fx_vertex.hlsl.
+
+#include "draw_transform.hlsl"
 
 struct Camera {
     float4                position;
@@ -10,12 +11,7 @@ struct Camera {
 };
 [[vk::binding(0, 0)]] ConstantBuffer<Camera> camera;
 
-struct DrawTransform {
-    float4 position; // xyz
-    float4 rotation; // xyz, radians
-    float4 scale;    // xyz
-};
-// Mirrors DrawTransform in pass_pbr_opaque.rs: this frame's and last frame's (motion vectors only)
+// This frame's and last frame's transforms (motion vectors only)
 [[vk::binding(0, 3)]] StructuredBuffer<DrawTransform> per_draw_array;
 #ifdef POST_FX
 [[vk::binding(1, 3)]] StructuredBuffer<DrawTransform> previous_per_draw_array;
@@ -44,20 +40,10 @@ struct VertexInput {
     [[vk::location(7)]] float3 bitangent;
 };
 
-// Row-major float3x3 constructors; mul(R, v) applies standard right-handed rotation.
-float3x3 rot_x(float angle) { float cosine = cos(angle), sine = sin(angle); return float3x3(1, 0, 0,  0, cosine, -sine,  0, sine, cosine); }
-float3x3 rot_y(float angle) { float cosine = cos(angle), sine = sin(angle); return float3x3(cosine, 0, sine,  0, 1, 0,  -sine, 0, cosine); }
-float3x3 rot_z(float angle) { float cosine = cos(angle), sine = sin(angle); return float3x3(cosine, -sine, 0,  sine, cosine, 0,  0, 0, 1); }
-
 // Zero for (near) zero-length input, so degenerate tangents don't turn into NaN
 float3 safe_normalize(float3 value) {
     float length_squared = dot(value, value);
     return length_squared > 1e-12 ? value * rsqrt(length_squared) : float3(0.0, 0.0, 0.0);
-}
-
-// model = T * (Rx*Ry*Rz) * S — matches glam from_scale_rotation_translation(Quat::x*y*z).
-float3x3 rotation_matrix(DrawTransform transform) {
-    return mul(rot_x(transform.rotation.x), mul(rot_y(transform.rotation.y), rot_z(transform.rotation.z)));
 }
 
 [shader("vertex")]
@@ -65,7 +51,7 @@ VertexOutput vs_main(VertexInput input, uint instance_id : SV_InstanceID) {
     DrawTransform transform = per_draw_array[instance_id];
 
     float3x3 rotation = rotation_matrix(transform);
-    float3 world_position = transform.position.xyz + mul(rotation, input.position * transform.scale.xyz);
+    float3 world_position = draw_world_position(transform, rotation, input.position);
     float4 clip_position  = mul(camera.view_projection, float4(world_position, 1.0));
 
     VertexOutput output;
@@ -75,7 +61,7 @@ VertexOutput vs_main(VertexInput input, uint instance_id : SV_InstanceID) {
     output.previous_clip_position = clip_position;
     if (camera.flags.x > 0.5) {
         DrawTransform previous = previous_per_draw_array[instance_id];
-        float3 previous_world_position = previous.position.xyz + mul(rotation_matrix(previous), input.position * previous.scale.xyz);
+        float3 previous_world_position = draw_world_position(previous, rotation_matrix(previous), input.position);
         output.previous_clip_position  = mul(camera.previous_view_projection, float4(previous_world_position, 1.0));
     }
 #endif

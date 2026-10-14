@@ -1,7 +1,7 @@
 use crate::graphics::RendererMeshHandle;
 use crate::resources::{MeshData, MeshVertex, Resource, ResourceStorage};
 
-use pill_core::{PillTypeMapKey, Result};
+use pill_core::{PillTypeMapKey, Result, Vector3f};
 use wgpu::util::DeviceExt;
 
 // --- Vertex ---
@@ -18,6 +18,8 @@ pub struct RendererMesh {
     pub vertex_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
     pub index_count: u32,
+    /// Local-space AABB `(min, max)` of the vertex positions (shadow caster culling).
+    pub local_bounds: (Vector3f, Vector3f),
 }
 
 impl RendererMesh {
@@ -39,6 +41,7 @@ impl RendererMesh {
             vertex_buffer,
             index_buffer,
             index_count: mesh_data.indices.len() as u32,
+            local_bounds: mesh_data.bounds(),
         })
     }
 }

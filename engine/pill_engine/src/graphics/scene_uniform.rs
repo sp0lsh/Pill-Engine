@@ -1,7 +1,8 @@
 use crate::ecs::RenderStateComponent;
+use crate::graphics::shadow::ShadowFrame;
 
-/// Scene globals of the PBR passes (group 0, binding 7): fog, IBL intensity and the three
-/// directional lights from `RenderStateComponent`. All float4 rows so the std140 layout is
+/// Scene globals of the PBR passes (group 0, binding 7): fog, IBL intensity, the three
+/// directional lights from `RenderStateComponent` and the key light's shadow. All float4 rows so the std140 layout is
 /// unambiguous; mirrors `Scene` in pbr_opaque_fragment.hlsl.
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -10,10 +11,17 @@ pub(crate) struct SceneUniform {
     ibl_intensity: [f32; 4],     // x
     // Per light: direction (xyz) row, then color (rgb) + intensity (w) row
     lights: [[f32; 4]; 6],
+    shadow_view_projection: [[f32; 4]; 4], // world → light clip space (column-major)
+    // x = normal offset (world units), y = shadow distance (0 = no shadow), z = 1 / map size,
+    // w = map size
+    shadow_params: [f32; 4],
 }
 
 impl SceneUniform {
-    pub(crate) fn from_render_state(render_state: &RenderStateComponent) -> Self {
+    pub(crate) fn from_render_state(
+        render_state: &RenderStateComponent,
+        shadow: &ShadowFrame,
+    ) -> Self {
         let [r, g, b] = render_state.fog_color;
         let mut lights = [[0.0; 4]; 6];
         for (index, light) in render_state.lights.iter().enumerate() {
@@ -22,10 +30,25 @@ impl SceneUniform {
             lights[index * 2] = [x, y, z, 0.0];
             lights[index * 2 + 1] = [red, green, blue, light.intensity];
         }
+        let size = shadow.map_size.max(1) as f32;
+        let (shadow_view_projection, shadow_params) = match shadow.map {
+            Some(_) => (
+                shadow.view_projection.to_cols_array_2d(),
+                [
+                    render_state.shadow.normal_bias * shadow.texel_world_size,
+                    shadow.distance,
+                    1.0 / size,
+                    size,
+                ],
+            ),
+            None => ([[0.0; 4]; 4], [0.0; 4]),
+        };
         Self {
             fog_color_density: [r, g, b, render_state.fog_density],
             ibl_intensity: [render_state.ibl_intensity, 0.0, 0.0, 0.0],
             lights,
+            shadow_view_projection,
+            shadow_params,
         }
     }
 }

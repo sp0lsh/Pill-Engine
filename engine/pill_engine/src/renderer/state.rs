@@ -365,6 +365,13 @@ impl PillRenderer for Renderer {
         Ok(handle)
     }
 
+    fn remove_render_target(&mut self, handle: PassTextureHandle) {
+        self.state.pass_textures.remove(handle);
+        self.state
+            .surface_targets
+            .retain(|(target, _)| *target != handle);
+    }
+
     fn create_depth_texture(&mut self, label: &str) -> Result<PassTextureHandle> {
         let (width, height) = self.state.render_size;
         let texture = RendererTexture::new_depth_texture(&self.state.device, width, height, label)?;

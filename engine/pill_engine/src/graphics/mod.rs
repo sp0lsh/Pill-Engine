@@ -16,6 +16,7 @@ mod pass_lens;
 #[cfg(feature = "post_fx")]
 mod pass_motion_blur;
 mod pass_pbr_opaque;
+mod pass_shadow;
 #[cfg(feature = "post_fx")]
 mod pass_ssao;
 mod pass_tonemap;
@@ -24,6 +25,7 @@ mod projection;
 mod render_queue;
 mod renderer;
 mod scene_uniform;
+pub(crate) mod shadow;
 
 // --- Use ---
 
@@ -50,6 +52,7 @@ pub use pass_motion_blur::PassMotionBlur;
 pub use pass_pbr_opaque::PassPBROpaque;
 #[cfg(feature = "post_fx")]
 pub use pass_pbr_opaque::PassPBRTranslucent;
+pub(crate) use pass_shadow::PassShadow;
 #[cfg(feature = "post_fx")]
 pub use pass_ssao::PassSsao;
 pub use pass_tonemap::PassTonemap;

@@ -322,6 +322,10 @@ pub trait PillRenderer {
     /// Creates an off-screen render target texture and returns its handle.
     fn create_render_target(&mut self, desc: RendererTargetDesc) -> Result<PassTextureHandle>;
 
+    /// Frees a render target created by `create_render_target`; bind groups still holding its
+    /// view keep the texture alive until they are dropped.
+    fn remove_render_target(&mut self, handle: PassTextureHandle);
+
     /// Creates a depth texture sized to the current surface and returns its handle.
     fn create_depth_texture(&mut self, label: &str) -> Result<PassTextureHandle>;
 

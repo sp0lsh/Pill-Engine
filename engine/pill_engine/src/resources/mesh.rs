@@ -244,6 +244,22 @@ pub struct MeshData {
 }
 
 impl MeshData {
+    /// Axis-aligned bounds `(min, max)` of the vertex positions; zero size for an empty mesh.
+    pub(crate) fn bounds(&self) -> (pill_core::Vector3f, pill_core::Vector3f) {
+        let mut min = pill_core::Vector3f::splat(f32::INFINITY);
+        let mut max = pill_core::Vector3f::splat(f32::NEG_INFINITY);
+        for vertex in &self.vertices {
+            let position = pill_core::Vector3f::from_array(vertex.position);
+            min = min.min(position);
+            max = max.max(position);
+        }
+        if self.vertices.is_empty() {
+            (pill_core::Vector3f::ZERO, pill_core::Vector3f::ZERO)
+        } else {
+            (min, max)
+        }
+    }
+
     #[cfg(feature = "obj_loading")]
     pub fn new(path: &Path, flip_uv_y: bool) -> Result<Self> {
         let (models, _materials) = tobj::load_obj(path, &obj_load_options())?;

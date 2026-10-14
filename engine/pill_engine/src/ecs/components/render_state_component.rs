@@ -131,6 +131,38 @@ impl Default for Lens {
     }
 }
 
+/// Shadow map of the key light (`lights[0]`). `constant_bias` and `slope_bias` are pipeline state,
+/// read when the pass chain is built (first frame); the rest every frame. Translucent materials
+/// (opacity < 1) don't cast.
+#[derive(Clone, Copy, Debug)]
+pub struct Shadow {
+    pub enabled: bool,
+    /// Shadow map width and height in texels, clamped to the device limit (8192 by default).
+    pub map_size: u32,
+    /// View distance covered by the shadow map; shadows fade out over its last 10% and surfaces
+    /// beyond it are lit.
+    pub distance: f32,
+    /// Hardware depth bias of the caster pass, in depth-buffer units.
+    pub constant_bias: i32,
+    /// Hardware depth bias scaled by the caster's depth slope.
+    pub slope_bias: f32,
+    /// Receiver offset along the surface normal, in shadow-map texels.
+    pub normal_bias: f32,
+}
+
+impl Default for Shadow {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            map_size: 2048,
+            distance: 30.0,
+            constant_bias: 2,
+            slope_bias: 2.0,
+            normal_bias: 1.5,
+        }
+    }
+}
+
 /// Directional light; `direction` points from the light toward the scene.
 #[derive(Clone, Copy, Debug)]
 pub struct DirectionalLight {
@@ -167,6 +199,8 @@ pub struct RenderStateComponent {
     pub ibl_intensity: f32,
     /// Key, rim and bounce lights of the PBR passes.
     pub lights: [DirectionalLight; 3],
+    /// Shadow map of the key light (`lights[0]`); off by default.
+    pub shadow: Shadow,
     pub tonemap: Tonemap,
     /// PostFx chain: motion blur length as a fraction of the frame's motion (0.5 = 180° shutter,
     /// 0 = off).
@@ -214,6 +248,7 @@ impl RenderStateComponent {
                     intensity: 0.3,
                 },
             ],
+            shadow: Shadow::default(),
             tonemap: Tonemap::Reinhard {
                 white_point: f32::INFINITY,
             },

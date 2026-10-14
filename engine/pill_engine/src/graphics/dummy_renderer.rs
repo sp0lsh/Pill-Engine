@@ -85,6 +85,8 @@ impl PillRenderer for DummyRenderer {
         Ok(PassTextureHandle::default())
     }
 
+    fn remove_render_target(&mut self, _handle: PassTextureHandle) {}
+
     fn create_depth_texture(&mut self, _label: &str) -> Result<PassTextureHandle> {
         Ok(PassTextureHandle::default())
     }

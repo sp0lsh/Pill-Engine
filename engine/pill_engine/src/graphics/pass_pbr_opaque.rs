@@ -5,11 +5,12 @@ use crate::config::{
 };
 use crate::{
     ecs::{CameraComponent, MeshRenderingComponent, RenderStateComponent, TransformComponent},
+    graphics::shadow::ShadowFrame,
     graphics::{
         camera_forward, camera_view_projection, decompose_render_queue_key, BufferDesc,
         FrameTarget, Pass, PassTextureHandle, PillRenderer, Pipeline, PipelineDesc, RenderQueueKey,
-        RendererMaterialHandle, RendererMeshHandle, SceneUniform, ShaderDesc, TextureData,
-        WorldQuery,
+        RendererMaterialHandle, RendererMeshHandle, RendererTargetDesc, SceneUniform, ShaderDesc,
+        TargetSize, TextureData, WorldQuery,
     },
     renderer::resources::{
         material_params_layout_entries, material_textures_layout_entries, RendererMaterial,
@@ -17,8 +18,10 @@ use crate::{
     },
 };
 use pill_core::{error, LogContext, Matrix4f, Result, Vector3f};
-// Motion history (post_fx): entity handles and their index/version
+use std::cell::RefCell;
 use std::num::NonZeroU32;
+use std::rc::Rc;
+// Motion history (post_fx): entity handles and their index/version
 #[cfg(feature = "post_fx")]
 use {crate::ecs::EntityHandle, pill_core::PillSlotMapKey};
 
@@ -71,7 +74,7 @@ pub(crate) struct DrawTransform {
 }
 
 impl DrawTransform {
-    fn from(transform: &TransformComponent) -> Self {
+    pub(crate) fn from(transform: &TransformComponent) -> Self {
         Self {
             position: [
                 transform.position.x,
@@ -89,6 +92,18 @@ impl DrawTransform {
             scale: [transform.scale.x, transform.scale.y, transform.scale.z, 0.0],
         }
     }
+
+    /// Model matrix T · (Rx·Ry·Rz) · S, as the vertex shaders build it (draw_transform.hlsl).
+    pub(crate) fn model_matrix(&self) -> Matrix4f {
+        let [x, y, z, _] = self.position;
+        let [pitch, yaw, roll, _] = self.rotation;
+        let [scale_x, scale_y, scale_z, _] = self.scale;
+        Matrix4f::from_translation(Vector3f::new(x, y, z))
+            * Matrix4f::from_rotation_x(pitch)
+            * Matrix4f::from_rotation_y(yaw)
+            * Matrix4f::from_rotation_z(roll)
+            * Matrix4f::from_scale(Vector3f::new(scale_x, scale_y, scale_z))
+    }
 }
 
 /// Last frame's transform of an entity slot, the entity version that drew it and the frame.
@@ -102,7 +117,21 @@ struct PreviousTransform {
 
 // Per-draw transforms live in storage buffers indexed by instance id (no per-draw dynamic offsets):
 // binding 0 this frame's, binding 1 last frame's (motion vectors only).
-const PER_DRAW_STRIDE_BYTES: usize = std::mem::size_of::<DrawTransform>();
+pub(crate) const PER_DRAW_STRIDE_BYTES: usize = std::mem::size_of::<DrawTransform>();
+
+/// Vertex-stage read-only storage buffer of per-draw `DrawTransform`s.
+pub(crate) fn per_draw_storage_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::VERTEX,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
 
 pub const MATERIAL_BIND_GROUP_GLOBALS: usize = 0;
 pub const MATERIAL_BIND_GROUP_TEXTURES: usize = 1;
@@ -165,13 +194,18 @@ struct PassPBROpaqueState {
     ibl_sampler: wgpu::Sampler,
     prefilter_sampler: wgpu::Sampler,
     brdf_lut_sampler: wgpu::Sampler,
+    // Bound when no shadow map is published (the shader then skips it), and the comparison sampler
+    shadow_stand_in: PassTextureHandle,
+    shadow_sampler: wgpu::Sampler,
     per_draw_buffer: wgpu::Buffer,
     // Last frame's transforms; a single entry when the pass writes no motion vectors (never read)
     previous_per_draw_buffer: wgpu::Buffer,
     per_draw_bind_group: wgpu::BindGroup,
     bg: BgSubState,
-    // IBL handles the current globals_bind_group was built from; rebuild only when these change.
+    // IBL handles and shadow map the current globals_bind_group was built from; rebuild only when
+    // these change.
     cached_ibl: [PassTextureHandle; 3],
+    cached_shadow_map: Option<PassTextureHandle>,
 }
 
 /// View of a game-set RenderStateComponent texture; an invalid handle logs and uses `fallback`.
@@ -205,6 +239,8 @@ fn build_globals_bind_group(
     ibl_sampler: &wgpu::Sampler,
     prefilter_sampler: &wgpu::Sampler,
     brdf_lut_sampler: &wgpu::Sampler,
+    shadow_view: &wgpu::TextureView,
+    shadow_sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("pass_pbr_opaque_globals_bind_group"),
@@ -241,6 +277,14 @@ fn build_globals_bind_group(
             wgpu::BindGroupEntry {
                 binding: 7,
                 resource: scene_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 8,
+                resource: wgpu::BindingResource::TextureView(shadow_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 9,
+                resource: wgpu::BindingResource::Sampler(shadow_sampler),
             },
         ],
     })
@@ -291,6 +335,8 @@ pub struct PassPBROpaque {
     ambient_target: Option<PassTextureHandle>,
     // Per-draw storage capacity; at most one instance per entity
     max_instances: usize,
+    // Key light shadow published by PassShadow each frame
+    shadow: Option<Rc<RefCell<ShadowFrame>>>,
     // [diffuse, specular, brdf_lut] for the first frame's bind group
     initial_ibl: [PassTextureHandle; 3],
     capacity_warned: bool,
@@ -327,6 +373,7 @@ impl PassPBROpaque {
             velocity_target: None,
             ambient_target: None,
             max_instances,
+            shadow: None,
             initial_ibl,
             capacity_warned: false,
             frame: 0,
@@ -398,6 +445,12 @@ impl PassPBROpaque {
         self
     }
 
+    /// Receives the key light's shadow from the `PassShadow` publishing `frame`.
+    pub(crate) fn with_shadow(mut self, frame: Rc<RefCell<ShadowFrame>>) -> Self {
+        self.shadow = Some(frame);
+        self
+    }
+
     #[cfg(feature = "post_fx")]
     /// Also writes the fogged IBL term alone (AMBIENT_TARGET_FORMAT), which SSAO darkens.
     pub fn with_ambient_target(mut self, target: PassTextureHandle) -> Self {
@@ -435,9 +488,8 @@ fn get_state(pass: &mut PassPBROpaque) -> &mut PassPBROpaqueState {
         .expect("PassPBROpaque: state not initialized — call init() before draw()")
 }
 
-#[cfg(feature = "post_fx")]
 /// Whether the material of a render key has opacity < 1; a missing material counts as opaque.
-fn is_translucent(world: &WorldQuery<'_>, key: RenderQueueKey) -> bool {
+pub(crate) fn is_translucent(world: &WorldQuery<'_>, key: RenderQueueKey) -> bool {
     let key_fields = decompose_render_queue_key(key);
     let Some(version) = NonZeroU32::new(key_fields.material_version.into()) else {
         return false;
@@ -473,6 +525,11 @@ impl PassPBRTranslucent {
     /// Writes motion vectors (replacing the opaque ones behind) into `target`.
     pub fn with_velocity_target(self, target: PassTextureHandle) -> Self {
         Self(self.0.with_velocity_target(target))
+    }
+
+    /// Receives the key light's shadow, like `PassPBROpaque::with_shadow`.
+    pub(crate) fn with_shadow(self, frame: Rc<RefCell<ShadowFrame>>) -> Self {
+        Self(self.0.with_shadow(frame))
     }
 }
 
@@ -578,6 +635,23 @@ impl Pass for PassPBROpaque {
                     },
                     count: None,
                 },
+                // Key light shadow map + comparison sampler (hardware PCF)
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Depth,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    count: None,
+                },
             ],
             // 1: material textures (base_color, normal, metallic_roughness, emissive)
             material_textures_layout_entries(),
@@ -585,18 +659,7 @@ impl Pass for PassPBROpaque {
             material_params_layout_entries(),
             // 3: per-draw storage arrays (this and last frame's transforms) — no dynamic offset,
             // no 256-B Metal alignment (Apple Metal Spec §4.1.1).
-            (0..2)
-                .map(|binding| wgpu::BindGroupLayoutEntry {
-                    binding,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                })
-                .collect(),
+            (0..2).map(per_draw_storage_entry).collect(),
         ];
 
         let color_targets = self.color_targets(if self.translucent {
@@ -743,6 +806,30 @@ impl Pass for PassPBROpaque {
                 ..Default::default()
             });
 
+        // Until PassShadow publishes a map (and whenever shadows are off) a 1×1 depth target fills
+        // the binding; the shader skips it
+        let shadow_stand_in = renderer.create_render_target(RendererTargetDesc {
+            name: "pass_pbr_shadow_stand_in".to_string(),
+            format: DEPTH_TARGET_FORMAT,
+            size: TargetSize::Fixed(1, 1),
+        })?;
+        let shadow_view = renderer
+            .get_texture_view(shadow_stand_in)
+            .ok_or("PassPBROpaque: shadow stand-in missing")?;
+        let shadow_sampler = renderer
+            .get_device()
+            .create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("pass_pbr_shadow_sampler"),
+                address_mode_u: wgpu::AddressMode::ClampToEdge,
+                address_mode_v: wgpu::AddressMode::ClampToEdge,
+                address_mode_w: wgpu::AddressMode::ClampToEdge,
+                // Linear + compare: each tap is a hardware 2×2 PCF
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                compare: Some(wgpu::CompareFunction::LessEqual),
+                ..Default::default()
+            });
+
         let globals_bind_group = build_globals_bind_group(
             renderer.get_device(),
             &pipeline.bind_group_layouts[MATERIAL_BIND_GROUP_GLOBALS],
@@ -754,6 +841,8 @@ impl Pass for PassPBROpaque {
             &ibl_sampler,
             &prefilter_sampler,
             &brdf_lut_sampler,
+            &shadow_view,
+            &shadow_sampler,
         );
         let cached_ibl = [irr_h, pre_h, lut_h];
 
@@ -882,11 +971,14 @@ impl Pass for PassPBROpaque {
             ibl_sampler,
             prefilter_sampler,
             brdf_lut_sampler,
+            shadow_stand_in,
+            shadow_sampler,
             per_draw_buffer,
             previous_per_draw_buffer,
             per_draw_bind_group,
             bg,
             cached_ibl,
+            cached_shadow_map: None,
         });
 
         Ok(())
@@ -902,14 +994,25 @@ impl Pass for PassPBROpaque {
         // Query per-entity storages + the global render state (bg/IBL/fog) this pass needs.
         let render_state = world.get_global::<RenderStateComponent>()?;
 
-        // Rebuild the IBL globals bind group only when the component's handles change (steady state: 0).
+        let shadow_frame = self
+            .shadow
+            .as_ref()
+            .map(|frame| *frame.borrow())
+            .unwrap_or_default();
+
+        // Rebuild the globals bind group only when the component's IBL handles or the published
+        // shadow map change (steady state: 0).
         {
             let ibl = [
                 render_state.ibl_diffuse,
                 render_state.ibl_specular,
                 render_state.ibl_brdf_lut,
             ];
-            if get_state(self).cached_ibl != ibl {
+            let state = get_state(self);
+            if state.cached_ibl != ibl || state.cached_shadow_map != shadow_frame.map {
+                let shadow_view = renderer
+                    .get_texture_view(shadow_frame.map.unwrap_or(state.shadow_stand_in))
+                    .ok_or("PassPBROpaque: shadow map missing")?;
                 let fallback = self.initial_ibl;
                 let irradiance_view =
                     view_or_fallback(renderer, ibl[0], fallback[0], "ibl_diffuse")?;
@@ -930,8 +1033,11 @@ impl Pass for PassPBROpaque {
                     &state.ibl_sampler,
                     &state.prefilter_sampler,
                     &state.brdf_lut_sampler,
+                    &shadow_view,
+                    &state.shadow_sampler,
                 );
                 state.cached_ibl = ibl;
+                state.cached_shadow_map = shadow_frame.map;
             }
         }
 
@@ -995,7 +1101,10 @@ impl Pass for PassPBROpaque {
             renderer.get_queue().write_buffer(
                 &state.scene_buffer,
                 0,
-                bytemuck::bytes_of(&SceneUniform::from_render_state(render_state)),
+                bytemuck::bytes_of(&SceneUniform::from_render_state(
+                    render_state,
+                    &shadow_frame,
+                )),
             );
         }
 
