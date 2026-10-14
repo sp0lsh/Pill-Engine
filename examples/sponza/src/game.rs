@@ -165,9 +165,19 @@ impl PillGame for Game {
     fn start(&self, engine: &mut Engine) -> Result<()> {
         let scene = engine.create_scene("sponza")?;
         engine.set_active_scene(scene)?;
-        engine
-            .get_global_component_mut::<RenderStateComponent>()?
-            .background_color = [0.02, 0.02, 0.03];
+        {
+            let render_state = engine.get_global_component_mut::<RenderStateComponent>()?;
+            render_state.background_color = [0.02, 0.02, 0.03];
+            // Shadow test: a high warm sun along the court's long axis (x) as the key light, so it
+            // reaches the court floor; dimmer IBL so the shadows read
+            render_state.shadow.enabled = true;
+            render_state.lights[0] = DirectionalLight {
+                direction: [0.45, -1.0, 0.08],
+                color: [1.0, 0.92, 0.8],
+                intensity: 4.0,
+            };
+            render_state.ibl_intensity = 0.3;
+        }
 
         engine.register_component::<TransformComponent>(scene)?;
         engine.register_component::<CameraComponent>(scene)?;
