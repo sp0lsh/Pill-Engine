@@ -58,6 +58,12 @@ mod pipeline {
         fn extra_outputs(&self, _input: &Path) -> Vec<PathBuf> {
             Vec::new()
         }
+
+        /// Files besides `input` that `output` was built from (e.g. `#include`s); a newer or
+        /// missing one makes the outputs stale.
+        fn dependencies(&self, _input: &Path, _output: &Path) -> Vec<PathBuf> {
+            Vec::new()
+        }
     }
 
     pub struct Pipeline {
@@ -129,7 +135,16 @@ mod pipeline {
                         }
                     };
 
-                    if !execute || is_up_to_date(&input, &output) {
+                    let up_to_date = || {
+                        let sources = std::iter::once(input.clone())
+                            .chain(rule.dependencies(&input, &output))
+                            .collect::<Vec<_>>();
+                        let outputs = std::iter::once(output.clone())
+                            .chain(rule.extra_outputs(&input))
+                            .collect::<Vec<_>>();
+                        is_up_to_date(&sources, &outputs)
+                    };
+                    if !execute || up_to_date() {
                         push_extra_edges(&mut stats);
                         if execute {
                             stats.skipped.push(output);
@@ -156,10 +171,19 @@ mod pipeline {
         }
     }
 
-    fn is_up_to_date(input: &Path, output: &Path) -> bool {
-        let in_mtime = mtime(input);
-        let out_mtime = mtime(output);
-        match (in_mtime, out_mtime) {
+    /// Every source and output exists and no output is older than any source.
+    fn is_up_to_date(sources: &[PathBuf], outputs: &[PathBuf]) -> bool {
+        let newest_source = sources
+            .iter()
+            .map(|source| mtime(source))
+            .collect::<Option<Vec<_>>>()
+            .and_then(|times| times.into_iter().max());
+        let oldest_output = outputs
+            .iter()
+            .map(|output| mtime(output))
+            .collect::<Option<Vec<_>>>()
+            .and_then(|times| times.into_iter().min());
+        match (newest_source, oldest_output) {
             (Some(i), Some(o)) => o >= i,
             _ => false,
         }
@@ -243,6 +267,62 @@ mod pipeline {
                 let side = input.with_extension("side");
                 side.exists().then_some(side).into_iter().collect()
             }
+        }
+
+        /// Copies `<stem>.src` to `<stem>.out`; depends on `dep.h` next to it.
+        struct WithDependency;
+
+        impl Rule for WithDependency {
+            fn input_glob(&self) -> &'static str {
+                "*.src"
+            }
+
+            fn output_for(&self, input: &Path) -> PathBuf {
+                input.with_extension("out")
+            }
+
+            fn build(&self, input: &Path, output: &Path) -> Result<()> {
+                // Not fs::copy: on macOS it keeps the source's mtime
+                std::fs::write(output, std::fs::read(input)?)?;
+                Ok(())
+            }
+
+            fn name(&self) -> &'static str {
+                "with_dependency"
+            }
+
+            fn dependencies(&self, input: &Path, _output: &Path) -> Vec<PathBuf> {
+                vec![input.with_file_name("dep.h")]
+            }
+        }
+
+        #[test]
+        fn dependency_newer_or_missing_rebuilds() {
+            let root =
+                std::env::temp_dir().join(format!("pill_pipeline_dep_{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("a.src"), b"src").unwrap();
+            std::fs::write(root.join("dep.h"), b"h").unwrap();
+            let pipeline = Pipeline {
+                root: root.clone(),
+                rules: vec![Box::new(WithDependency)],
+            };
+            let output = root.join("a.out");
+
+            assert_eq!(pipeline.run().unwrap().rebuilt, vec![output.clone()]);
+            assert_eq!(pipeline.run().unwrap().skipped, vec![output.clone()]);
+            let later = SystemTime::now() + Duration::from_secs(10);
+            std::fs::File::options()
+                .write(true)
+                .open(root.join("dep.h"))
+                .unwrap()
+                .set_modified(later)
+                .unwrap();
+            assert_eq!(pipeline.run().unwrap().rebuilt, vec![output.clone()]);
+            std::fs::remove_file(root.join("dep.h")).unwrap();
+            assert_eq!(pipeline.run().unwrap().rebuilt, vec![output]);
+            let _ = std::fs::remove_dir_all(&root);
         }
 
         fn outputs(stats: &Stats) -> Vec<PathBuf> {
