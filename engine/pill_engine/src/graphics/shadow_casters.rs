@@ -15,7 +15,7 @@ use crate::graphics::{
     RendererMaterialHandle, RendererMeshHandle, ShaderDesc, WorldQuery,
 };
 use crate::renderer::resources::{
-    material_params_layout_entries, material_textures_layout_entries, RendererMaterial,
+    material_array_layout_entries, material_textures_layout_entries, RendererMaterial,
     RendererMesh, Vertex,
 };
 
@@ -97,7 +97,7 @@ pub(crate) fn gather_casters(world: &WorldQuery<'_>, out: &mut Vec<CasterCandida
         let Ok(renderer_mesh) = world.resources.get_resource::<RendererMesh>(&mesh) else {
             continue;
         };
-        let transform = DrawTransform::from(transform);
+        let transform = DrawTransform::from(transform).with_material_index(fields.material_index);
         let caster = Caster {
             mesh,
             cutout,
@@ -166,6 +166,7 @@ pub(crate) struct ShadowCasters {
     camera_bind_group: wgpu::BindGroup,
     per_draw_buffer: wgpu::Buffer,
     per_draw_bind_group: wgpu::BindGroup,
+    material_array_bind_group: wgpu::BindGroup,
     map_capacity: usize,
     max_instances: usize,
     label: String,
@@ -221,12 +222,12 @@ impl ShadowCasters {
                 entry_func: "fs_main",
             },
             vertex_buffers: &RendererMesh::data_layout_descriptors(),
-            // Groups 2 and 3 are the material's own texture and parameter bind groups
+            // Group 2 is the material's texture bind group, group 3 the material array
             bind_groups: vec![
                 vec![camera_entry()],
                 vec![per_draw_storage_entry(0)],
                 material_textures_layout_entries(),
-                material_params_layout_entries(),
+                material_array_layout_entries(),
             ],
             targets: &[],
             depth_stencil: Some(caster_depth_state(constant_bias, slope_bias)),
@@ -276,6 +277,14 @@ impl ShadowCasters {
                 resource: per_draw_buffer.as_entire_binding(),
             }],
         });
+        let material_array_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(label),
+            layout: &cutout_pipeline.bind_group_layouts[3],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: renderer.get_material_buffer().as_entire_binding(),
+            }],
+        });
         Ok(Self {
             pipeline,
             two_sided_pipeline,
@@ -285,6 +294,7 @@ impl ShadowCasters {
             camera_bind_group,
             per_draw_buffer,
             per_draw_bind_group,
+            material_array_bind_group,
             map_capacity,
             max_instances,
             label: label.to_string(),
@@ -356,6 +366,8 @@ impl ShadowCasters {
             &[(map as u64 * self.camera_stride) as u32],
         );
         render_pass.set_bind_group(1, &self.per_draw_bind_group, &[]);
+        // Read by the cutout pipeline only; bound once for all of its materials
+        render_pass.set_bind_group(3, &self.material_array_bind_group, &[]);
         let end = range.end.min(casters.len()).min(self.max_instances);
         let mut first = range.start;
         // Casters are sorted by group (`Caster::group`): culled opaque, double-sided opaque, then
@@ -388,7 +400,6 @@ impl ShadowCasters {
                     render_pass.set_pipeline(&self.cutout_pipeline.pipeline);
                 }
                 render_pass.set_bind_group(2, &material.textures_bind_group, &[]);
-                render_pass.set_bind_group(3, &material.parameters_bind_group, &[]);
                 bound_cutout = Some(material_handle);
             }
             if let Ok(mesh) = world.resources.get_resource::<RendererMesh>(&mesh_handle) {

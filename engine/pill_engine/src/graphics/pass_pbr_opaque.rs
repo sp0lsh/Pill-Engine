@@ -18,7 +18,7 @@ use crate::{
         TargetSize, TextureData, WorldQuery,
     },
     renderer::resources::{
-        material_params_layout_entries, material_textures_layout_entries, RendererMaterial,
+        material_array_layout_entries, material_textures_layout_entries, RendererMaterial,
         RendererMesh, Vertex,
     },
 };
@@ -99,6 +99,13 @@ impl DrawTransform {
         }
     }
 
+    /// Stores material slot `index` in `position.w`: the shaders read the draw's parameters from
+    /// the material array there (draw_transform.hlsl `draw_material_index`).
+    pub(crate) fn with_material_index(mut self, index: impl Into<u32>) -> Self {
+        self.position[3] = index.into() as f32;
+        self
+    }
+
     /// Model matrix T · (Rx·Ry·Rz) · S, as the vertex shaders build it (draw_transform.hlsl).
     pub(crate) fn model_matrix(&self) -> Matrix4f {
         let [x, y, z, _] = self.position;
@@ -141,7 +148,7 @@ pub(crate) fn per_draw_storage_entry(binding: u32) -> wgpu::BindGroupLayoutEntry
 
 pub const MATERIAL_BIND_GROUP_GLOBALS: usize = 0;
 pub const MATERIAL_BIND_GROUP_TEXTURES: usize = 1;
-pub const MATERIAL_BIND_GROUP_PARAMS: usize = 2;
+pub const MATERIAL_BIND_GROUP_ARRAY: usize = 2;
 pub const MATERIAL_BIND_GROUP_PERDRAW: usize = 3;
 
 /// One entity's draw before batching.
@@ -235,6 +242,7 @@ struct PassPBROpaqueState {
     // Last frame's transforms; a single entry when the pass writes no motion vectors (never read)
     previous_per_draw_buffer: wgpu::Buffer,
     per_draw_bind_group: wgpu::BindGroup,
+    material_array_bind_group: wgpu::BindGroup,
     bg: BgSubState,
     // IBL handles and shadow map the current globals_bind_group was built from; rebuild only when
     // these change.
@@ -745,8 +753,8 @@ impl PassPBROpaque {
             ],
             // 1: material textures (base_color, normal, metallic_roughness, emissive)
             material_textures_layout_entries(),
-            // 2: material params
-            material_params_layout_entries(),
+            // 2: material array (packed params of every material, indexed per draw)
+            material_array_layout_entries(),
             // 3: per-draw storage arrays (this and last frame's transforms) — no dynamic offset,
             // no 256-B Metal alignment (Apple Metal Spec §4.1.1).
             (0..2).map(per_draw_storage_entry).collect(),
@@ -1010,6 +1018,17 @@ impl Pass for PassPBROpaque {
                 ],
             })
         };
+        let material_array_bind_group =
+            renderer
+                .get_device()
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("pass_pbr_opaque_material_array_bind_group"),
+                    layout: &pipeline.bind_group_layouts[MATERIAL_BIND_GROUP_ARRAY],
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: renderer.get_material_buffer().as_entire_binding(),
+                    }],
+                });
 
         let ibl_sampler = {
             let device = renderer.get_device();
@@ -1205,6 +1224,7 @@ impl Pass for PassPBROpaque {
             per_draw_buffer,
             previous_per_draw_buffer,
             per_draw_bind_group,
+            material_array_bind_group,
             bg,
             cached_ibl,
             cached_shadow_map: None,
@@ -1415,7 +1435,8 @@ impl Pass for PassPBROpaque {
                 }
                 break;
             }
-            let current = DrawTransform::from(transform);
+            let fields = decompose_render_queue_key(key);
+            let current = DrawTransform::from(transform).with_material_index(fields.material_index);
             #[cfg(feature = "post_fx")]
             let previous = if motion_vectors {
                 self.previous_transform(entity, current)
@@ -1425,7 +1446,6 @@ impl Pass for PassPBROpaque {
             #[cfg(not(feature = "post_fx"))]
             let (previous, _) = (current, entity);
             // After the motion history update, so an entity entering the view has a valid one
-            let fields = decompose_render_queue_key(key);
             let mesh_handle = NonZeroU32::new(fields.mesh_version.into())
                 .map(|version| RendererMeshHandle::new(fields.mesh_index.into(), version));
             if let Some(mesh) = mesh_handle
@@ -1596,6 +1616,12 @@ impl Pass for PassPBROpaque {
             &state_ref.globals_bind_group,
             &[],
         );
+        // Every material's parameters; draws select theirs by index (DrawTransform)
+        render_pass.set_bind_group(
+            MATERIAL_BIND_GROUP_ARRAY as u32,
+            &state_ref.material_array_bind_group,
+            &[],
+        );
         // Batches are sorted by material, so each material is bound once
         let mut bound_material: Option<RendererMaterialHandle> = None;
         for batch in &self.batches {
@@ -1620,11 +1646,6 @@ impl Pass for PassPBROpaque {
                 render_pass.set_bind_group(
                     MATERIAL_BIND_GROUP_TEXTURES as u32,
                     &mat.textures_bind_group,
-                    &[],
-                );
-                render_pass.set_bind_group(
-                    MATERIAL_BIND_GROUP_PARAMS as u32,
-                    &mat.parameters_bind_group,
                     &[],
                 );
                 bound_material = Some(batch.material_handle);

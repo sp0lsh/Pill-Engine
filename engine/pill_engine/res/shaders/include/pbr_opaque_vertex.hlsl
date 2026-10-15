@@ -29,6 +29,8 @@ struct VertexOutput {
     [[vk::location(5)]] float4 clip_position          : TEXCOORD5;
     [[vk::location(6)]] float4 previous_clip_position : TEXCOORD6;
 #endif
+    // Material slot of the draw, read by the fragment shader from the material array
+    [[vk::location(7)]] nointerpolation uint material_index : TEXCOORD7;
                         float4 sv_position         : SV_POSITION;
 };
 
@@ -74,6 +76,7 @@ VertexOutput vs_main(VertexInput input, uint instance_id : SV_InstanceID) {
     float3 bitangent    = cross(normal, tangent) * (tangent_code == 0 ? -1.0 : 1.0);
 
     output.texture_coordinates = input.texture_coordinates;
+    output.material_index      = draw_material_index(transform);
     output.world_position      = world_position;
     // Inverse-transpose of R*S is R*S^-1: divide by scale so non-uniform scale keeps normals perpendicular
     output.world_normal        = normalize(mul(rotation, normal / transform.scale.xyz));

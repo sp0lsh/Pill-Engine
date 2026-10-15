@@ -12,6 +12,7 @@ struct ShadowCamera {
 struct VertexOutput {
     float4 position                                : SV_Position;
     [[vk::location(0)]] float2 texture_coordinates : TEXCOORD0;
+    [[vk::location(1)]] nointerpolation uint material_index : TEXCOORD1;
 };
 
 // Vertex buffer locations of RendererMesh (as pbr_opaque_vertex.hlsl); Slang keeps explicit
@@ -28,5 +29,6 @@ VertexOutput vs_main(VertexInput input, uint instance_id : SV_InstanceID) {
     VertexOutput output;
     output.position            = mul(shadow_camera.view_projection, float4(world_position, 1.0));
     output.texture_coordinates = input.texture_coordinates;
+    output.material_index      = draw_material_index(transform);
     return output;
 }

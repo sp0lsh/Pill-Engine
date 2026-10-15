@@ -336,6 +336,10 @@ pub trait PillRenderer {
     /// Returns the wgpu `Queue`; required by passes that upload data each frame.
     fn get_queue(&self) -> &wgpu::Queue;
 
+    /// Returns the material array: a uniform buffer of `MATERIAL_ARRAY_CAPACITY` packed materials,
+    /// indexed by material slot.
+    fn get_material_buffer(&self) -> &wgpu::Buffer;
+
     /// Returns the surface texture format; used when creating pass render pipelines.
     fn get_surface_format(&self) -> wgpu::TextureFormat;
 

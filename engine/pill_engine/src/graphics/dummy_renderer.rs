@@ -69,6 +69,10 @@ impl PillRenderer for DummyRenderer {
         unimplemented!("DummyRenderer has no wgpu Queue")
     }
 
+    fn get_material_buffer(&self) -> &wgpu::Buffer {
+        unimplemented!("DummyRenderer has no material buffer")
+    }
+
     fn get_surface_format(&self) -> wgpu::TextureFormat {
         wgpu::TextureFormat::Rgba8UnormSrgb
     }

@@ -135,22 +135,9 @@ float shadow_visibility(float3 world_position, float3 geometric_normal) {
 [[vk::binding(6, 1)]] Texture2D    emissive_texture;
 [[vk::binding(7, 1)]] SamplerState emissive_sampler;
 
-// PBR params UBO (set 2) — 48 bytes, mirrors MaterialParams in renderer_material.rs.
-// Each float3 is followed by a float so all 16-byte rows are fully packed (std140).
-struct MaterialParams {
-    float3 base_color_factor;
-    float  roughness_factor;
-    float3 emissive_factor;
-    float  metallic_factor;
-    float  clearcoat;           // coat weight, 0 = no coat
-    float  clearcoat_roughness; // perceptual
-    float  opacity;             // < 1: drawn blended by the translucent pass
-    float  alpha_cutoff;        // > 0: texels with base-color alpha below it are discarded
-    float  normal_y_sign;       // -1: DirectX normal map (green down)
-    float  double_sided;        // 1: back faces drawn, lit with the flipped normal
-    float2 _padding;
-};
-[[vk::binding(0, 2)]] ConstantBuffer<MaterialParams> material;
+// Material array (set 2), indexed by the draw's material slot
+#define MATERIAL_ARRAY_SET 2
+#include "material.hlsl"
 
 static const float PI                 = 3.14159265359;
 static const float MAX_REFLECTION_LOD = 4.0;
@@ -357,8 +344,10 @@ FragmentOutput fs_main(
     [[vk::location(5)]] float4 clip_position          : TEXCOORD5,
     [[vk::location(6)]] float4 previous_clip_position : TEXCOORD6,
 #endif
+    [[vk::location(7)]] nointerpolation uint material_index : TEXCOORD7,
                         float4 frag_coord             : SV_Position
 ) {
+    MaterialParams material = load_material(material_index);
     float4 base_color         = base_color_texture.Sample(base_color_sampler, texture_coordinates);
 #ifdef ALPHA_TEST
     // Separate shader variant: discard turns off early depth rejection for the whole pipeline

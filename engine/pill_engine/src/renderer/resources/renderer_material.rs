@@ -9,10 +9,9 @@ use crate::{
 };
 use pill_core::{debug, LogContext, PillError, PillStyle, PillTypeMapKey, RendererError, Result};
 
-/// Material parameter uniform (bind group 2). Mirrors `MaterialParams` in pbr_opaque_fragment.hlsl:
-/// four fully packed 16-byte std140 rows.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+/// Material parameters as set by `Material`; stored on the GPU as `PackedMaterial` in the
+/// renderer's material array.
+#[derive(Copy, Clone)]
 pub(crate) struct MaterialParams {
     pub(crate) base_color: [f32; 3],
     pub(crate) roughness: f32,
@@ -27,7 +26,6 @@ pub(crate) struct MaterialParams {
     pub(crate) normal_y_sign: f32,
     /// 1 = no back-face culling; back faces are lit with the flipped normal.
     pub(crate) double_sided: f32,
-    pub(crate) _padding: [f32; 2],
 }
 
 impl MaterialParams {
@@ -38,6 +36,38 @@ impl MaterialParams {
     pub(crate) fn is_double_sided(&self) -> bool {
         self.double_sided > 0.5
     }
+
+    /// The 14 parameters as half floats, two per u32 (low half first), in the order
+    /// `load_material` in include/material.hlsl unpacks them.
+    pub(crate) fn packed(&self) -> PackedMaterial {
+        let pair = |low: f32, high: f32| {
+            half::f16::from_f32(low).to_bits() as u32
+                | ((half::f16::from_f32(high).to_bits() as u32) << 16)
+        };
+        let [r, g, b] = self.base_color;
+        let [emissive_r, emissive_g, emissive_b] = self.emissive;
+        PackedMaterial([
+            pair(r, g),
+            pair(b, self.roughness),
+            pair(emissive_r, emissive_g),
+            pair(emissive_b, self.metallic),
+            pair(self.clearcoat, self.clearcoat_roughness),
+            pair(self.opacity, self.alpha_cutoff),
+            pair(self.normal_y_sign, self.double_sided),
+            0,
+        ])
+    }
+}
+
+/// One material in the GPU material array: 16 half floats in two uint4 rows, so a shader loads a
+/// whole material with two uniform reads.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct PackedMaterial(pub(crate) [u32; 8]);
+
+/// Byte offset of material slot `index` in the material array buffer.
+pub(crate) fn material_array_offset(index: u32) -> wgpu::BufferAddress {
+    index as wgpu::BufferAddress * std::mem::size_of::<PackedMaterial>() as wgpu::BufferAddress
 }
 
 /// Renderer textures of a material; `None` falls back to the engine default texture of that slot.
@@ -79,8 +109,9 @@ pub(crate) fn material_textures_layout_entries() -> Vec<wgpu::BindGroupLayoutEnt
         .collect()
 }
 
-/// Bind group 2 layout: one MaterialParams uniform buffer.
-pub(crate) fn material_params_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
+/// Layout of the material array bind group: the renderer's uniform array of `PackedMaterial`,
+/// indexed by material slot (`PillRenderer::get_material_buffer`).
+pub(crate) fn material_array_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     vec![wgpu::BindGroupLayoutEntry {
         binding: 0,
         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -101,50 +132,20 @@ pub struct RendererMaterial {
     pub alpha_tested: bool,
     /// Drawn without back-face culling.
     pub double_sided: bool,
-    pub parameters_bind_group: wgpu::BindGroup,
     pub textures_bind_group: wgpu::BindGroup,
-    parameters_uniform_buffer: wgpu::Buffer,
 }
 
 impl RendererMaterial {
-    /// Creates the parameter uniform buffer and both bind groups of a material.
+    /// Creates the texture bind group of a material; its parameters go to the material array with
+    /// `write_parameters` once the material has a slot.
     pub(crate) fn new(
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
         resource_manager: &ResourceManager,
         name: &str,
         parameters: &MaterialParams,
         textures: &MaterialTextures,
     ) -> Result<Self> {
         debug!(LogContext::Rendering => "Creating material {}", name.name_style());
-
-        let parameters_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(&format!("{}_material_parameters_buffer", name)),
-            size: std::mem::size_of::<MaterialParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        queue.write_buffer(
-            &parameters_uniform_buffer,
-            0,
-            bytemuck::bytes_of(parameters),
-        );
-
-        // wgpu deduplicates structurally identical layouts, so these are compatible with the
-        // layouts PassPBROpaque builds its pipeline from.
-        let parameters_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("material_parameters_bind_group_layout"),
-                entries: &material_params_layout_entries(),
-            });
-        let parameters_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some(&format!("{}_material_parameters_bind_group", name)),
-            layout: &parameters_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: parameters_uniform_buffer.as_entire_binding(),
-            }],
-        });
 
         let textures_bind_group =
             Self::create_textures_bind_group(device, resource_manager, name, textures)?;
@@ -154,21 +155,25 @@ impl RendererMaterial {
             translucent: parameters.opacity < 1.0,
             alpha_tested: parameters.alpha_tested(),
             double_sided: parameters.is_double_sided(),
-            parameters_bind_group,
             textures_bind_group,
-            parameters_uniform_buffer,
         })
     }
 
-    /// Uploads new parameter values; bind groups stay valid.
-    pub(crate) fn write_parameters(&mut self, queue: &wgpu::Queue, parameters: &MaterialParams) {
+    /// Writes the parameters of material slot `index` into the material array.
+    pub(crate) fn write_parameters(
+        &mut self,
+        queue: &wgpu::Queue,
+        material_buffer: &wgpu::Buffer,
+        index: u32,
+        parameters: &MaterialParams,
+    ) {
         self.translucent = parameters.opacity < 1.0;
         self.alpha_tested = parameters.alpha_tested();
         self.double_sided = parameters.is_double_sided();
         queue.write_buffer(
-            &self.parameters_uniform_buffer,
-            0,
-            bytemuck::bytes_of(parameters),
+            material_buffer,
+            material_array_offset(index),
+            bytemuck::bytes_of(&parameters.packed()),
         );
     }
 
@@ -242,5 +247,46 @@ impl Resource for RendererMaterial {
 
     fn get_name(&self) -> String {
         self.name.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unpack(packed: &PackedMaterial) -> Vec<f32> {
+        packed
+            .0
+            .iter()
+            .flat_map(|&word| [word & 0xffff, word >> 16])
+            .map(|bits| half::f16::from_bits(bits as u16).to_f32())
+            .collect()
+    }
+
+    #[test]
+    fn material_pack_all_fields_round_trip_within_f16_precision() {
+        let parameters = MaterialParams {
+            base_color: [0.8, 0.5, 0.25],
+            roughness: 0.35,
+            emissive: [12.0, 0.0, 3.5],
+            metallic: 1.0,
+            clearcoat: 0.6,
+            clearcoat_roughness: 0.1,
+            opacity: 0.75,
+            alpha_cutoff: 0.5,
+            normal_y_sign: -1.0,
+            double_sided: 1.0,
+        };
+        let expected = [
+            0.8, 0.5, 0.25, 0.35, 12.0, 0.0, 3.5, 1.0, 0.6, 0.1, 0.75, 0.5, -1.0, 1.0, 0.0, 0.0,
+        ];
+        for (unpacked, expected) in unpack(&parameters.packed()).iter().zip(expected) {
+            assert!((unpacked - expected).abs() <= expected.abs() / 1024.0);
+        }
+    }
+
+    #[test]
+    fn material_index_1023_offset_32736() {
+        assert_eq!(material_array_offset(1023), 32736);
     }
 }

@@ -117,7 +117,8 @@ impl Engine {
         // Renderer handles are packed into the render queue key's index fields
         let max_material_count = limit_to_render_key(
             "MAX_MATERIALS",
-            RENDER_QUEUE_KEY_MATERIAL_INDEX.max as usize,
+            // Slot indices start at 1 and index the GPU material array
+            (RENDER_QUEUE_KEY_MATERIAL_INDEX.max as usize).min(MATERIAL_ARRAY_CAPACITY - 1),
             self.config
                 .get_int("MAX_MATERIALS")
                 .unwrap_or(MAX_MATERIALS as i64) as usize,

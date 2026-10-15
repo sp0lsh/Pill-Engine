@@ -9,6 +9,7 @@ use crate::{
 
 #[cfg(not(feature = "headless"))]
 use crate::{
+    config::MATERIAL_ARRAY_CAPACITY,
     graphics::RendererTextureHandle,
     renderer::resources::{MaterialParams, MaterialTextures, RendererMaterial, RendererTexture},
     resources::{ResourceManager, Texture},
@@ -284,7 +285,6 @@ impl Material {
             alpha_cutoff: self.alpha_cutoff,
             normal_y_sign: if self.directx_normals { -1.0 } else { 1.0 },
             double_sided: self.double_sided as u32 as f32,
-            _padding: [0.0; 2],
         }
     }
 
@@ -393,15 +393,30 @@ impl Resource for Material {
         #[cfg(not(feature = "headless"))]
         {
             let textures = self.renderer_textures(&engine.resource_manager)?;
+            let parameters = self.renderer_parameters();
             let renderer_material = RendererMaterial::new(
                 engine.renderer.get_device(),
-                engine.renderer.get_queue(),
                 &engine.resource_manager,
                 &self.name,
-                &self.renderer_parameters(),
+                &parameters,
                 &textures,
             )?;
-            engine.resource_manager.add_resource(renderer_material)?;
+            let (handle, renderer_material) =
+                engine.resource_manager.add_resource(renderer_material)?;
+            let index = handle.data().index;
+            if index as usize >= MATERIAL_ARRAY_CAPACITY {
+                return Err(format!(
+                    "Material {} slot {index} exceeds the material array capacity {MATERIAL_ARRAY_CAPACITY}",
+                    self.name
+                )
+                .into());
+            }
+            renderer_material.write_parameters(
+                engine.renderer.get_queue(),
+                engine.renderer.get_material_buffer(),
+                index,
+                &parameters,
+            );
         }
 
         Ok(())
@@ -416,10 +431,23 @@ impl Resource for Material {
         match request {
             DEFERRED_REQUEST_VARIANT_PARAMETERS => {
                 #[cfg(not(feature = "headless"))]
-                engine
-                    .resource_manager
-                    .get_resource_by_name_mut::<RendererMaterial>(&self.name)?
-                    .write_parameters(engine.renderer.get_queue(), &self.renderer_parameters());
+                {
+                    let index = engine
+                        .resource_manager
+                        .get_resource_handle::<RendererMaterial>(&self.name)?
+                        .data()
+                        .index;
+                    let parameters = self.renderer_parameters();
+                    engine
+                        .resource_manager
+                        .get_resource_by_name_mut::<RendererMaterial>(&self.name)?
+                        .write_parameters(
+                            engine.renderer.get_queue(),
+                            engine.renderer.get_material_buffer(),
+                            index,
+                            &parameters,
+                        );
+                }
             }
             DEFERRED_REQUEST_VARIANT_TEXTURES => {
                 #[cfg(not(feature = "headless"))]

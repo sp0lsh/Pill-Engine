@@ -1,13 +1,14 @@
 #![allow(clippy::too_many_arguments)]
 use crate::{
     app_config::EngineConfig,
+    config::MATERIAL_ARRAY_CAPACITY,
     ecs::{EntityHandle, Scene},
     graphics::{
         BufferDesc, ComputePipeline, ComputePipelineDesc, FrameTarget, Pass, PassPBROpaque,
         PassTextureHandle, PillRenderer, Pipeline, PipelineDesc, RendererTargetDesc, TargetSize,
         TextureData, WorldQuery,
     },
-    renderer::resources::{RendererMesh, RendererTexture, Vertex},
+    renderer::resources::{PackedMaterial, RendererMesh, RendererTexture, Vertex},
     resources::ResourceManager,
 };
 
@@ -230,6 +231,10 @@ impl PillRenderer for Renderer {
 
     fn get_queue(&self) -> &wgpu::Queue {
         &self.state.queue
+    }
+
+    fn get_material_buffer(&self) -> &wgpu::Buffer {
+        &self.state.material_buffer
     }
 
     fn get_surface_format(&self) -> wgpu::TextureFormat {
@@ -534,6 +539,8 @@ pub struct State {
     color_format: wgpu::TextureFormat,
     /// Scene HDR color format: Rg11b10Ufloat, Rgba16Float without the feature
     hdr_format: wgpu::TextureFormat,
+    /// GPU material array, written by `Material` (renderer_material.rs `PackedMaterial`)
+    material_buffer: wgpu::Buffer,
     passes: Vec<Box<dyn Pass>>,
     window: Arc<winit::window::Window>,
     // Optional frame capture: (target_frame, output_path). Set via PILL_SCREENSHOT env var.
@@ -654,6 +661,13 @@ impl State {
             wgpu::TextureFormat::Rgba16Float
         };
 
+        let material_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("material_array"),
+            size: (MATERIAL_ARRAY_CAPACITY * std::mem::size_of::<PackedMaterial>()) as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let (surface_configuration, color_format) = {
             let preferred_format = wgpu::TextureFormat::Rgba8UnormSrgb;
             let surface_capabilities = surface.get_capabilities(&adapter);
@@ -740,6 +754,7 @@ impl State {
             surface_configuration,
             color_format,
             hdr_format,
+            material_buffer,
             passes: Vec::new(),
             window,
             screenshot,

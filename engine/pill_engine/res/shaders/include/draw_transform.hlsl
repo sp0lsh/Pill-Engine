@@ -22,3 +22,9 @@ float3x3 rotation_matrix(DrawTransform transform) {
 float3 draw_world_position(DrawTransform transform, float3x3 rotation, float3 position) {
     return transform.position.xyz + mul(rotation, position * transform.scale.xyz);
 }
+
+// Material slot of the draw: index into the material array (material.hlsl), set by
+// DrawTransform::with_material_index
+uint draw_material_index(DrawTransform transform) {
+    return (uint)transform.position.w;
+}

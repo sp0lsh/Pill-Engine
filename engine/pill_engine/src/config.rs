@@ -475,6 +475,9 @@ fn push_ui_pass(engine: &Engine, passes: &mut Vec<Box<dyn Pass>>) -> Result<()> 
 pub const RESOURCE_VERSION_LIMIT: usize = 255;
 
 pub const MAX_MATERIALS: usize = 10;
+/// Slots of the GPU material array (`PillRenderer::get_material_buffer`), 32 bytes each; caps
+/// MAX_MATERIALS.
+pub const MATERIAL_ARRAY_CAPACITY: usize = 1024;
 pub const MAX_TEXTURES: usize = 10;
 pub const MAX_MESHES: usize = 10;
 pub const MAX_SOUNDS: usize = 10;
