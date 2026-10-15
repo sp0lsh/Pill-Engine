@@ -145,19 +145,14 @@ impl PillGame for Game {
 
 /// Post-processing chain, studio IBL, lights and per-pass parameters.
 fn setup_render_state(engine: &mut Engine) -> Result<()> {
-    let diffuse = engine.load_cooked_texture(
-        "studio_diffuse_ibl",
-        include_bytes!(concat!(env!("OUT_DIR"), "/ibl_diffuse.rtex")),
-    )?;
-    let specular = engine.load_cooked_texture(
-        "studio_specular_ibl",
-        include_bytes!(concat!(env!("OUT_DIR"), "/ibl_specular.rtex")),
+    let environment = engine.load_cooked_texture(
+        "studio_equirect",
+        include_bytes!(concat!(env!("OUT_DIR"), "/studio_equirect.rtex")),
     )?;
 
     let render_state = engine.get_global_component_mut::<RenderStateComponent>()?;
     render_state.pass_chain = PassChain::PostFx;
-    render_state.ibl_diffuse = diffuse;
-    render_state.ibl_specular = specular;
+    render_state.environment = Some(environment);
     render_state.ibl_intensity = 0.5;
     render_state.background = None;
     render_state.background_color = BACKGROUND_COLOR;

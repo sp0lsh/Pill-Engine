@@ -144,7 +144,7 @@ static const float MAX_REFLECTION_LOD = 4.0;
 // Least cosine between the shading normal and the view direction
 static const float MIN_NORMAL_DOT_VIEW = 0.02;
 
-#include "equirect.hlsl"
+#include "oct_ibl.hlsl"
 
 float distribution_ggx(float3 normal, float3 half_vector, float roughness) {
     // Add epsilon to avoid singularities at very low roughness.
@@ -427,7 +427,7 @@ FragmentOutput fs_main(
     float3 specular_factor = fresnel_schlick(max(dot(normal, view_direction), 0.0), base_reflectivity);
     float3 diffuse_factor  = (float3(1.0, 1.0, 1.0) - specular_factor) * (1.0 - metallic);
     // Indirect diffuse: DDGI probes when on (their rays that miss already see the IBL), else IBL
-    float3 sky_irradiance  = irradiance_texture.Sample(irradiance_sampler, dir_to_equirect_uv(normal)).rgb * scene.ibl_intensity.x;
+    float3 sky_irradiance  = sample_ibl_irradiance(irradiance_texture, irradiance_sampler, normal) * scene.ibl_intensity.x;
     float3 irradiance      = sky_irradiance;
     // Specular occlusion: the sky reflection is occluded as much as the probes find the sky light
     // occluded here (inside foliage, under awnings), which the IBL alone can't know
@@ -443,7 +443,7 @@ FragmentOutput fs_main(
     float3 ambient_diffuse = diffuse_factor * irradiance * albedo;
     // Specular IBL.
     float3 reflection        = reflect(-view_direction, normal);
-    float3 prefiltered_color = prefilter_texture.SampleLevel(prefilter_sampler, dir_to_equirect_uv(reflection), roughness * MAX_REFLECTION_LOD).rgb;
+    float3 prefiltered_color = sample_ibl_specular(prefilter_texture, prefilter_sampler, reflection, roughness * MAX_REFLECTION_LOD);
     float2 environment_brdf  = brdf_lut_texture.Sample(brdf_lut_sampler, float2(max(dot(normal, view_direction), 0.0), roughness)).rg;
     float3 fresnel           = fresnel_schlick_roughness(max(dot(normal, view_direction), 0.0), base_reflectivity, roughness);
     float3 specular_weight   = lighting_only

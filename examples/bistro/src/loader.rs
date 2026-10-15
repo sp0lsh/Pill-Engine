@@ -23,7 +23,6 @@ pub const NAME: &str = "bistro";
 pub struct BistroCpu {
     pub scene: GltfSceneData,
     pub equirect: ibl::Equirect,
-    pub ibl: (Vec<f32>, Vec<Vec<f32>>), // ibl::bake_all output: diffuse, specular mips
 }
 
 pub fn load() -> Result<BistroCpu, String> {
@@ -88,9 +87,8 @@ pub fn load() -> Result<BistroCpu, String> {
         .map_err(|e| e.to_string())?;
     drop(buffers);
     let equirect = ibl::equirect_from_hdr(&hdr).map_err(|e| e.to_string())?;
-    let ibl = ibl::bake_all(&equirect);
     ui::set_status(format!(
-        "Bistro: {} meshes, {} materials, {} textures; parse + IBL in {:.1} s, total {:.1} s",
+        "Bistro: {} meshes, {} materials, {} textures; parse + HDR decode in {:.1} s, total {:.1} s",
         scene.meshes.len(),
         scene.materials.len(),
         scene.textures.len(),
@@ -100,7 +98,6 @@ pub fn load() -> Result<BistroCpu, String> {
     Ok(BistroCpu {
         scene,
         equirect,
-        ibl,
     })
 }
 

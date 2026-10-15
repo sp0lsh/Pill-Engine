@@ -10,24 +10,16 @@ pub struct Game {}
 
 impl PillGame for Game {
     fn start(&self, engine: &mut Engine) -> Result<()> {
-        // Environment and IBL maps cooked by pill_assets from res/studio.procedural_equirect
+        // Environment cooked by pill_assets from res/studio.procedural_equirect; the engine bakes
+        // the IBL from it
         let background_handle = engine.load_cooked_texture(
             "equirect",
             include_bytes!("../res/studio_equirect.cooked_tex"),
         )?;
-        let diffuse_handle = engine.load_cooked_texture(
-            "diffuse_ibl",
-            include_bytes!("../res/studio_diffuse_ibl.cooked_tex"),
-        )?;
-        let specular_handle = engine.load_cooked_texture(
-            "specular_ibl",
-            include_bytes!("../res/studio_specular_ibl.cooked_tex"),
-        )?;
 
         let render_state = engine.get_global_component_mut::<RenderStateComponent>()?;
         render_state.background = Some(background_handle);
-        render_state.ibl_diffuse = diffuse_handle;
-        render_state.ibl_specular = specular_handle;
+        render_state.environment = Some(background_handle);
 
         let scene = engine.create_scene("pbr_balls")?;
         engine.set_active_scene(scene)?;

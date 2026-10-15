@@ -9,6 +9,7 @@ use crate::graphics::ddgi::{
     DEPTH_RESOLUTION, MAX_CASCADES, MAX_RAYS_PER_PROBE, NO_SOURCE,
 };
 use crate::graphics::fullscreen::uniform_entry_for;
+use crate::graphics::ibl::IblFrame;
 use crate::graphics::pass_lights::LightsFrame;
 use crate::graphics::pass_pbr_opaque::{is_translucent, DrawTransform};
 use crate::graphics::{
@@ -153,7 +154,8 @@ struct ProbeStorage {
 #[derive(Clone, Copy, PartialEq)]
 struct BindingKey {
     rays_per_probe: u32,
-    sky: PassTextureHandle,
+    // PassIblBake generation: a new environment rebuilds the bindings like a new sky did
+    sky_generation: u64,
     bvh_generation: u64,
     storage_generation: u64,
 }
@@ -191,8 +193,8 @@ struct SceneBvh {
 pub(crate) struct PassDdgi {
     frame: Rc<RefCell<DdgiFrame>>,
     lights: Rc<RefCell<LightsFrame>>,
-    /// Engine default IBL irradiance, used for ray misses when the game's handle is invalid.
-    fallback_sky: PassTextureHandle,
+    /// Baked IBL irradiance, the radiance of ray misses.
+    ibl: Rc<RefCell<IblFrame>>,
     pipelines: Option<Pipelines>,
     /// Signature of the scene the BVH was built from (also when it had no triangles).
     bvh_signature: Option<u64>,
@@ -222,12 +224,12 @@ impl PassDdgi {
     pub(crate) fn new(
         frame: Rc<RefCell<DdgiFrame>>,
         lights: Rc<RefCell<LightsFrame>>,
-        fallback_sky: PassTextureHandle,
+        ibl: Rc<RefCell<IblFrame>>,
     ) -> Self {
         Self {
             frame,
             lights,
-            fallback_sky,
+            ibl,
             pipelines: None,
             bvh_signature: None,
             bvh: None,
@@ -451,9 +453,7 @@ impl PassDdgi {
             "ddgi_rays",
             probe_count as u64 * key.rays_per_probe as u64 * RAY_BYTES,
         )?;
-        let sky = renderer
-            .get_texture_view(key.sky)
-            .ok_or("PassDdgi: IBL irradiance missing")?;
+        let sky = self.ibl.borrow().irradiance_view.clone();
         let pipelines = self
             .pipelines
             .as_ref()
@@ -741,11 +741,7 @@ impl Pass for PassDdgi {
                 .rays_per_probe
                 .max(CATCH_UP_RAYS)
                 .clamp(1, MAX_RAYS_PER_PROBE),
-            sky: if renderer.has_texture(render_state.ibl_diffuse) {
-                render_state.ibl_diffuse
-            } else {
-                self.fallback_sky
-            },
+            sky_generation: self.ibl.borrow().generation,
             bvh_generation: self.bvh_generation,
             storage_generation: self.storage_generation,
         };

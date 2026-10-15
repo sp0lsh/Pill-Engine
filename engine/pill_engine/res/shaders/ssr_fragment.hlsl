@@ -9,7 +9,7 @@
 // out = color + W · lerp(ibl_specular, reflected, confidence), with W the specular weight the
 // opaque pass left out of `color` (pbr_opaque_fragment.hlsl).
 #include "include/octahedral.hlsl"
-#include "include/equirect.hlsl"
+#include "include/oct_ibl.hlsl"
 
 // Mirrors SsrParams in pass_ssr.rs
 struct SsrParams {
@@ -25,7 +25,7 @@ struct SsrParams {
 [[vk::binding(1, 0)]] Texture2D<float>            t_depth;     // Depth32Float
 [[vk::binding(2, 0)]] Texture2D<float4>           t_surface;   // rgb = specular weight, a = roughness
 [[vk::binding(3, 0)]] Texture2D<float2>           t_normal;    // octahedral normal
-[[vk::binding(4, 0)]] Texture2D<float4>           t_prefilter; // specular IBL (equirect, mips by roughness)
+[[vk::binding(4, 0)]] Texture2D<float4>           t_prefilter; // specular IBL (octahedral, mips by roughness)
 [[vk::binding(5, 0)]] SamplerState                s_prefilter;
 [[vk::binding(6, 0)]] ConstantBuffer<SsrParams>   params;
 
@@ -210,6 +210,6 @@ float4 fs_main(float2 uv : TEXCOORD0) : SV_Target {
     if (params.depth.w > 1.5) {
         return float4(weight * reflected * confidence, color.a);
     }
-    float3 environment = t_prefilter.SampleLevel(s_prefilter, dir_to_equirect_uv(reflection), roughness * MAX_REFLECTION_LOD).rgb * params.depth.z;
+    float3 environment = sample_ibl_specular(t_prefilter, s_prefilter, reflection, roughness * MAX_REFLECTION_LOD) * params.depth.z;
     return float4(color.rgb + weight * lerp(environment, reflected, confidence), color.a);
 }

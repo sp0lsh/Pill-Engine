@@ -13,7 +13,6 @@ use crate::fetch;
 pub struct SponzaCpu {
     pub scene: GltfSceneData,
     pub equirect: ibl::Equirect, // RGBA f32 background panorama (from fetched HDR)
-    pub ibl: (Vec<f32>, Vec<Vec<f32>>), // ibl::bake_all output: diffuse, specular mips
 }
 
 /// Fetches the glTF, then its buffers, textures and the HDR concurrently; parses and bakes IBL.
@@ -61,10 +60,9 @@ pub async fn load() -> Result<SponzaCpu, String> {
     finish(scene, &hdr)
 }
 
-/// Bakes IBL from the fetched HDR and packages the result.
+/// Decodes the fetched HDR and packages the result.
 fn finish(scene: GltfSceneData, hdr_bytes: &[u8]) -> Result<SponzaCpu, String> {
     let equirect = ibl::equirect_from_hdr(hdr_bytes).map_err(|e| e.to_string())?;
-    let ibl = ibl::bake_all(&equirect);
     log::info!(
         "Sponza: parsed {} meshes, {} materials, {} textures",
         scene.meshes.len(),
@@ -74,6 +72,5 @@ fn finish(scene: GltfSceneData, hdr_bytes: &[u8]) -> Result<SponzaCpu, String> {
     Ok(SponzaCpu {
         scene,
         equirect,
-        ibl,
     })
 }

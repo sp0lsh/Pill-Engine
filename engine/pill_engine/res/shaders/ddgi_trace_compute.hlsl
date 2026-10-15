@@ -12,7 +12,7 @@
 #include "include/ddgi_common.hlsl"
 #include "include/bvh_trace.hlsl"
 #include "include/punctual_light.hlsl"
-#include "include/equirect.hlsl"
+#include "include/oct_ibl.hlsl"
 
 // Radiance and length of one probe ray — mirrors the ray buffer layout in pass_ddgi.rs
 struct DdgiRay {
@@ -121,7 +121,7 @@ void cs_main(uint3 dispatch_id : SV_DispatchThreadID) {
         DdgiRay result;
         if (!hit.found) {
             result.direction_depth = float4(direction, -1.0);
-            result.radiance = float4(sky_irradiance.SampleLevel(ddgi_sampler, dir_to_equirect_uv(direction), 0.0).rgb
+            result.radiance = float4(sample_ibl_irradiance(sky_irradiance, ddgi_sampler, direction)
                                      * ddgi.sky_intensity, 0.0);
         } else {
             float3 P = probe_pos + direction * hit.distance;

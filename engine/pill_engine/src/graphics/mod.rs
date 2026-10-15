@@ -5,6 +5,7 @@ pub(crate) mod ddgi;
 mod dummy_renderer;
 mod froxelizer;
 mod fullscreen;
+pub(crate) mod ibl;
 #[cfg(feature = "post_fx")]
 mod pass_bloom;
 #[cfg(feature = "post_fx")]
@@ -13,6 +14,7 @@ mod pass_depth_of_field;
 mod pass_egui;
 #[cfg(feature = "post_fx")]
 mod pass_fxaa;
+pub(crate) mod pass_ibl_bake;
 #[cfg(feature = "post_fx")]
 mod pass_lens;
 pub(crate) mod pass_lights;

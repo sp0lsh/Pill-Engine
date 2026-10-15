@@ -1,15 +1,16 @@
 use crate::config::SSR_FRAGMENT_SHADER;
 use crate::ecs::RenderStateComponent;
 use crate::graphics::fullscreen::{
-    create_fullscreen_pipeline, draw_fullscreen, sampler_entry, target_view, texture_entry,
-    uniform_buffer, uniform_entry, Binding, CachedBindGroup,
+    create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, sampler_entry, target_view,
+    texture_entry, uniform_buffer, uniform_entry, Binding, CachedBindGroup,
 };
+use crate::graphics::ibl::IblFrame;
 use crate::graphics::projection::depth_unpack;
 use crate::graphics::renderer::camera_view_projection;
 use crate::graphics::{FrameTarget, Pass, PassTextureHandle, PillRenderer, Pipeline, WorldQuery};
 
 use pill_core::Result;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// Mirrors `SsrParams` in ssr_fragment.hlsl.
@@ -29,8 +30,6 @@ struct SsrState {
     params: wgpu::Buffer,
     prefilter_sampler: wgpu::Sampler,
     bind_group: CachedBindGroup,
-    // Specular IBL handle the bind group was built with
-    prefilter: PassTextureHandle,
 }
 
 /// Screen-space reflections (`RenderStateComponent::ssr`): marches the mirror ray of each opaque
@@ -43,21 +42,21 @@ pub struct PassSsr {
     color: PassTextureHandle,
     depth: PassTextureHandle,
     surface: [PassTextureHandle; 2],
-    fallback_prefilter: PassTextureHandle,
+    // Octahedral specular map baked by PassIblBake (a fixed view; the bake rewrites its content)
+    ibl: Rc<RefCell<IblFrame>>,
     output: PassTextureHandle,
     active: Rc<Cell<bool>>,
     state: Option<SsrState>,
 }
 
 impl PassSsr {
-    /// `surface` = [specular weight + roughness, octahedral normal]; `fallback_prefilter` is the
-    /// engine's default specular IBL, used when `RenderStateComponent::ibl_specular` is invalid;
-    /// `active` is set each frame to whether `output` was written.
-    pub fn new(
+    /// `surface` = [specular weight + roughness, octahedral normal]; `ibl` holds the baked
+    /// specular map; `active` is set each frame to whether `output` was written.
+    pub(crate) fn new(
         color: PassTextureHandle,
         depth: PassTextureHandle,
         surface: [PassTextureHandle; 2],
-        fallback_prefilter: PassTextureHandle,
+        ibl: Rc<RefCell<IblFrame>>,
         output: PassTextureHandle,
         active: Rc<Cell<bool>>,
     ) -> Self {
@@ -65,7 +64,7 @@ impl PassSsr {
             color,
             depth,
             surface,
-            fallback_prefilter,
+            ibl,
             output,
             active,
             state: None,
@@ -96,24 +95,13 @@ impl Pass for PassSsr {
             hdr_format,
             None,
         )?;
-        // As the PBR pass's prefilter sampler: equirect u wraps, trilinear across roughness mips
-        let prefilter_sampler = renderer
-            .get_device()
-            .create_sampler(&wgpu::SamplerDescriptor {
-                address_mode_u: wgpu::AddressMode::Repeat,
-                address_mode_v: wgpu::AddressMode::ClampToEdge,
-                address_mode_w: wgpu::AddressMode::ClampToEdge,
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                mipmap_filter: wgpu::FilterMode::Linear,
-                ..Default::default()
-            });
+        // As the PBR pass's: the oct map has seam borders and mips are picked explicitly
+        let prefilter_sampler = linear_clamp_sampler(renderer);
         self.state = Some(SsrState {
             pipeline,
             params: uniform_buffer::<SsrParams>(renderer, "pass_ssr_params"),
             prefilter_sampler,
             bind_group: CachedBindGroup::default(),
-            prefilter: self.fallback_prefilter,
         });
         Ok(())
     }
@@ -171,16 +159,7 @@ impl Pass for PassSsr {
             }),
         );
 
-        // The game may swap the specular IBL; rebuild the bind group then
-        let prefilter = if renderer.has_texture(render_state.ibl_specular) {
-            render_state.ibl_specular
-        } else {
-            self.fallback_prefilter
-        };
-        if prefilter != state.prefilter {
-            state.prefilter = prefilter;
-            state.bind_group = CachedBindGroup::default();
-        }
+        let ibl = self.ibl.borrow();
         draw_fullscreen(
             encoder,
             renderer,
@@ -192,7 +171,7 @@ impl Pass for PassSsr {
                 Binding::Target(self.depth),
                 Binding::Target(self.surface[0]),
                 Binding::Target(self.surface[1]),
-                Binding::Texture(prefilter),
+                Binding::View(&ibl.specular_view),
                 Binding::Sampler(&state.prefilter_sampler),
                 Binding::Buffer(&state.params),
             ],

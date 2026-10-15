@@ -188,7 +188,7 @@ fn drain_system(engine: &mut Engine) -> Result<()> {
 /// one-line summary for the panel.
 fn spawn_assets(engine: &mut Engine, scene: SceneHandle, cpu: BistroCpu) -> Result<String> {
     let name = loader::NAME;
-    // --- IBL (background + diffuse/specular; the BRDF LUT is engine-owned) ---
+    // --- Environment: background, and the engine bakes the IBL from it ---
     let equirect = &cpu.equirect;
     let background = engine.create_gpu_texture_f32(
         &format!("{name}_equirect"),
@@ -196,26 +196,10 @@ fn spawn_assets(engine: &mut Engine, scene: SceneHandle, cpu: BistroCpu) -> Resu
         equirect.width,
         equirect.height,
     )?;
-    let (diffuse, specular_mips) = &cpu.ibl;
-    let (diffuse_width, diffuse_height) = ibl::DIFFUSE_SIZE;
-    let diffuse_handle = engine.create_gpu_texture_f32(
-        &format!("{name}_diffuse_ibl"),
-        diffuse,
-        diffuse_width,
-        diffuse_height,
-    )?;
-    let (specular_width, specular_height) = ibl::SPECULAR_SIZE;
-    let specular_handle = engine.create_gpu_mipped_texture_f32(
-        &format!("{name}_specular_ibl"),
-        specular_mips,
-        specular_width,
-        specular_height,
-    )?;
     {
         let render_state = engine.get_global_component_mut::<RenderStateComponent>()?;
         render_state.background = Some(background);
-        render_state.ibl_diffuse = diffuse_handle;
-        render_state.ibl_specular = specular_handle;
+        render_state.environment = Some(background);
     }
 
     let GltfSceneData {

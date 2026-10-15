@@ -7,6 +7,8 @@ use crate::{
     engine::Engine,
     graphics::{
         ddgi::{DdgiFrame, PassDdgi, PassDdgiProbes},
+        ibl::IblFrame,
+        pass_ibl_bake::PassIblBake,
         pass_lights::LightsFrame,
         shadow::ShadowFrame,
         Pass, PassLights, PassPBROpaque, PassPunctualShadows, PassShadow, PassTextureHandle,
@@ -180,6 +182,9 @@ pub const SHADOW_CASTER_CUTOUT_VERTEX_SHADER: &str =
 pub const SHADOW_CASTER_CUTOUT_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/shadow_caster_cutout_fragment.wgsl");
 pub const FULLSCREEN_VERTEX_SHADER: &str = include_str!("../res/shaders/fullscreen_vertex.wgsl");
+pub const IBL_DOWNSAMPLE_FRAGMENT_SHADER: &str =
+    include_str!("../res/shaders/ibl_downsample_fragment.wgsl");
+pub const IBL_BAKE_FRAGMENT_SHADER: &str = include_str!("../res/shaders/ibl_bake_fragment.wgsl");
 pub const TONEMAP_FRAGMENT_SHADER: &str = include_str!("../res/shaders/tonemap_fragment.wgsl");
 #[cfg(feature = "post_fx")]
 pub const BLOOM_DOWNSAMPLE_FRAGMENT_SHADER: &str =
@@ -231,15 +236,17 @@ pub const MOTION_BLUR_FRAGMENT_SHADER: &str =
 /// and depth targets and records them in `RenderStateComponent`.
 pub fn default_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
     let (hdr_target, depth_target) = create_scene_targets(engine)?;
+    let (ibl_bake, ibl_frame) = ibl_pass(engine)?;
     let (lights, punctual_shadows, lights_frame) = lights_pass(engine)?;
     let (shadow, shadow_frame) = shadow_pass(engine)?;
-    let (ddgi, ddgi_frame) = ddgi_pass(engine, lights_frame.clone())?;
+    let (ddgi, ddgi_frame) = ddgi_pass(engine, lights_frame.clone(), ibl_frame.clone())?;
     let probes = PassDdgiProbes::new(ddgi_frame.clone(), hdr_target, depth_target);
-    let opaque = opaque_pass(engine, hdr_target, depth_target)?
+    let opaque = opaque_pass(engine, hdr_target, depth_target, ibl_frame)?
         .with_shadow(shadow_frame)
         .with_lights(lights_frame)
         .with_ddgi(ddgi_frame);
     let mut passes: Vec<Box<dyn Pass>> = vec![
+        Box::new(ibl_bake),
         Box::new(lights),
         Box::new(punctual_shadows),
         Box::new(shadow),
@@ -285,11 +292,12 @@ pub fn post_fx_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
     // smooths 1-texel stair steps but not the 2-pixel steps of an upscaled image
     let fxaa_target = create_target(engine, "fxaa_target", LDR_TARGET_FORMAT)?;
 
+    let (ibl_bake, ibl_frame) = ibl_pass(engine)?;
     let (lights, punctual_shadows, lights_frame) = lights_pass(engine)?;
     let (shadow, shadow_frame) = shadow_pass(engine)?;
-    let (ddgi, ddgi_frame) = ddgi_pass(engine, lights_frame.clone())?;
+    let (ddgi, ddgi_frame) = ddgi_pass(engine, lights_frame.clone(), ibl_frame.clone())?;
     let probes = PassDdgiProbes::new(ddgi_frame.clone(), hdr_target, depth_target);
-    let opaque = opaque_pass(engine, opaque_target, depth_target)?
+    let opaque = opaque_pass(engine, opaque_target, depth_target, ibl_frame.clone())?
         .with_shadow(shadow_frame.clone())
         .with_lights(lights_frame.clone())
         .with_ddgi(ddgi_frame.clone());
@@ -297,7 +305,8 @@ pub fn post_fx_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
         hdr_target,
         depth_target,
         opaque.max_instances(),
-        opaque.initial_ibl(),
+        opaque.default_brdf_lut(),
+        ibl_frame.clone(),
     )
     .with_velocity_target(velocity_target)
     .with_shadow(shadow_frame)
@@ -308,11 +317,12 @@ pub fn post_fx_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
         opaque_target,
         depth_target,
         [ssr_surface_target, ssr_normal_target],
-        opaque.initial_ibl()[1],
+        ibl_frame,
         ssr_target,
         ssr_active.clone(),
     );
     let mut passes: Vec<Box<dyn Pass>> = vec![
+        Box::new(ibl_bake),
         Box::new(lights),
         Box::new(punctual_shadows),
         Box::new(shadow),
@@ -418,16 +428,25 @@ fn lights_pass(
     Ok((PassLights::new(frame.clone()), shadows, frame))
 }
 
-/// Diffuse GI probe pass and the probes it publishes to the PBR passes.
+/// IBL bake pass (first in the chain) and the octahedral maps it bakes for the PBR, SSR and DDGI
+/// passes.
+fn ibl_pass(engine: &Engine) -> Result<(PassIblBake, Rc<RefCell<IblFrame>>)> {
+    let default_environment = engine
+        .get_global_component::<RenderStateComponent>()?
+        .default_environment;
+    let frame = Rc::new(RefCell::new(IblFrame::new(engine.renderer.as_ref())));
+    Ok((PassIblBake::new(frame.clone(), default_environment), frame))
+}
+
+/// Diffuse GI probe pass and the probes it publishes to the PBR passes; ray misses read the
+/// baked irradiance in `ibl`.
 fn ddgi_pass(
     engine: &mut Engine,
     lights: Rc<RefCell<LightsFrame>>,
+    ibl: Rc<RefCell<IblFrame>>,
 ) -> Result<(PassDdgi, Rc<RefCell<DdgiFrame>>)> {
-    let fallback_sky = engine
-        .get_global_component::<RenderStateComponent>()?
-        .default_ibl[0];
     let frame = Rc::new(RefCell::new(DdgiFrame::new(engine.renderer.as_mut())?));
-    Ok((PassDdgi::new(frame.clone(), lights, fallback_sky), frame))
+    Ok((PassDdgi::new(frame.clone(), lights, ibl), frame))
 }
 
 /// At most one mesh instance per entity.
@@ -442,16 +461,18 @@ fn opaque_pass(
     engine: &Engine,
     hdr_target: PassTextureHandle,
     depth_target: PassTextureHandle,
+    ibl: Rc<RefCell<IblFrame>>,
 ) -> Result<PassPBROpaque> {
-    // Engine defaults, not the game's handles: the pass falls back to these if the game's are invalid
-    let initial_ibl = engine
+    // Engine default, not the game's handle: the pass falls back to it if the game's is invalid
+    let default_brdf_lut = engine
         .get_global_component::<RenderStateComponent>()?
-        .default_ibl;
+        .default_brdf_lut;
     Ok(PassPBROpaque::new(
         hdr_target,
         depth_target,
         max_instances(engine),
-        initial_ibl,
+        default_brdf_lut,
+        ibl,
     ))
 }
 

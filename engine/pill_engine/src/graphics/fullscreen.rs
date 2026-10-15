@@ -115,6 +115,8 @@ pub(crate) enum Binding<'a> {
     /// A texture that is not a pass target (e.g. an IBL map); its view is created only when
     /// the bind group is (re)built.
     Texture(PassTextureHandle),
+    /// A view the pass holds itself (e.g. the baked IBL maps).
+    View(&'a wgpu::TextureView),
     Sampler(&'a wgpu::Sampler),
     Buffer(&'a wgpu::Buffer),
 }
@@ -232,6 +234,7 @@ fn create_bind_group(
             (Binding::Texture(_), view) => wgpu::BindingResource::TextureView(
                 view.as_ref().expect("texture views resolved above"),
             ),
+            (Binding::View(view), _) => wgpu::BindingResource::TextureView(view),
             (Binding::Sampler(sampler), _) => wgpu::BindingResource::Sampler(sampler),
             (Binding::Buffer(buffer), _) => buffer.as_entire_binding(),
         };

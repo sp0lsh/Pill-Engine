@@ -45,26 +45,15 @@ impl PillGame for Game {
             engine.mount_asset_pack(pack)?;
         }
 
-        // Environment and IBL maps cooked by pill_assets from res/models/studio_small_08.hdr
-        let mut load_environment = |name: &str, path: &str| -> Result<PassTextureHandle> {
-            let bytes = engine.read_asset(path)?;
-            engine.load_cooked_texture(name, &bytes)
-        };
-        let bg_h = load_environment("equirect", "models/studio_small_08_equirect.cooked_tex")?;
-        let diff_h = load_environment(
-            "diffuse_ibl",
-            "models/studio_small_08_diffuse_ibl.cooked_tex",
-        )?;
-        let spec_h = load_environment(
-            "specular_ibl",
-            "models/studio_small_08_specular_ibl.cooked_tex",
-        )?;
+        // Environment cooked by pill_assets from res/models/studio_small_08.hdr; the engine bakes
+        // the IBL from it
+        let bytes = engine.read_asset("models/studio_small_08_equirect.cooked_tex")?;
+        let bg_h = engine.load_cooked_texture("equirect", &bytes)?;
 
         {
             let rs = engine.get_global_component_mut::<RenderStateComponent>()?;
             rs.background = Some(bg_h);
-            rs.ibl_diffuse = diff_h;
-            rs.ibl_specular = spec_h;
+            rs.environment = Some(bg_h);
             // Post chain for bloom on the emissive parts; its other effects stay off
             rs.pass_chain = PassChain::PostFx;
             rs.motion_blur = 0.0;

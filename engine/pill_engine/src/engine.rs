@@ -146,18 +146,9 @@ impl Engine {
             self.register_resource_type::<RendererTexture>(max_texture_count)?;
             self.register_resource_type::<RendererMesh>(max_mesh_count)?;
 
-            // Upload neutral 1×1 fallback textures for the IBL slots; game may override before first frame.
-            let diff_h = self.renderer.create_texture_from_pixels(
-                "pill_engine_default_ibl_diffuse",
-                TextureData {
-                    mips: &[DEFAULT_IBL_FALLBACK_PIXEL],
-                    width: 1,
-                    height: 1,
-                    format: wgpu::TextureFormat::Rgba8Unorm,
-                },
-            )?;
-            let spec_h = self.renderer.create_texture_from_pixels(
-                "pill_engine_default_ibl_specular",
+            // Neutral 1×1 environment the IBL is baked from until the game sets one
+            let environment_h = self.renderer.create_texture_from_pixels(
+                "pill_engine_default_environment",
                 TextureData {
                     mips: &[DEFAULT_IBL_FALLBACK_PIXEL],
                     width: 1,
@@ -171,10 +162,9 @@ impl Engine {
                 include_bytes!("../res/textures/brdf_lut.cooked_tex"),
             )?;
             let rs = self.get_global_component_mut::<RenderStateComponent>()?;
-            rs.ibl_diffuse = diff_h;
-            rs.ibl_specular = spec_h;
             rs.ibl_brdf_lut = lut_h;
-            rs.default_ibl = [diff_h, spec_h, lut_h];
+            rs.default_environment = environment_h;
+            rs.default_brdf_lut = lut_h;
         }
 
         self.register_resource_type::<Material>(max_material_count)?;

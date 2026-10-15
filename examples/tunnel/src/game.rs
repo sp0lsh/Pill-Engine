@@ -197,16 +197,16 @@ impl PillGame for WebGame {
         let active_scene = engine.create_scene("default")?;
         engine.set_active_scene(active_scene)?;
 
-        let zero_ibl =
-            engine.create_gpu_texture_f32("zero_ibl", &[0.0_f32, 0.0, 0.0, 0.0], 1, 1)?;
+        // Black environment: no image-based light
+        let black_environment =
+            engine.create_gpu_texture_f32("black_environment", &[0.0_f32, 0.0, 0.0, 0.0], 1, 1)?;
         {
             let rs = engine.get_global_component_mut::<RenderStateComponent>()?;
             rs.background_color = [CLEAR_COLOR.0, CLEAR_COLOR.1, CLEAR_COLOR.2];
             // Fog fades into the background
             rs.fog_color = rs.background_color;
             rs.fog_density = FOG_DENSITY;
-            rs.ibl_diffuse = zero_ibl;
-            rs.ibl_specular = zero_ibl;
+            rs.environment = Some(black_environment);
         }
 
         engine.register_component::<TransformComponent>(active_scene)?;

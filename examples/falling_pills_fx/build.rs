@@ -1,28 +1,20 @@
-// Bakes the IBL of a synthesized dark studio panorama (the demo's precalc/ibl.rs studio) into
-// OUT_DIR as RTEX: ibl_diffuse.rtex (v2, Rgba32Float) and ibl_specular.rtex (v4, mipped).
+// Synthesizes a dark studio panorama (the demo's precalc/ibl.rs studio) into OUT_DIR as an
+// equirect RTEX: studio_equirect.rtex (v2, Rgba32Float); the engine bakes the IBL from it.
 
 use std::env;
 use std::path::PathBuf;
 
-use pill_assets::convert::{rtex_hdr_bytes, rtex_hdr_mip_bytes};
-use pill_assets::ibl::{bake_all, Equirect, DIFFUSE_SIZE, SPECULAR_SIZE};
+use pill_assets::convert::rtex_hdr_bytes;
+use pill_assets::ibl::Equirect;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    let (diffuse, specular_mips) = bake_all(&synthesize_studio(256, 128));
-
-    let (diffuse_width, diffuse_height) = DIFFUSE_SIZE;
+    let studio = synthesize_studio(256, 128);
     std::fs::write(
-        out_dir.join("ibl_diffuse.rtex"),
-        rtex_hdr_bytes(diffuse_width, diffuse_height, &diffuse),
-    )
-    .unwrap();
-    let (specular_width, specular_height) = SPECULAR_SIZE;
-    std::fs::write(
-        out_dir.join("ibl_specular.rtex"),
-        rtex_hdr_mip_bytes(specular_width, specular_height, &specular_mips),
+        out_dir.join("studio_equirect.rtex"),
+        rtex_hdr_bytes(studio.width, studio.height, &studio.pixels),
     )
     .unwrap();
 }

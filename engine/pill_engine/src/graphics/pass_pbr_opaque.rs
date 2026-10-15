@@ -8,7 +8,8 @@ use crate::graphics::shadow_casters::{box_corners, frustum_planes, outside_frust
 use crate::{
     ecs::{CameraComponent, MeshRenderingComponent, RenderStateComponent, TransformComponent},
     graphics::ddgi::DdgiFrame,
-    graphics::fullscreen::uniform_entry_for,
+    graphics::fullscreen::{linear_clamp_sampler, uniform_entry_for},
+    graphics::ibl::IblFrame,
     graphics::pass_lights::{LightBuffers, LightsFrame},
     graphics::shadow::ShadowFrame,
     graphics::{
@@ -246,7 +247,8 @@ struct PassPBROpaqueState {
     bg: BgSubState,
     // IBL handles and shadow map the current globals_bind_group was built from; rebuild only when
     // these change.
-    cached_ibl: [PassTextureHandle; 3],
+    // BRDF LUT handle the current globals_bind_group was built from (the IBL maps are fixed views)
+    cached_brdf_lut: PassTextureHandle,
     cached_shadow_map: Option<PassTextureHandle>,
     cached_punctual_shadows: u64,
     cached_ddgi: u64,
@@ -436,8 +438,10 @@ pub struct PassPBROpaque {
     lights: Option<Rc<RefCell<LightsFrame>>>,
     // Diffuse GI probes published by PassDdgi
     ddgi: Option<Rc<RefCell<DdgiFrame>>>,
-    // [diffuse, specular, brdf_lut] for the first frame's bind group
-    initial_ibl: [PassTextureHandle; 3],
+    // Engine BRDF LUT: the first frame's, and the fallback for an invalid game handle
+    default_brdf_lut: PassTextureHandle,
+    // Octahedral irradiance and specular maps baked by PassIblBake
+    ibl: Rc<RefCell<IblFrame>>,
     capacity_warned: bool,
     // Motion history (only with a velocity target): last frame's transform per entity slot, the
     // scene it belongs to and the camera view-projection
@@ -455,13 +459,15 @@ pub struct PassPBROpaque {
 }
 
 impl PassPBROpaque {
-    /// `max_instances` sizes the per-draw buffer; `initial_ibl` ([diffuse, specular, brdf_lut]) are
-    /// the engine defaults, also the fallback for invalid game handles. Call `Pass::init` before drawing.
-    pub fn new(
+    /// `max_instances` sizes the per-draw buffer; `default_brdf_lut` is the engine's, also the
+    /// fallback for an invalid game handle; `ibl` holds the maps `PassIblBake` bakes. Call
+    /// `Pass::init` before drawing.
+    pub(crate) fn new(
         color_target: PassTextureHandle,
         depth_target: PassTextureHandle,
         max_instances: usize,
-        initial_ibl: [PassTextureHandle; 3],
+        default_brdf_lut: PassTextureHandle,
+        ibl: Rc<RefCell<IblFrame>>,
     ) -> Self {
         let max_instances = max_instances.max(1);
         Self {
@@ -476,7 +482,8 @@ impl PassPBROpaque {
             shadow: None,
             lights: None,
             ddgi: None,
-            initial_ibl,
+            default_brdf_lut,
+            ibl,
             capacity_warned: false,
             frame: 0,
             previous_transforms: Vec::new(),
@@ -529,8 +536,8 @@ impl PassPBROpaque {
     }
 
     #[cfg(feature = "post_fx")]
-    pub fn initial_ibl(&self) -> [PassTextureHandle; 3] {
-        self.initial_ibl
+    pub(crate) fn default_brdf_lut(&self) -> PassTextureHandle {
+        self.default_brdf_lut
     }
 
     #[cfg(feature = "post_fx")]
@@ -903,14 +910,21 @@ pub struct PassPBRTranslucent(PassPBROpaque);
 
 #[cfg(feature = "post_fx")]
 impl PassPBRTranslucent {
-    /// Same targets and IBL defaults as the opaque pass it follows.
-    pub fn new(
+    /// Same targets and IBL inputs as the opaque pass it follows.
+    pub(crate) fn new(
         color_target: PassTextureHandle,
         depth_target: PassTextureHandle,
         max_instances: usize,
-        initial_ibl: [PassTextureHandle; 3],
+        default_brdf_lut: PassTextureHandle,
+        ibl: Rc<RefCell<IblFrame>>,
     ) -> Self {
-        let mut pass = PassPBROpaque::new(color_target, depth_target, max_instances, initial_ibl);
+        let mut pass = PassPBROpaque::new(
+            color_target,
+            depth_target,
+            max_instances,
+            default_brdf_lut,
+            ibl,
+        );
         pass.translucent = true;
         Self(pass)
     }
@@ -1030,45 +1044,18 @@ impl Pass for PassPBROpaque {
                     }],
                 });
 
-        let ibl_sampler = {
-            let device = renderer.get_device();
-            device.create_sampler(&wgpu::SamplerDescriptor {
-                address_mode_u: wgpu::AddressMode::Repeat,
-                address_mode_v: wgpu::AddressMode::ClampToEdge,
-                address_mode_w: wgpu::AddressMode::ClampToEdge,
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                mipmap_filter: wgpu::FilterMode::Nearest,
-                ..Default::default()
-            })
+        // The oct maps carry their own seam borders: clamp, and pick mips explicitly
+        // (oct_ibl.hlsl), so no mip filtering
+        let ibl_sampler = linear_clamp_sampler(renderer);
+        let prefilter_sampler = linear_clamp_sampler(renderer);
+        let (irradiance_view, prefilter_view) = {
+            let ibl = self.ibl.borrow();
+            (ibl.irradiance_view.clone(), ibl.specular_view.clone())
         };
-
-        // Initial IBL bind group from the handles given at construction; draw() rebuilds it when
-        // RenderStateComponent's handles change.
-        let [irr_h, pre_h, lut_h] = self.initial_ibl;
-        let view = |handle, label: &str| -> Result<wgpu::TextureView> {
-            renderer
-                .get_texture_view(handle)
-                .ok_or_else(|| format!("PassPBROpaque: initial {label} texture missing").into())
-        };
-        let irradiance_view = view(irr_h, "ibl_diffuse")?;
-        let prefilter_view = view(pre_h, "ibl_specular")?;
-        let brdf_lut_view = view(lut_h, "ibl_brdf_lut")?;
-
-        let prefilter_sampler = {
-            let device = renderer.get_device();
-            device.create_sampler(&wgpu::SamplerDescriptor {
-                address_mode_u: wgpu::AddressMode::Repeat,
-                address_mode_v: wgpu::AddressMode::ClampToEdge,
-                address_mode_w: wgpu::AddressMode::ClampToEdge,
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                mipmap_filter: wgpu::FilterMode::Linear,
-                lod_min_clamp: 0.0,
-                lod_max_clamp: 16.0,
-                ..Default::default()
-            })
-        };
+        // Initial BRDF LUT; draw() rebuilds the bind group when RenderStateComponent's changes
+        let brdf_lut_view = renderer
+            .get_texture_view(self.default_brdf_lut)
+            .ok_or("PassPBROpaque: default BRDF LUT texture missing")?;
 
         // The LUT's U axis is NdotV, not an angle: clamp instead of wrapping
         let brdf_lut_sampler = renderer
@@ -1151,7 +1138,7 @@ impl Pass for PassPBROpaque {
             &punctual_shadow_stand_in,
             &ddgi_stand_in,
         );
-        let cached_ibl = [irr_h, pre_h, lut_h];
+        let cached_brdf_lut = self.default_brdf_lut;
 
         // Background sub-draw; draw() rebinds its equirect when RenderStateComponent.background
         // changes, starting from a 1px fallback.
@@ -1226,7 +1213,7 @@ impl Pass for PassPBROpaque {
             per_draw_bind_group,
             material_array_bind_group,
             bg,
-            cached_ibl,
+            cached_brdf_lut,
             cached_shadow_map: None,
             cached_punctual_shadows: 0,
             cached_ddgi: 0,
@@ -1272,13 +1259,9 @@ impl Pass for PassPBROpaque {
         // Rebuild the globals bind group only when the component's IBL handles or the published
         // shadow map change (steady state: 0).
         {
-            let ibl = [
-                render_state.ibl_diffuse,
-                render_state.ibl_specular,
-                render_state.ibl_brdf_lut,
-            ];
+            let brdf_lut = render_state.ibl_brdf_lut;
             let state = get_state(self);
-            if state.cached_ibl != ibl
+            if state.cached_brdf_lut != brdf_lut
                 || state.cached_shadow_map != shadow_frame.map
                 || state.cached_punctual_shadows != punctual_generation
                 || state.cached_ddgi != ddgi_generation
@@ -1286,13 +1269,12 @@ impl Pass for PassPBROpaque {
                 let shadow_view = renderer
                     .get_texture_view(shadow_frame.map.unwrap_or(state.shadow_stand_in))
                     .ok_or("PassPBROpaque: shadow map missing")?;
-                let fallback = self.initial_ibl;
-                let irradiance_view =
-                    view_or_fallback(renderer, ibl[0], fallback[0], "ibl_diffuse")?;
-                let prefilter_view =
-                    view_or_fallback(renderer, ibl[1], fallback[1], "ibl_specular")?;
+                let (irradiance_view, prefilter_view) = {
+                    let ibl = self.ibl.borrow();
+                    (ibl.irradiance_view.clone(), ibl.specular_view.clone())
+                };
                 let brdf_lut_view =
-                    view_or_fallback(renderer, ibl[2], fallback[2], "ibl_brdf_lut")?;
+                    view_or_fallback(renderer, brdf_lut, self.default_brdf_lut, "ibl_brdf_lut")?;
                 let device = renderer.get_device();
                 let state = get_state(self);
                 let ddgi_frame = ddgi.as_ref().map(|frame| frame.borrow());
@@ -1316,7 +1298,7 @@ impl Pass for PassPBROpaque {
                     ddgi_frame.as_deref().unwrap_or(&state.ddgi_stand_in),
                 );
                 state.cached_ddgi = ddgi_generation;
-                state.cached_ibl = ibl;
+                state.cached_brdf_lut = brdf_lut;
                 state.cached_shadow_map = shadow_frame.map;
                 state.cached_punctual_shadows = punctual_generation;
             }
