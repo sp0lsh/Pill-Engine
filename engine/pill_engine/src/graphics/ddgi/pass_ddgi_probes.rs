@@ -3,7 +3,9 @@ use crate::config::{
 };
 use crate::ecs::RenderStateComponent;
 use crate::graphics::ddgi::DdgiFrame;
-use crate::graphics::fullscreen::uniform_entry_for;
+use crate::graphics::shader_bindings::{
+    ddgi_probes_debug_fragment, ddgi_probes_debug_vertex, merge_layouts, structs::ProbeDebugCamera,
+};
 use crate::graphics::{
     camera_view_projection, BufferDesc, FrameTarget, Pass, PassTextureHandle, PillRenderer,
     Pipeline, PipelineDesc, ShaderDesc, WorldQuery,
@@ -52,7 +54,6 @@ impl Pass for PassDdgiProbes {
 
     fn init(&mut self, renderer: &mut dyn PillRenderer) -> Result<()> {
         let hdr_format = renderer.get_hdr_format();
-        let stages = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT;
         let pipeline = renderer.create_pipeline(PipelineDesc {
             label: Some("pass_ddgi_probes_pipeline"),
             vs: ShaderDesc {
@@ -65,20 +66,10 @@ impl Pass for PassDdgiProbes {
             },
             fragment_constants: &[],
             vertex_buffers: &[],
-            bind_groups: vec![vec![
-                uniform_entry_for(0, wgpu::ShaderStages::VERTEX),
-                uniform_entry_for(1, stages),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: stages,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ]],
+            bind_groups: merge_layouts(&[
+                ddgi_probes_debug_vertex::layout(),
+                ddgi_probes_debug_fragment::layout(),
+            ]),
             targets: &[Some(wgpu::ColorTargetState {
                 format: hdr_format,
                 blend: Some(wgpu::BlendState::REPLACE),
@@ -104,7 +95,7 @@ impl Pass for PassDdgiProbes {
         })?;
         self.camera = Some(renderer.create_buffer(BufferDesc {
             label: Some("pass_ddgi_probes_camera"),
-            byte_size: 64,
+            byte_size: std::mem::size_of::<ProbeDebugCamera>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         })?);
         self.pipeline = Some(pipeline);
@@ -127,10 +118,12 @@ impl Pass for PassDdgiProbes {
             return Ok(());
         };
         let (camera, transform) = world.active_camera()?;
-        let view_projection = camera_view_projection(camera, transform).to_cols_array_2d();
+        let camera_uniform = ProbeDebugCamera {
+            view_projection: camera_view_projection(camera, transform).to_cols_array_2d(),
+        };
         renderer
             .get_queue()
-            .write_buffer(camera_buffer, 0, bytemuck::cast_slice(&view_projection));
+            .write_buffer(camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
         if self
             .group
             .as_ref()

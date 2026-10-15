@@ -5,13 +5,17 @@ use crate::config::{
 use crate::ecs::{MeshRenderingComponent, RenderStateComponent, TransformComponent};
 use crate::graphics::ddgi::bvh::{Bvh, Triangle};
 use crate::graphics::ddgi::{
-    GpuDdgiCascade, GpuDdgiParams, ProbeGrid, CASCADE_UPDATE_EVERY, COLOR_RESOLUTION,
-    DEPTH_RESOLUTION, MAX_CASCADES, MAX_RAYS_PER_PROBE, NO_SOURCE,
+    ProbeGrid, CASCADE_UPDATE_EVERY, COLOR_RESOLUTION, DEPTH_RESOLUTION, MAX_CASCADES,
+    MAX_RAYS_PER_PROBE, NO_SOURCE,
 };
-use crate::graphics::fullscreen::uniform_entry_for;
 use crate::graphics::ibl::IblFrame;
 use crate::graphics::pass_lights::LightsFrame;
 use crate::graphics::pass_pbr_opaque::{is_translucent, DrawTransform};
+use crate::graphics::shader_bindings::{
+    ddgi_color_compute, ddgi_depth_compute, ddgi_relocate_compute, ddgi_reset_compute,
+    ddgi_trace_compute,
+    structs::{DdgiCascade, DdgiParams, DdgiProbe, DdgiRay},
+};
 use crate::graphics::{
     BufferDesc, ComputePipeline, ComputePipelineDesc, FrameTarget, Pass, PassTextureHandle,
     PillRenderer, ShaderDesc, WorldQuery,
@@ -22,10 +26,8 @@ use pill_core::{info, LogContext, Result, Vector3f};
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// Bytes of one probe ray (direction + depth, radiance) — `DdgiRay` in the DDGI shaders.
-const RAY_BYTES: u64 = 32;
-/// Bytes of one probe: L1 SH radiance and relocation offset — `DdgiProbe`.
-const PROBE_BYTES: u64 = 80;
+const RAY_BYTES: u64 = std::mem::size_of::<DdgiRay>() as u64;
+const PROBE_BYTES: u64 = std::mem::size_of::<DdgiProbe>() as u64;
 /// Frames of faster probe blending after a lighting change (e.g. the time of day), that blend
 /// and the rays per probe meanwhile: more rays keep the faster blend from passing ray noise
 /// through as jitter.
@@ -57,7 +59,7 @@ impl DdgiFrame {
     pub(crate) fn new(renderer: &mut dyn PillRenderer) -> Result<Self> {
         let params = renderer.create_buffer(BufferDesc {
             label: Some("ddgi_params"),
-            byte_size: std::mem::size_of::<GpuDdgiParams>() as u64,
+            byte_size: std::mem::size_of::<DdgiParams>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         })?;
         let probes = storage_buffer(renderer, "ddgi_probes", PROBE_BYTES)?;
@@ -102,37 +104,6 @@ fn depth_atlas(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureV
             view_formats: &[],
         })
         .create_view(&wgpu::TextureViewDescriptor::default())
-}
-
-fn compute_entry(binding: u32, ty: wgpu::BindingType) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::COMPUTE,
-        ty,
-        count: None,
-    }
-}
-
-fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
-    compute_entry(
-        binding,
-        wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-    )
-}
-
-fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    compute_entry(
-        binding,
-        wgpu::BindingType::Texture {
-            multisampled: false,
-            view_dimension: wgpu::TextureViewDimension::D2,
-            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-        },
-    )
 }
 
 /// Probe data of the cascades' grids, cascade after cascade. Kept while only the ray settings,
@@ -540,25 +511,19 @@ impl PassDdgi {
         renderer.get_queue().write_buffer(
             &frame.params,
             0,
-            bytemuck::bytes_of(&GpuDdgiParams::default()),
+            bytemuck::bytes_of(&<DdgiParams as bytemuck::Zeroable>::zeroed()),
         );
     }
 }
 
 fn create_pipelines(renderer: &mut dyn PillRenderer) -> Result<Pipelines> {
-    let uniform = uniform_entry_for(0, wgpu::ShaderStages::COMPUTE);
     let reset = renderer.create_compute_pipeline(ComputePipelineDesc {
         label: Some("ddgi_reset"),
         cs: ShaderDesc {
             source: DDGI_RESET_COMPUTE_SHADER,
             entry_func: "cs_main",
         },
-        bind_groups: vec![vec![
-            storage_entry(0, true),
-            storage_entry(1, false),
-            storage_entry(2, false),
-            storage_entry(3, false),
-        ]],
+        bind_groups: ddgi_reset_compute::layout(),
     })?;
     let relocate = renderer.create_compute_pipeline(ComputePipelineDesc {
         label: Some("ddgi_relocate"),
@@ -566,12 +531,7 @@ fn create_pipelines(renderer: &mut dyn PillRenderer) -> Result<Pipelines> {
             source: DDGI_RELOCATE_COMPUTE_SHADER,
             entry_func: "cs_main",
         },
-        bind_groups: vec![vec![
-            uniform,
-            storage_entry(1, true),
-            storage_entry(2, true),
-            storage_entry(3, false),
-        ]],
+        bind_groups: ddgi_relocate_compute::layout(),
     })?;
     let trace = renderer.create_compute_pipeline(ComputePipelineDesc {
         label: Some("ddgi_trace"),
@@ -579,20 +539,7 @@ fn create_pipelines(renderer: &mut dyn PillRenderer) -> Result<Pipelines> {
             source: DDGI_TRACE_COMPUTE_SHADER,
             entry_func: "cs_main",
         },
-        bind_groups: vec![vec![
-            uniform,
-            storage_entry(1, true),
-            storage_entry(2, true),
-            storage_entry(3, true),
-            texture_entry(4),
-            compute_entry(
-                5,
-                wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-            ),
-            storage_entry(6, true),
-            texture_entry(7),
-            storage_entry(8, false),
-        ]],
+        bind_groups: ddgi_trace_compute::layout(),
     })?;
     let color = renderer.create_compute_pipeline(ComputePipelineDesc {
         label: Some("ddgi_color"),
@@ -600,12 +547,7 @@ fn create_pipelines(renderer: &mut dyn PillRenderer) -> Result<Pipelines> {
             source: DDGI_COLOR_COMPUTE_SHADER,
             entry_func: "cs_main",
         },
-        bind_groups: vec![vec![
-            uniform,
-            storage_entry(1, true),
-            storage_entry(2, false),
-            storage_entry(3, false),
-        ]],
+        bind_groups: ddgi_color_compute::layout(),
     })?;
     let depth = renderer.create_compute_pipeline(ComputePipelineDesc {
         label: Some("ddgi_depth"),
@@ -613,19 +555,7 @@ fn create_pipelines(renderer: &mut dyn PillRenderer) -> Result<Pipelines> {
             source: DDGI_DEPTH_COMPUTE_SHADER,
             entry_func: "cs_main",
         },
-        bind_groups: vec![vec![
-            uniform,
-            storage_entry(1, true),
-            storage_entry(2, false),
-            compute_entry(
-                3,
-                wgpu::BindingType::StorageTexture {
-                    access: wgpu::StorageTextureAccess::WriteOnly,
-                    format: wgpu::TextureFormat::Rgba16Float,
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                },
-            ),
-        ]],
+        bind_groups: ddgi_depth_compute::layout(),
     })?;
     let sampler = renderer
         .get_device()
@@ -812,11 +742,11 @@ impl Pass for PassDdgi {
                     .is_multiple_of(CASCADE_UPDATE_EVERY[cascade])
             })
             .fold(reset_mask, |mask, cascade| mask | 1 << cascade);
-        let mut cascades = [GpuDdgiCascade::default(); MAX_CASCADES];
+        let mut cascades = [<DdgiCascade as bytemuck::Zeroable>::zeroed(); MAX_CASCADES];
         for (cascade, grid) in grids.iter().enumerate() {
-            cascades[cascade] = GpuDdgiCascade::new(grid);
+            cascades[cascade] = DdgiCascade::new(grid);
         }
-        let params = GpuDdgiParams {
+        let params = DdgiParams {
             grid_dims: grids[0].dims,
             probe_count: cascade_probes,
             depth_texel_size: {
@@ -847,8 +777,8 @@ impl Pass for PassDdgi {
             blend_origin: camera_position.to_array(),
             intensity: settings.intensity,
             update_mask,
-            _padding: [0; 3],
             cascades,
+            ..bytemuck::Zeroable::zeroed()
         };
         renderer.get_queue().write_buffer(
             &{

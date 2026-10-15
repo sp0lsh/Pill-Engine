@@ -6,23 +6,6 @@ use crate::graphics::{PassTextureHandle, PillRenderer, Pipeline, PipelineDesc, S
 
 use pill_core::Result;
 
-/// Uniform buffer entry visible to `visibility`.
-pub(crate) fn uniform_entry_for(
-    binding: u32,
-    visibility: wgpu::ShaderStages,
-) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-
 /// Full-screen pipeline: `fragment_shader` (`fs_main`) with its generated `layout` (group 0 only),
 /// writing one `format` target with `blend` (None = replace).
 pub(crate) fn create_fullscreen_pipeline(

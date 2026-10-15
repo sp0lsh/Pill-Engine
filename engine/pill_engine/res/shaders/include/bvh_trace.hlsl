@@ -2,7 +2,7 @@
 #define BVH_TRACE_HLSL
 // Triangle BVH traversal in compute (no ray-tracing hardware), after WickedEngine's
 // TraceRay_Closest / TraceRay_Any (raytracingHF.hlsli): a stack of node indices, slab test per
-// node, Möller–Trumbore per triangle. Layout mirrors GpuBvhNode / GpuTriangle in ddgi/bvh.rs.
+// node, Möller–Trumbore per triangle. Nodes and triangles are built by ddgi/bvh.rs.
 // The includer declares `bvh_nodes` and `bvh_triangles`.
 //
 // Alpha-tested triangles (coverage below 1 in the albedo alpha) stop a ray with probability

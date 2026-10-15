@@ -14,7 +14,7 @@
 #include "include/punctual_light.hlsl"
 #include "include/oct_ibl.hlsl"
 
-// Radiance and length of one probe ray — mirrors the ray buffer layout in pass_ddgi.rs
+// Radiance and length of one probe ray
 struct DdgiRay {
     float4 direction_depth; // xyz = direction, w = hit distance (−1 = miss)
     float4 radiance;        // rgb

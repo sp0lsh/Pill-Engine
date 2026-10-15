@@ -23,7 +23,7 @@ struct DdgiCascade {
 
 static const uint DDGI_MAX_CASCADES = 4;
 
-// Mirrors GpuDdgiParams in ddgi/mod.rs
+// Filled in ddgi/pass_ddgi.rs
 struct DdgiParams {
     uint3  grid_dims;     // probes per axis, the same for every cascade
     uint   probe_count;   // per cascade

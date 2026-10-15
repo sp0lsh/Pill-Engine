@@ -1,9 +1,11 @@
 //! Triangle BVH for tracing DDGI probe rays in compute (no ray-tracing hardware in WebGPU).
 //!
 //! Built on the CPU with binned SAH, flattened depth-first: an interior node's left child is the
-//! next node, its right child is stored. The GPU layout mirrors `BvhNode` / `BvhTriangle` in
+//! next node, its right child is stored. The GPU layout is `BvhNode` / `BvhTriangle` of
 //! include/bvh_trace.hlsl; traversal follows WickedEngine's `TraceRay_Closest` (stack of node
 //! indices, Möller–Trumbore triangle test).
+
+use crate::graphics::shader_bindings::structs::{BvhNode, BvhTriangle};
 
 use pill_core::Vector3f;
 
@@ -27,34 +29,10 @@ pub(crate) struct Triangle {
     pub(crate) coverage: f32,
 }
 
-/// BVH node in the GPU layout: interior if `count == 0` (left child = this + 1, right child =
-/// `left_or_first`), else a leaf of `count` triangles from `left_or_first`.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub(crate) struct GpuBvhNode {
-    pub(crate) min: [f32; 3],
-    pub(crate) left_or_first: u32,
-    pub(crate) max: [f32; 3],
-    pub(crate) count: u32,
-}
-
-/// Triangle in the GPU layout: first vertex, the two edges from it, albedo packed as RGBA8 with
-/// the coverage in alpha.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub(crate) struct GpuTriangle {
-    pub(crate) v0: [f32; 3],
-    pub(crate) albedo: u32,
-    pub(crate) e1: [f32; 3],
-    pub(crate) _pad0: u32,
-    pub(crate) e2: [f32; 3],
-    pub(crate) _pad1: u32,
-}
-
 /// A built BVH, ready to upload; no nodes when there are no triangles.
 pub(crate) struct Bvh {
-    pub(crate) nodes: Vec<GpuBvhNode>,
-    pub(crate) triangles: Vec<GpuTriangle>,
+    pub(crate) nodes: Vec<BvhNode>,
+    pub(crate) triangles: Vec<BvhTriangle>,
     /// Deepest node level (root = 0).
     pub(crate) depth: usize,
 }
@@ -117,13 +95,13 @@ impl Bvh {
             .map(|&index| {
                 let triangle = triangles[index as usize];
                 let [a, b, c] = triangle.vertices;
-                GpuTriangle {
+                BvhTriangle {
                     v0: a.to_array(),
                     albedo: pack_rgba8(triangle.albedo, triangle.coverage),
                     e1: (b - a).to_array(),
-                    _pad0: 0,
+                    pad0: 0,
                     e2: (c - a).to_array(),
-                    _pad1: 0,
+                    pad1: 0,
                 }
             })
             .collect();
@@ -156,7 +134,7 @@ fn pack_rgba8([r, g, b]: [f32; 3], alpha: f32) -> u32 {
 struct Builder<'a> {
     triangles: &'a [&'a Triangle],
     centroids: &'a [Vector3f],
-    nodes: Vec<GpuBvhNode>,
+    nodes: Vec<BvhNode>,
     depth: usize,
 }
 
@@ -174,7 +152,7 @@ impl Builder<'_> {
             centroid_bounds.grow(self.centroids[index as usize]);
         }
         let node_index = self.nodes.len();
-        self.nodes.push(GpuBvhNode {
+        self.nodes.push(BvhNode {
             min: bounds.min.to_array(),
             left_or_first: first as u32,
             max: bounds.max.to_array(),
@@ -263,7 +241,7 @@ mod tests {
     use super::*;
 
     /// Closest hit distance by Möller–Trumbore, as bvh_trace.hlsl tests triangles.
-    fn intersect(origin: Vector3f, direction: Vector3f, triangle: &GpuTriangle) -> Option<f32> {
+    fn intersect(origin: Vector3f, direction: Vector3f, triangle: &BvhTriangle) -> Option<f32> {
         let (v0, e1, e2) = (
             Vector3f::from_array(triangle.v0),
             Vector3f::from_array(triangle.e1),
@@ -289,7 +267,7 @@ mod tests {
         (t > 0.0).then_some(t)
     }
 
-    fn intersect_box(origin: Vector3f, inv_direction: Vector3f, node: &GpuBvhNode) -> bool {
+    fn intersect_box(origin: Vector3f, inv_direction: Vector3f, node: &BvhNode) -> bool {
         let t0 = (Vector3f::from_array(node.min) - origin) * inv_direction;
         let t1 = (Vector3f::from_array(node.max) - origin) * inv_direction;
         let near = t0.min(t1).max_element();
