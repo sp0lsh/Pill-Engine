@@ -345,6 +345,9 @@ float3 froxel_heatmap(uint count) {
     return saturate(float3(t * 2.0 - 1.0, 1.0 - abs(t * 2.0 - 1.0), 1.0 - t * 2.0)) + 0.05;
 }
 
+// Pipeline-overridable (WGSL `override`, id 0): set for materials with an alpha cutoff
+[[vk::constant_id(0)]] const bool ALPHA_TEST = false;
+
 struct FragmentOutput {
     [[vk::location(0)]] float4 color    : SV_TARGET0;
     [[vk::location(1)]] float2 velocity : SV_TARGET1; // UV offset to last frame's position
@@ -368,12 +371,11 @@ FragmentOutput fs_main(
 ) {
     MaterialParams material = load_material(material_index);
     float4 base_color         = base_color_texture.Sample(base_color_sampler, texture_coordinates);
-#ifdef ALPHA_TEST
-    // Separate shader variant: discard turns off early depth rejection for the whole pipeline
-    if (base_color.a < material.alpha_cutoff) {
+    // ALPHA_TEST is set per pipeline: a discard reachable in the compiled shader turns off early
+    // depth rejection for the whole pipeline, so only the alpha-tested one keeps it
+    if (ALPHA_TEST && base_color.a < material.alpha_cutoff) {
         discard;
     }
-#endif
     // Double-sided surfaces are lit from the side the camera sees: flipped by the vertex normal
     // vs the view, not by triangle winding (foliage cards often wind against their normals)
     float3 view_direction     = normalize(camera.position.xyz - world_position);

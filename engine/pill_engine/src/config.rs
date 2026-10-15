@@ -142,14 +142,11 @@ pub const SSR_NORMAL_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R
 pub const PBR_OPAQUE_VERTEX_SHADER: &str = include_str!("../res/shaders/pbr_opaque_vertex.wgsl");
 pub const PBR_OPAQUE_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/pbr_opaque_fragment.wgsl");
-/// PBR fragment variants with the alpha test (materials with `alpha_cutoff`)
-pub const PBR_OPAQUE_ALPHA_TEST_FRAGMENT_SHADER: &str =
-    include_str!("../res/shaders/pbr_opaque_alpha_test_fragment.wgsl");
-/// 16-bit BRDF variants of the two above, used when `PillRenderer::supports_f16`
+/// 16-bit BRDF variant of the above, used when `PillRenderer::supports_f16`
 pub const PBR_OPAQUE_F16_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/pbr_opaque_f16_fragment.wgsl");
-pub const PBR_OPAQUE_ALPHA_TEST_F16_FRAGMENT_SHADER: &str =
-    include_str!("../res/shaders/pbr_opaque_alpha_test_f16_fragment.wgsl");
+/// Pipeline-overridable constant of the PBR fragment shaders: 1 = alpha test (`@id(0)`)
+pub const PBR_ALPHA_TEST_CONSTANT: &str = "0";
 pub const BACKGROUND_VERTEX_SHADER: &str = include_str!("../res/shaders/background_vertex.wgsl");
 pub const BACKGROUND_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/background_fragment.wgsl");

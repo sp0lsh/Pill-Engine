@@ -389,7 +389,10 @@ impl PillRenderer for Renderer {
                     module: &fs_module,
                     entry_point: Some(desc.ps.entry_func),
                     targets: desc.targets,
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: desc.fragment_constants,
+                        ..Default::default()
+                    },
                 }),
                 primitive: desc.primitive,
                 depth_stencil: desc.depth_stencil,

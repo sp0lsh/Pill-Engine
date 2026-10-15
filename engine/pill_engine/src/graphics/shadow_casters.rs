@@ -195,6 +195,7 @@ impl ShadowCasters {
                     source: SHADOW_CASTER_FRAGMENT_SHADER,
                     entry_func: "fs_main",
                 },
+                fragment_constants: &[],
                 vertex_buffers: &[RendererMesh::position_layout_descriptor()],
                 bind_groups: vec![vec![camera_entry()], vec![per_draw_storage_entry(0)]],
                 targets: &[],
@@ -221,6 +222,7 @@ impl ShadowCasters {
                 source: SHADOW_CASTER_CUTOUT_FRAGMENT_SHADER,
                 entry_func: "fs_main",
             },
+            fragment_constants: &[],
             vertex_buffers: &RendererMesh::data_layout_descriptors(),
             // Group 2 is the material's texture bind group, group 3 the material array
             bind_groups: vec![

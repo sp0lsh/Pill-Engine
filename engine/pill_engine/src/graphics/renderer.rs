@@ -161,6 +161,8 @@ pub struct PipelineDesc<'a> {
     pub label: Option<&'a str>,
     pub vs: ShaderDesc<'a>,
     pub ps: ShaderDesc<'a>,
+    /// Values of the fragment shader's pipeline-overridable constants (`override`), keyed by `@id`
+    pub fragment_constants: &'a [(&'a str, f64)],
     pub vertex_buffers: &'a [wgpu::VertexBufferLayout<'a>],
     pub bind_groups: Vec<Vec<wgpu::BindGroupLayoutEntry>>,
     pub targets: &'a [Option<wgpu::ColorTargetState>],

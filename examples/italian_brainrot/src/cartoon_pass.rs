@@ -107,6 +107,7 @@ impl Pass for CartoonPass {
                 source: FRAGMENT_SHADER,
                 entry_func: "fs_main",
             },
+            fragment_constants: &[],
             vertex_buffers: &RendererMesh::data_layout_descriptors(),
             bind_groups,
             targets: &[Some(wgpu::ColorTargetState {

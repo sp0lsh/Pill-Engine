@@ -70,6 +70,7 @@ pub(crate) fn create_fullscreen_pipeline(
             source: fragment_shader,
             entry_func: "fs_main",
         },
+        fragment_constants: &[],
         vertex_buffers: &[],
         bind_groups: vec![entries],
         targets: &[Some(wgpu::ColorTargetState {

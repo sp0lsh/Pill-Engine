@@ -63,6 +63,7 @@ impl Pass for PassDdgiProbes {
                 source: DDGI_PROBES_DEBUG_FRAGMENT_SHADER,
                 entry_func: "fs_main",
             },
+            fragment_constants: &[],
             vertex_buffers: &[],
             bind_groups: vec![vec![
                 uniform_entry_for(0, wgpu::ShaderStages::VERTEX),

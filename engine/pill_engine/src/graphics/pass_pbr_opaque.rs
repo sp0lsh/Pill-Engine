@@ -1,7 +1,6 @@
 use crate::config::{
     AMBIENT_TARGET_FORMAT, BACKGROUND_FRAGMENT_SHADER, BACKGROUND_VERTEX_SHADER,
-    DEFAULT_EQUIRECT_FALLBACK_PIXEL, DEPTH_TARGET_FORMAT,
-    PBR_OPAQUE_ALPHA_TEST_F16_FRAGMENT_SHADER, PBR_OPAQUE_ALPHA_TEST_FRAGMENT_SHADER,
+    DEFAULT_EQUIRECT_FALLBACK_PIXEL, DEPTH_TARGET_FORMAT, PBR_ALPHA_TEST_CONSTANT,
     PBR_OPAQUE_F16_FRAGMENT_SHADER, PBR_OPAQUE_FRAGMENT_SHADER, PBR_OPAQUE_VERTEX_SHADER,
     SSR_NORMAL_TARGET_FORMAT, SSR_SURFACE_TARGET_FORMAT, VELOCITY_TARGET_FORMAT,
 };
@@ -777,14 +776,17 @@ impl PassPBROpaque {
             },
             ps: ShaderDesc {
                 // 16-bit BRDF math where the device runs half floats
-                source: match (variant.alpha_test, renderer.supports_f16()) {
-                    (true, true) => PBR_OPAQUE_ALPHA_TEST_F16_FRAGMENT_SHADER,
-                    (true, false) => PBR_OPAQUE_ALPHA_TEST_FRAGMENT_SHADER,
-                    (false, true) => PBR_OPAQUE_F16_FRAGMENT_SHADER,
-                    (false, false) => PBR_OPAQUE_FRAGMENT_SHADER,
+                source: if renderer.supports_f16() {
+                    PBR_OPAQUE_F16_FRAGMENT_SHADER
+                } else {
+                    PBR_OPAQUE_FRAGMENT_SHADER
                 },
                 entry_func: "fs_main",
             },
+            fragment_constants: &[(
+                PBR_ALPHA_TEST_CONSTANT,
+                if variant.alpha_test { 1.0 } else { 0.0 },
+            )],
             vertex_buffers: &RendererMesh::data_layout_descriptors(),
             bind_groups,
             targets: &color_targets,
@@ -858,6 +860,7 @@ impl PassPBROpaque {
                 source: BACKGROUND_FRAGMENT_SHADER,
                 entry_func: "fs_main",
             },
+            fragment_constants: &[],
             vertex_buffers: &[],
             bind_groups: bg_bind_groups,
             targets: &bg_targets,
