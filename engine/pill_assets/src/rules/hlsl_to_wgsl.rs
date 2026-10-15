@@ -207,13 +207,21 @@ fn compile(
         );
     }
 
-    // naga (wgpu 25) rejects the `subgroups` enable-extension but accepts the subgroup builtins
-    // once the device has `Features::SUBGROUP`
     let wgsl = std::fs::read_to_string(output).with_context(|| format!("read {output:?}"))?;
-    if let Some(stripped) = wgsl.strip_prefix("enable subgroups;\n") {
+    let stripped = strip_subgroup_enables(&wgsl);
+    if stripped.len() != wgsl.len() {
         std::fs::write(output, stripped).with_context(|| format!("write {output:?}"))?;
     }
     Ok(())
+}
+
+/// naga (wgpu 25) rejects the `subgroups` / `subgroups_f16` enable-extensions but accepts the
+/// subgroup builtins once the device has `Features::SUBGROUP`.
+fn strip_subgroup_enables(wgsl: &str) -> String {
+    wgsl.lines()
+        .filter(|line| !matches!(line.trim(), "enable subgroups;" | "enable subgroups_f16;"))
+        .map(|line| format!("{line}\n"))
+        .collect()
 }
 
 fn infer_stage(input: &Path) -> Result<(&'static str, &'static str)> {
@@ -271,6 +279,12 @@ mod tests {
     fn variant_without_defines_fails() {
         let input = Path::new("/s/a_vertex.hlsl");
         assert!(parse_variants(input, "// @variant f16\n").is_err());
+    }
+
+    #[test]
+    fn subgroup_enables_stripped_other_enables_kept() {
+        let wgsl = "enable f16;\n\nenable subgroups;\nenable subgroups_f16;\nfn f() {}\n";
+        assert_eq!(strip_subgroup_enables(wgsl), "enable f16;\n\nfn f() {}\n");
     }
 
     #[test]

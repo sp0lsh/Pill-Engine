@@ -208,17 +208,28 @@ real visibility_kelemen(real light_dot_half) {
     return real(0.25) / max(light_dot_half * light_dot_half, MIN_DIVISOR);
 }
 
+// Shading inputs of one pixel, built once in fs_main and shared by every light
+struct Surface {
+    float3 position;          // world space
+    float3 normal;            // shading normal (normal-mapped, kept in the visible hemisphere)
+    float3 geometric_normal;  // vertex normal facing the camera (shadow normal offsets)
+    float3 view_direction;    // surface to camera
+    float3 albedo;
+    float3 base_reflectivity; // F0
+    float  roughness;
+    float  metallic;
+    float  clearcoat;         // coat weight, 0 = no coat
+    float  coat_roughness;
+};
+
 // Clear-coat specular lobe of one light: GGX D, Kelemen V, Schlick F with F0 = coat weight
-float3 clearcoat_directional_light(
-    float3 normal, float3 view_direction, float weight, float roughness,
-    float3 light_direction_to_surface, float4 light_color
-) {
+float3 clearcoat_directional_light(Surface surface, float3 light_direction_to_surface, float4 light_color) {
     float3 light_direction  = normalize(-light_direction_to_surface);
-    float  normal_dot_light = max(dot(normal, light_direction), 0.0);
-    real3  half_vector      = normalize(real3(view_direction) + real3(light_direction));
+    float  normal_dot_light = max(dot(surface.normal, light_direction), 0.0);
+    real3  half_vector      = normalize(real3(surface.view_direction) + real3(light_direction));
     real   light_dot_half   = max(dot(real3(light_direction), half_vector), real(0.0));
-    real   coat             = real(weight);
-    real   distribution     = distribution_ggx(real3(normal), half_vector, real(roughness));
+    real   coat             = real(surface.clearcoat);
+    real   distribution     = distribution_ggx(real3(surface.normal), half_vector, real(surface.coat_roughness));
     real   fresnel          = coat + (real(1.0) - coat) * pow(real(1.0) - light_dot_half, real(5.0));
     // D (≤ 5100) · V (≤ 4096 at grazing L·H) can exceed fp16: their product in float. The
     // grazing Fresnel term does not vanish at weight 0, so the weight also gates the lobe
@@ -226,22 +237,18 @@ float3 clearcoat_directional_light(
     return lobe * light_color.w * light_color.xyz * normal_dot_light;
 }
 
-float3 accumulate_directional_light(
-    float3 normal, float3 view_direction, float3 base_reflectivity,
-    float3 albedo, float roughness, float metallic,
-    float3 light_direction_to_surface, float4 light_color
-) {
+float3 accumulate_directional_light(Surface surface, float3 light_direction_to_surface, float4 light_color) {
     // light_direction_to_surface is direction from light to surface; incoming light is opposite.
     float3 light_direction  = normalize(-light_direction_to_surface);
-    float  normal_dot_light = max(dot(normal, light_direction), 0.0);
-    real3  n                = real3(normal);
-    real3  v                = real3(view_direction);
+    float  normal_dot_light = max(dot(surface.normal, light_direction), 0.0);
+    real3  n                = real3(surface.normal);
+    real3  v                = real3(surface.view_direction);
     real3  half_vector      = normalize(v + real3(light_direction));
-    real   rough            = real(roughness);
+    real   rough            = real(surface.roughness);
     real   distribution     = distribution_ggx(n, half_vector, rough);
     real   visibility       = visibility_smith(max(dot(n, v), real(0.0)), real(normal_dot_light), rough);
-    real3  fresnel          = fresnel_schlick(max(dot(half_vector, v), real(0.0)), real3(base_reflectivity));
-    real3  diffuse          = (real3(1.0, 1.0, 1.0) - fresnel) * (real(1.0) - real(metallic)) * real3(albedo) / REAL_PI;
+    real3  fresnel          = fresnel_schlick(max(dot(half_vector, v), real(0.0)), real3(surface.base_reflectivity));
+    real3  diffuse          = (real3(1.0, 1.0, 1.0) - fresnel) * (real(1.0) - real(surface.metallic)) * real3(surface.albedo) / REAL_PI;
     real3  specular         = distribution * visibility * fresnel;
     // BRDF in `real`, radiance in float
     return float3(diffuse + specular) * light_color.w * light_color.xyz * normal_dot_light;
@@ -300,38 +307,65 @@ float punctual_shadow_visibility(PunctualLight light, float3 world_position, flo
     return outside ? 1.0 : sum / 16.0;
 }
 
-// Point/spot lights of the fragment's froxel: Filament's inverse-square falloff with a smooth
-// window to zero at the light's range, and the spot angle term. Returns the light count in `count`.
-float3 accumulate_punctual_lights(
-    float2 pixel, float3 world_position, float3 normal, float3 geometric_normal, float3 view_direction,
-    float3 base_reflectivity, float3 albedo, float roughness, float metallic,
-    float clearcoat, float coat_roughness, out uint count
-) {
+// One point/spot light at the surface: Filament's inverse-square falloff with a smooth window to
+// zero at the light's range, and the spot angle term.
+float3 punctual_light_radiance(uint light_index, Surface surface) {
+    PunctualLight light = punctual_lights[light_index];
+    float3 to_light        = light.position_falloff.xyz - surface.position;
+    float  distance_square = dot(to_light, to_light);
+    float  window          = saturate(1.0 - pow(distance_square * light.position_falloff.w, 2.0));
+    float3 incoming        = to_light * rsqrt(max(distance_square, 1e-8));
+    float  angle           = saturate(dot(light.direction.xyz, -incoming) * light.spot_scale_offset.x + light.spot_scale_offset.y);
+    float  attenuation     = window * window / max(distance_square, 1e-4) * angle * angle;
+    if (attenuation > 0.0) {
+        attenuation *= punctual_shadow_visibility(light, surface.position, surface.geometric_normal, sqrt(distance_square));
+    }
+    float4 light_color = float4(light.color_intensity.rgb, light.color_intensity.w * attenuation);
+    float3 radiance    = accumulate_directional_light(surface, -incoming, light_color);
+    if (surface.clearcoat > 0.0) {
+        radiance += clearcoat_directional_light(surface, -incoming, light_color);
+    }
+    return radiance;
+}
+
+// Light index of record `record` of the froxel lists (u16, two per uint)
+uint froxel_light(uint record) {
+    return (froxel_records[record >> 1] >> ((record & 1u) * 16u)) & 0xFFFFu;
+}
+
+// Point/spot lights of the fragment's froxel. Returns the light count in `count`.
+float3 accumulate_punctual_lights(float2 pixel, Surface surface, out uint count) {
     count = 0;
     float3 radiance = float3(0.0, 0.0, 0.0);
     if (scene.froxel_grid.w < 0.5) {
         return radiance; // uniform branch: no lights
     }
-    uint2 entry = froxel_entries[froxel_index(pixel, world_position)];
+    uint  froxel = froxel_index(pixel, surface.position);
+    uint2 entry  = froxel_entries[froxel];
     count = entry.y;
+#ifdef PILL_SUBGROUP
+    // Lanes of a wave in different froxels: walk the union of their (ascending) light lists one
+    // light at a time, the wave-wide smallest next index first, so each light's data is loaded
+    // once per wave from a uniform index; the lanes holding that light shade it and advance
+    if (WaveActiveMin(froxel) != WaveActiveMax(froxel)) {
+        uint cursor = 0;
+        for (;;) {
+            uint next  = cursor < entry.y ? froxel_light(entry.x + cursor) : 0xFFFFu;
+            uint light = WaveActiveMin(next);
+            if (light == 0xFFFFu) {
+                break;
+            }
+            if (next == light) {
+                radiance += punctual_light_radiance(light, surface);
+                cursor++;
+            }
+        }
+        return radiance;
+    }
+    // One froxel for the whole wave: the plain loop below already walks a uniform list
+#endif
     for (uint index = 0; index < entry.y; index++) {
-        uint record = entry.x + index;
-        uint light_index = (froxel_records[record >> 1] >> ((record & 1u) * 16u)) & 0xFFFFu;
-        PunctualLight light = punctual_lights[light_index];
-        float3 to_light        = light.position_falloff.xyz - world_position;
-        float  distance_square = dot(to_light, to_light);
-        float  window          = saturate(1.0 - pow(distance_square * light.position_falloff.w, 2.0));
-        float3 incoming        = to_light * rsqrt(max(distance_square, 1e-8));
-        float  angle           = saturate(dot(light.direction.xyz, -incoming) * light.spot_scale_offset.x + light.spot_scale_offset.y);
-        float  attenuation     = window * window / max(distance_square, 1e-4) * angle * angle;
-        if (attenuation > 0.0) {
-            attenuation *= punctual_shadow_visibility(light, world_position, geometric_normal, sqrt(distance_square));
-        }
-        float4 light_color     = float4(light.color_intensity.rgb, light.color_intensity.w * attenuation);
-        radiance += accumulate_directional_light(normal, view_direction, base_reflectivity, albedo, roughness, metallic, -incoming, light_color);
-        if (clearcoat > 0.0) {
-            radiance += clearcoat_directional_light(normal, view_direction, clearcoat, coat_roughness, -incoming, light_color);
-        }
+        radiance += punctual_light_radiance(froxel_light(entry.x + index), surface);
     }
     return radiance;
 }
@@ -370,6 +404,9 @@ FragmentOutput fs_main(
                         float4 frag_coord             : SV_Position
 ) {
     MaterialParams material = load_material(material_index);
+    // Per-pixel shading inputs, shared by every light
+    Surface surface;
+    surface.position = world_position;
     float4 base_color         = base_color_texture.Sample(base_color_sampler, texture_coordinates);
     // ALPHA_TEST is set per pipeline: a discard reachable in the compiled shader turns off early
     // depth rejection for the whole pipeline, so only the alpha-tested one keeps it
@@ -378,14 +415,14 @@ FragmentOutput fs_main(
     }
     // Double-sided surfaces are lit from the side the camera sees: flipped by the vertex normal
     // vs the view, not by triangle winding (foliage cards often wind against their normals)
-    float3 view_direction     = normalize(camera.position.xyz - world_position);
-    float  face_sign          = material.double_sided > 0.5 && dot(input_normal, view_direction) < 0.0 ? -1.0 : 1.0;
-    float3 vertex_normal      = normalize(input_normal) * face_sign;
-    float3 albedo             = base_color.rgb * material.base_color_factor;
+    surface.view_direction   = normalize(camera.position.xyz - world_position);
+    float  face_sign         = material.double_sided > 0.5 && dot(input_normal, surface.view_direction) < 0.0 ? -1.0 : 1.0;
+    surface.geometric_normal = normalize(input_normal) * face_sign;
+    surface.albedo           = base_color.rgb * material.base_color_factor;
     float2 metallic_roughness = metallic_roughness_texture.Sample(metallic_roughness_sampler, texture_coordinates).gb;
     // metallic_roughness.x = G channel (roughness 0=smooth, 1=rough); metallic_roughness.y = B channel (metallic 0=dielectric, 1=metal)
-    float  roughness = clamp(metallic_roughness.x * material.roughness_factor, 0.045, 0.99);
-    float  metallic  = metallic_roughness.y * material.metallic_factor;
+    surface.roughness        = clamp(metallic_roughness.x * material.roughness_factor, 0.045, 0.99);
+    surface.metallic         = metallic_roughness.y * material.metallic_factor;
     // Tangent-space normal map; the default texel (0.5, 0.5, 1) keeps the vertex normal
     float3 tangent_normal    = normal_texture.Sample(normal_sampler, texture_coordinates).xyz * 2.0 - 1.0;
     // z rebuilt from x and y (BC5-style): two-channel maps leave blue empty, and mips filtered
@@ -395,78 +432,78 @@ FragmentOutput fs_main(
     tangent_normal.y        *= material.normal_y_sign;
     // Meshes without a usable tangent frame (degenerate UVs) keep the vertex normal
     bool   has_tangent_frame = dot(input_tangent, input_tangent) > 1e-6;
-    float3 normal            = has_tangent_frame
+    surface.normal           = has_tangent_frame
         ? normalize(tangent_normal.x * input_tangent + tangent_normal.y * input_bitangent + tangent_normal.z * input_normal) * face_sign
-        : vertex_normal;
+        : surface.geometric_normal;
     // A normal-mapped normal can tilt past the horizon at grazing angles; facing away it would
     // get full Fresnel and no diffuse (a silver sheen). Keep it in the visible hemisphere.
-    float  normal_dot_view   = dot(normal, view_direction);
+    float  normal_dot_view   = dot(surface.normal, surface.view_direction);
     if (normal_dot_view < MIN_NORMAL_DOT_VIEW) {
-        normal = normalize(normal + view_direction * (MIN_NORMAL_DOT_VIEW - normal_dot_view));
+        surface.normal = normalize(surface.normal + surface.view_direction * (MIN_NORMAL_DOT_VIEW - normal_dot_view));
     }
     // Rain (`RenderStateComponent::wetness`): water fills the pores of rough dielectrics (darker
     // albedo) and covers surfaces with a film (lower roughness), fully on upward-facing ones
     // (ground, ledges, roofs), partly on walls where it runs off
     float wetness = scene.ibl_intensity.z;
     if (wetness > 0.0) {
-        float porosity = (1.0 - metallic) * roughness;
-        albedo   *= 1.0 - WET_DARKENING * wetness * porosity;
-        float film = wetness * lerp(WET_WALL_FILM, 1.0, saturate(vertex_normal.y));
-        roughness = lerp(roughness, WET_ROUGHNESS, film);
+        float porosity = (1.0 - surface.metallic) * surface.roughness;
+        surface.albedo    *= 1.0 - WET_DARKENING * wetness * porosity;
+        float film = wetness * lerp(WET_WALL_FILM, 1.0, saturate(surface.geometric_normal.y));
+        surface.roughness = lerp(surface.roughness, WET_ROUGHNESS, film);
     }
     // Lighting-only views (light audits): every surface white, diffuse only, unlit by itself; the
     // light reaching it is all that shows (method: Unreal's Lighting Only / Detail Lighting views)
     float debug_view    = scene.ibl_intensity.w;
     bool  lighting_only = debug_view > 0.5;
     if (lighting_only) {
-        albedo   = float3(1.0, 1.0, 1.0);
-        metallic = 0.0;
+        surface.albedo   = float3(1.0, 1.0, 1.0);
+        surface.metallic = 0.0;
         if (debug_view < 1.5) {
-            normal = vertex_normal;
+            surface.normal = surface.geometric_normal;
         }
     }
-    float  clearcoat         = lighting_only ? 0.0 : material.clearcoat;
-    float3 base_reflectivity = lighting_only
+    surface.clearcoat         = lighting_only ? 0.0 : material.clearcoat;
+    surface.coat_roughness    = clamp(material.clearcoat_roughness, 0.045, 0.99);
+    surface.base_reflectivity = lighting_only
         ? float3(0.0, 0.0, 0.0)
-        : lerp(float3(0.04, 0.04, 0.04), albedo, float3(metallic, metallic, metallic));
+        : lerp(float3(0.04, 0.04, 0.04), surface.albedo, float3(surface.metallic, surface.metallic, surface.metallic));
     float3 outgoing_radiance = float3(0.0, 0.0, 0.0);
     // Key light (0) shadow; point/spot shadows are in accumulate_punctual_lights
-    float  key_visibility    = shadow_visibility(world_position, vertex_normal);
+    float  key_visibility    = shadow_visibility(world_position, surface.geometric_normal);
     float4 key_light_color   = float4(scene.light_color0.rgb, scene.light_color0.w * key_visibility);
-    outgoing_radiance += accumulate_directional_light(normal, view_direction, base_reflectivity, albedo, roughness, metallic, scene.light_direction0.xyz, key_light_color);
-    outgoing_radiance += accumulate_directional_light(normal, view_direction, base_reflectivity, albedo, roughness, metallic, scene.light_direction1.xyz, scene.light_color1);
-    outgoing_radiance += accumulate_directional_light(normal, view_direction, base_reflectivity, albedo, roughness, metallic, scene.light_direction2.xyz, scene.light_color2);
-    float coat_roughness = clamp(material.clearcoat_roughness, 0.045, 0.99);
+    outgoing_radiance += accumulate_directional_light(surface, scene.light_direction0.xyz, key_light_color);
+    outgoing_radiance += accumulate_directional_light(surface, scene.light_direction1.xyz, scene.light_color1);
+    outgoing_radiance += accumulate_directional_light(surface, scene.light_direction2.xyz, scene.light_color2);
     uint  punctual_count;
-    outgoing_radiance += accumulate_punctual_lights(frag_coord.xy, world_position, normal, vertex_normal, view_direction, base_reflectivity, albedo, roughness, metallic, clearcoat, coat_roughness, punctual_count);
-    if (clearcoat > 0.0) {
-        outgoing_radiance += clearcoat_directional_light(normal, view_direction, clearcoat, coat_roughness, scene.light_direction0.xyz, key_light_color);
-        outgoing_radiance += clearcoat_directional_light(normal, view_direction, clearcoat, coat_roughness, scene.light_direction1.xyz, scene.light_color1);
-        outgoing_radiance += clearcoat_directional_light(normal, view_direction, clearcoat, coat_roughness, scene.light_direction2.xyz, scene.light_color2);
+    outgoing_radiance += accumulate_punctual_lights(frag_coord.xy, surface, punctual_count);
+    if (surface.clearcoat > 0.0) {
+        outgoing_radiance += clearcoat_directional_light(surface, scene.light_direction0.xyz, key_light_color);
+        outgoing_radiance += clearcoat_directional_light(surface, scene.light_direction1.xyz, scene.light_color1);
+        outgoing_radiance += clearcoat_directional_light(surface, scene.light_direction2.xyz, scene.light_color2);
     }
     // Diffuse IBL ambient.
-    float3 specular_factor = float3(fresnel_schlick(real(max(dot(normal, view_direction), 0.0)), real3(base_reflectivity)));
-    float3 diffuse_factor  = (float3(1.0, 1.0, 1.0) - specular_factor) * (1.0 - metallic);
+    float3 specular_factor = float3(fresnel_schlick(real(max(dot(surface.normal, surface.view_direction), 0.0)), real3(surface.base_reflectivity)));
+    float3 diffuse_factor  = (float3(1.0, 1.0, 1.0) - specular_factor) * (1.0 - surface.metallic);
     // Indirect diffuse: DDGI probes when on (their rays that miss already see the IBL), else IBL
-    float3 sky_irradiance  = sample_ibl_irradiance(irradiance_texture, irradiance_sampler, normal) * scene.ibl_intensity.x;
+    float3 sky_irradiance  = sample_ibl_irradiance(irradiance_texture, irradiance_sampler, surface.normal) * scene.ibl_intensity.x;
     float3 irradiance      = sky_irradiance;
     // Specular occlusion: the sky reflection is occluded as much as the probes find the sky light
     // occluded here (inside foliage, under awnings), which the IBL alone can't know
     float  specular_occlusion = 1.0;
     if (ddgi.enabled > 0) {
         // Probes without an estimate yet (newly exposed by a moving grid) fall back to the IBL
-        float4 probe_irradiance = ddgi_irradiance(world_position, normal);
+        float4 probe_irradiance = ddgi_irradiance(world_position, surface.normal);
         irradiance = lerp(irradiance, probe_irradiance.rgb * ddgi.intensity, probe_irradiance.a);
         const float3 luminance = float3(0.2126, 0.7152, 0.0722);
         float sky = dot(sky_irradiance, luminance);
         specular_occlusion = sky > 1e-4 ? saturate(dot(irradiance, luminance) / sky) : 1.0;
     }
-    float3 ambient_diffuse = diffuse_factor * irradiance * albedo;
+    float3 ambient_diffuse = diffuse_factor * irradiance * surface.albedo;
     // Specular IBL.
-    float3 reflection        = reflect(-view_direction, normal);
-    float3 prefiltered_color = sample_ibl_specular(prefilter_texture, prefilter_sampler, reflection, roughness * MAX_REFLECTION_LOD);
-    float2 environment_brdf  = brdf_lut_texture.Sample(brdf_lut_sampler, float2(max(dot(normal, view_direction), 0.0), roughness)).rg;
-    float3 fresnel           = float3(fresnel_schlick_roughness(real(max(dot(normal, view_direction), 0.0)), real3(base_reflectivity), real(roughness)));
+    float3 reflection        = reflect(-surface.view_direction, surface.normal);
+    float3 prefiltered_color = sample_ibl_specular(prefilter_texture, prefilter_sampler, reflection, surface.roughness * MAX_REFLECTION_LOD);
+    float2 environment_brdf  = brdf_lut_texture.Sample(brdf_lut_sampler, float2(max(dot(surface.normal, surface.view_direction), 0.0), surface.roughness)).rg;
+    float3 fresnel           = float3(fresnel_schlick_roughness(real(max(dot(surface.normal, surface.view_direction), 0.0)), real3(surface.base_reflectivity), real(surface.roughness)));
     float3 specular_weight   = lighting_only
         ? float3(0.0, 0.0, 0.0)
         : (fresnel * environment_brdf.x + environment_brdf.y) * specular_occlusion;
@@ -499,7 +536,7 @@ FragmentOutput fs_main(
     // What SSAO takes back must be in `color`; with SSR, PassSsr adds the specular term instead
     output.ambient  = float4((ambient_diffuse + (ssr ? float3(0.0, 0.0, 0.0) : specular_ibl)) * (1.0 - fog), 0.0);
     bool no_reflections = ddgi.enabled >= 2 || scene.froxel_depth.w > 0.5 || lighting_only;
-    output.ssr_surface = float4(ssr && !no_reflections ? specular_weight * (1.0 - fog) : float3(0.0, 0.0, 0.0), roughness);
-    output.ssr_normal  = oct_encode(normal);
+    output.ssr_surface = float4(ssr && !no_reflections ? specular_weight * (1.0 - fog) : float3(0.0, 0.0, 0.0), surface.roughness);
+    output.ssr_normal  = oct_encode(surface.normal);
     return output;
 }
