@@ -378,20 +378,18 @@ impl PassDdgi {
             .pipelines
             .as_ref()
             .expect("PassDdgi: pipelines before probe storage");
-        let reset_group = renderer
-            .get_device()
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("ddgi_reset"),
-                layout: &pipelines.reset.bind_group_layouts[0],
-                entries: &[&reset_list, &probes, &color_history, &depth_history]
-                    .iter()
-                    .enumerate()
-                    .map(|(binding, buffer)| wgpu::BindGroupEntry {
-                        binding: binding as u32,
-                        resource: buffer.as_entire_binding(),
-                    })
-                    .collect::<Vec<_>>(),
-            });
+        let reset_group = {
+            ddgi_reset_compute::Group0 {
+                ddgi_reset_list: &reset_list,
+                ddgi_probes_out: &probes,
+                ddgi_history: &color_history,
+                ddgi_depth_history: &depth_history,
+            }
+            .create(
+                renderer.get_device(),
+                &pipelines.reset.bind_group_layouts[0],
+            )
+        };
         let mut frame = self.frame.borrow_mut();
         frame.probes = probes.clone();
         frame.depth_view = depth_view.clone();
@@ -437,61 +435,47 @@ impl PassDdgi {
         let frame = self.frame.borrow();
         let lights = self.lights.borrow();
         let device = renderer.get_device();
-        let group = |layout: &wgpu::BindGroupLayout, entries: &[wgpu::BindingResource]| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("ddgi"),
-                layout,
-                entries: &entries
-                    .iter()
-                    .enumerate()
-                    .map(|(binding, resource)| wgpu::BindGroupEntry {
-                        binding: binding as u32,
-                        resource: resource.clone(),
-                    })
-                    .collect::<Vec<_>>(),
-            })
+        let relocate_group = {
+            ddgi_relocate_compute::Group0 {
+                ddgi: &frame.params,
+                bvh_nodes: &bvh.nodes,
+                bvh_triangles: &bvh.triangles,
+                ddgi_probes_out: &storage.probes,
+            }
+            .create(device, &pipelines.relocate.bind_group_layouts[0])
         };
-        let relocate_group = group(
-            &pipelines.relocate.bind_group_layouts[0],
-            &[
-                frame.params.as_entire_binding(),
-                bvh.nodes.as_entire_binding(),
-                bvh.triangles.as_entire_binding(),
-                storage.probes.as_entire_binding(),
-            ],
-        );
-        let trace_group = group(
-            &pipelines.trace.bind_group_layouts[0],
-            &[
-                frame.params.as_entire_binding(),
-                bvh.nodes.as_entire_binding(),
-                bvh.triangles.as_entire_binding(),
-                storage.probes.as_entire_binding(),
-                wgpu::BindingResource::TextureView(&storage.depth_view),
-                wgpu::BindingResource::Sampler(&pipelines.sampler),
-                lights.buffers.lights.as_entire_binding(),
-                wgpu::BindingResource::TextureView(&sky),
-                rays.as_entire_binding(),
-            ],
-        );
-        let color_group = group(
-            &pipelines.color.bind_group_layouts[0],
-            &[
-                frame.params.as_entire_binding(),
-                rays.as_entire_binding(),
-                storage.color_history.as_entire_binding(),
-                storage.probes.as_entire_binding(),
-            ],
-        );
-        let depth_group = group(
-            &pipelines.depth.bind_group_layouts[0],
-            &[
-                frame.params.as_entire_binding(),
-                rays.as_entire_binding(),
-                storage.depth_history.as_entire_binding(),
-                wgpu::BindingResource::TextureView(&storage.depth_view),
-            ],
-        );
+        let trace_group = {
+            ddgi_trace_compute::Group0 {
+                ddgi: &frame.params,
+                bvh_nodes: &bvh.nodes,
+                bvh_triangles: &bvh.triangles,
+                ddgi_probes: &storage.probes,
+                ddgi_depth: &storage.depth_view,
+                ddgi_sampler: &pipelines.sampler,
+                punctual_lights: &lights.buffers.lights,
+                sky_irradiance: &sky,
+                ddgi_rays: &rays,
+            }
+            .create(device, &pipelines.trace.bind_group_layouts[0])
+        };
+        let color_group = {
+            ddgi_color_compute::Group0 {
+                ddgi: &frame.params,
+                ddgi_rays: &rays,
+                ddgi_history: &storage.color_history,
+                ddgi_probes_out: &storage.probes,
+            }
+            .create(device, &pipelines.color.bind_group_layouts[0])
+        };
+        let depth_group = {
+            ddgi_depth_compute::Group0 {
+                ddgi: &frame.params,
+                ddgi_rays: &rays,
+                ddgi_depth_history: &storage.depth_history,
+                ddgi_depth_out: &storage.depth_view,
+            }
+            .create(device, &pipelines.depth.bind_group_layouts[0])
+        };
         drop(frame);
         drop(lights);
         self.bindings = Some(ProbeBindings {

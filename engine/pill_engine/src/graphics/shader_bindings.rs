@@ -46,6 +46,12 @@ pub(crate) fn merge_layouts(
     merged
 }
 
+/// The resources of one bind group (a generated `Group<N>`), made into the bind group when needed.
+pub(crate) trait BindGroupResources {
+    /// The bind group for `layout`, the pipeline's layout of this group.
+    fn create(&self, device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> wgpu::BindGroup;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

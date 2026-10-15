@@ -1,7 +1,7 @@
 use crate::config::LENS_FRAGMENT_SHADER;
 use crate::ecs::RenderStateComponent;
 use crate::graphics::fullscreen::{
-    create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, uniform_buffer, Binding,
+    create_fullscreen_pipeline, draw_fullscreen, input_view, linear_clamp_sampler, uniform_buffer,
     CachedBindGroup,
 };
 use crate::graphics::shader_bindings::{lens_fragment, structs::LensParams};
@@ -197,13 +197,13 @@ impl Pass for PassLens {
             "pass_lens",
             &state.pipeline,
             &mut state.bind_group,
-            &[
-                Binding::Target(self.input),
-                Binding::Sampler(&state.sampler),
-                Binding::Buffer(&state.params_buffer),
-                Binding::Target(state.grain_texture),
-                Binding::Sampler(&state.grain_sampler),
-            ],
+            &lens_fragment::Group0 {
+                source_texture: input_view(renderer, self.input, "pass_lens")?,
+                linear_sampler: &state.sampler,
+                params: &state.params_buffer,
+                grain_texture: input_view(renderer, state.grain_texture, "pass_lens")?,
+                grain_sampler: &state.grain_sampler,
+            },
             &frame_target.srgb_view,
         )
     }

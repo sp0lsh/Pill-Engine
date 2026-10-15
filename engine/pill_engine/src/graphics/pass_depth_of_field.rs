@@ -5,14 +5,15 @@ use crate::config::{
 };
 use crate::ecs::RenderStateComponent;
 use crate::graphics::fullscreen::{
-    create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, target_view, uniform_buffer,
-    Binding, CachedBindGroup,
+    create_fullscreen_pipeline, draw_fullscreen, input_view, linear_clamp_sampler, target_view,
+    uniform_buffer, CachedBindGroup,
 };
 use crate::graphics::projection::depth_unpack;
 use crate::graphics::shader_bindings::{
     dof_bokeh_fragment, dof_downsample_fragment, dof_near_blur_fragment,
     dof_near_composite_fragment, dof_near_prefilter_fragment, linearize_depth_fragment,
     structs::{DepthUnpack, DofNearParams, DofParams},
+    BindGroupResources, Binding,
 };
 use crate::graphics::{
     FrameTarget, Pass, PassTextureHandle, PillRenderer, Pipeline, RendererTargetDesc, TargetSize,
@@ -233,62 +234,64 @@ impl Pass for PassDepthOfField {
             queue.write_buffer(&stage.params, 0, bytemuck::bytes_of(&near_params(blur_dir)));
         }
 
-        let steps: [(&str, &Pipeline, Vec<Binding>, PassTextureHandle); 6] = [
+        let steps: [(&str, &Pipeline, &dyn BindGroupResources, PassTextureHandle); 6] = [
             (
                 "pass_dof_linearize_depth",
                 &state.linearize.pipeline,
-                vec![
-                    Binding::Target(self.depth),
-                    Binding::Buffer(&state.linearize.params),
-                ],
+                &linearize_depth_fragment::Group0 {
+                    depth_texture: input_view(renderer, self.depth, "pass_depth_of_field")?,
+                    params: &state.linearize.params,
+                },
                 state.linear_depth,
             ),
             (
                 "pass_dof_downsample",
                 &state.downsample,
-                vec![Binding::Target(self.color)],
+                &dof_downsample_fragment::Group0 {
+                    t_color: input_view(renderer, self.color, "pass_depth_of_field")?,
+                },
                 state.quarter,
             ),
             (
                 "pass_dof_bokeh",
                 &state.bokeh.pipeline,
-                vec![
-                    Binding::Target(state.quarter),
-                    Binding::Target(state.linear_depth),
-                    Binding::Buffer(&state.bokeh.params),
-                    Binding::Sampler(&state.sampler),
-                ],
+                &dof_bokeh_fragment::Group0 {
+                    t_color: input_view(renderer, state.quarter, "pass_depth_of_field")?,
+                    t_depth: input_view(renderer, state.linear_depth, "pass_depth_of_field")?,
+                    params: &state.bokeh.params,
+                    s_color: &state.sampler,
+                },
                 state.far,
             ),
             (
                 "pass_dof_near_prefilter",
                 &state.near_prefilter.pipeline,
-                vec![
-                    Binding::Target(self.color),
-                    Binding::Target(state.linear_depth),
-                    Binding::Buffer(&state.near_prefilter.params),
-                ],
+                &dof_near_prefilter_fragment::Group0 {
+                    t_color: input_view(renderer, self.color, "pass_depth_of_field")?,
+                    t_depth: input_view(renderer, state.linear_depth, "pass_depth_of_field")?,
+                    params: &state.near_prefilter.params,
+                },
                 state.near,
             ),
             (
                 "pass_dof_near_blur",
                 &state.near_blur.pipeline,
-                vec![
-                    Binding::Target(state.near),
-                    Binding::Buffer(&state.near_blur.params),
-                    Binding::Sampler(&state.sampler),
-                ],
+                &dof_near_blur_fragment::Group0 {
+                    t_near: input_view(renderer, state.near, "pass_depth_of_field")?,
+                    params: &state.near_blur.params,
+                    s_linear: &state.sampler,
+                },
                 state.near_blurred,
             ),
             (
                 "pass_dof_near_composite",
                 &state.near_composite.pipeline,
-                vec![
-                    Binding::Target(state.near_blurred),
-                    Binding::Target(state.far),
-                    Binding::Buffer(&state.near_composite.params),
-                    Binding::Sampler(&state.sampler),
-                ],
+                &dof_near_composite_fragment::Group0 {
+                    t_near: input_view(renderer, state.near_blurred, "pass_depth_of_field")?,
+                    t_far: input_view(renderer, state.far, "pass_depth_of_field")?,
+                    params: &state.near_composite.params,
+                    s_linear: &state.sampler,
+                },
                 self.output,
             ),
         ];
@@ -301,7 +304,7 @@ impl Pass for PassDepthOfField {
                 label,
                 pipeline,
                 bind_group,
-                &bindings,
+                bindings,
                 target_view(renderer, output, label)?,
             )?;
         }

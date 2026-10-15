@@ -1,7 +1,7 @@
 use crate::config::{FXAA_FRAGMENT_SHADER, LDR_TARGET_FORMAT};
 use crate::graphics::fullscreen::{
-    create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, target_view, uniform_buffer,
-    Binding, CachedBindGroup,
+    create_fullscreen_pipeline, draw_fullscreen, input_view, linear_clamp_sampler, target_view,
+    uniform_buffer, CachedBindGroup,
 };
 use crate::graphics::shader_bindings::{fxaa_fragment, structs::FxaaParams};
 use crate::graphics::{FrameTarget, Pass, PassTextureHandle, PillRenderer, Pipeline, WorldQuery};
@@ -94,11 +94,11 @@ impl Pass for PassFxaa {
             "pass_fxaa",
             &state.pipeline,
             &mut state.bind_group,
-            &[
-                Binding::Target(self.input),
-                Binding::Sampler(&state.sampler),
-                Binding::Buffer(&state.params_buffer),
-            ],
+            &fxaa_fragment::Group0 {
+                t_src: input_view(renderer, self.input, "pass_fxaa")?,
+                s_src: &state.sampler,
+                params: &state.params_buffer,
+            },
             target_view(renderer, self.output, "pass_fxaa")?,
         )
     }

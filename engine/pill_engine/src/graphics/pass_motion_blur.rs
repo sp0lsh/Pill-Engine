@@ -1,8 +1,8 @@
 use crate::config::MOTION_BLUR_FRAGMENT_SHADER;
 use crate::ecs::RenderStateComponent;
 use crate::graphics::fullscreen::{
-    create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, target_view, uniform_buffer,
-    Binding, CachedBindGroup,
+    create_fullscreen_pipeline, draw_fullscreen, input_view, linear_clamp_sampler, target_view,
+    uniform_buffer, CachedBindGroup,
 };
 use crate::graphics::projection::depth_unpack;
 use crate::graphics::shader_bindings::{motion_blur_fragment, structs::MotionBlurParams};
@@ -124,15 +124,19 @@ impl Pass for PassMotionBlur {
             "pass_motion_blur",
             &state.pipeline,
             &mut state.bind_group,
-            &[
-                Binding::Target(self.color),
-                Binding::Target(self.velocity),
-                Binding::Target(self.depth),
-                Binding::Buffer(&state.params_buffer),
-                Binding::Sampler(&state.sampler),
+            &motion_blur_fragment::Group0 {
+                color_texture: input_view(renderer, self.color, "pass_motion_blur")?,
+                velocity_texture: input_view(renderer, self.velocity, "pass_motion_blur")?,
+                depth_texture: input_view(renderer, self.depth, "pass_motion_blur")?,
+                params: &state.params_buffer,
+                linear_sampler: &state.sampler,
                 // Without DoF any filterable texture fills the slot; the shader ignores it
-                Binding::Target(self.depth_of_field.unwrap_or(self.color)),
-            ],
+                depth_of_field_texture: input_view(
+                    renderer,
+                    self.depth_of_field.unwrap_or(self.color),
+                    "pass_motion_blur",
+                )?,
+            },
             target_view(renderer, self.output, "pass_motion_blur")?,
         )
     }

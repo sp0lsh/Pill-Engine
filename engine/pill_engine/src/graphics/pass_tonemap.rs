@@ -1,8 +1,8 @@
 use crate::config::{LDR_TARGET_FORMAT, TONEMAP_FRAGMENT_SHADER};
 use crate::ecs::{RenderStateComponent, Tonemap};
 use crate::graphics::fullscreen::{
-    create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, target_view, uniform_buffer,
-    Binding, CachedBindGroup,
+    create_fullscreen_pipeline, draw_fullscreen, input_view, linear_clamp_sampler, target_view,
+    uniform_buffer, CachedBindGroup,
 };
 use crate::graphics::shader_bindings::{structs::TonemapParams, tonemap_fragment};
 use crate::graphics::{FrameTarget, Pass, PassTextureHandle, PillRenderer, Pipeline, WorldQuery};
@@ -156,11 +156,11 @@ impl Pass for PassTonemap {
             "pass_tonemap",
             &state.pipeline,
             &mut state.bind_group,
-            &[
-                Binding::Target(self.hdr_source),
-                Binding::Sampler(&state.sampler),
-                Binding::Buffer(&state.params_buffer),
-            ],
+            &tonemap_fragment::Group0 {
+                hdr_texture: input_view(renderer, self.hdr_source, "pass_tonemap")?,
+                hdr_sampler: &state.sampler,
+                params: &state.params_buffer,
+            },
             output,
         )
     }

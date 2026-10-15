@@ -246,87 +246,29 @@ fn build_globals_bind_group(
     punctual_shadow_view: &wgpu::TextureView,
     ddgi: &DdgiFrame,
 ) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("pass_pbr_opaque_globals_bind_group"),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(irradiance_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::Sampler(ibl_sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: 3,
-                resource: wgpu::BindingResource::TextureView(prefilter_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 4,
-                resource: wgpu::BindingResource::Sampler(prefilter_sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: 5,
-                resource: wgpu::BindingResource::TextureView(brdf_lut_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 6,
-                resource: wgpu::BindingResource::Sampler(brdf_lut_sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: 7,
-                resource: scene_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 8,
-                resource: wgpu::BindingResource::TextureView(shadow_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 9,
-                resource: wgpu::BindingResource::Sampler(shadow_sampler),
-            },
-            wgpu::BindGroupEntry {
-                binding: 10,
-                resource: light_buffers.lights.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 11,
-                resource: light_buffers.entries.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 12,
-                resource: light_buffers.records.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 13,
-                resource: light_buffers.shadows.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 14,
-                resource: wgpu::BindingResource::TextureView(punctual_shadow_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 15,
-                resource: ddgi.probes.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 16,
-                resource: wgpu::BindingResource::TextureView(&ddgi.depth_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 17,
-                resource: ddgi.params.as_entire_binding(),
-            },
-        ],
-    })
+    pbr_opaque_fragment::Group0 {
+        camera: camera_buffer,
+        irradiance_texture: irradiance_view,
+        irradiance_sampler: ibl_sampler,
+        prefilter_texture: prefilter_view,
+        prefilter_sampler,
+        brdf_lut_texture: brdf_lut_view,
+        brdf_lut_sampler,
+        scene: scene_buffer,
+        shadow_map: shadow_view,
+        shadow_sampler,
+        punctual_lights: &light_buffers.lights,
+        froxel_entries: &light_buffers.entries,
+        froxel_records: &light_buffers.records,
+        punctual_shadows: &light_buffers.shadows,
+        punctual_shadow_maps: punctual_shadow_view,
+        ddgi_probes: &ddgi.probes,
+        ddgi_depth: &ddgi.depth_view,
+        ddgi: &ddgi.params,
+    }
+    .create(device, layout)
 }
 
-/// Fragment-stage read-only storage buffer (point/spot lights and their froxel lists).
 /// Builds the background bind group (camera UBO + equirect view + sampler).
 fn build_bg_bind_group(
     device: &wgpu::Device,
@@ -335,24 +277,12 @@ fn build_bg_bind_group(
     equirect_view: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("pass_pbr_opaque_bg_bind_group"),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(equirect_view),
-            },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::Sampler(sampler),
-            },
-        ],
-    })
+    background_fragment::Group0 {
+        camera: camera_buffer,
+        equirect_texture: equirect_view,
+        equirect_sampler: sampler,
+    }
+    .create(device, layout)
 }
 
 /// Default PBR pass: GGX + IBL, one instanced draw per material/mesh batch.
@@ -814,35 +744,21 @@ impl Pass for PassPBROpaque {
             byte_size: (PER_DRAW_STRIDE_BYTES * previous_capacity) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         })?;
-        let per_draw_bind_group = {
-            let layout = &pipeline.bind_group_layouts[MATERIAL_BIND_GROUP_PERDRAW];
-            let device = renderer.get_device();
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("pass_pbr_opaque_per_draw_bind_group"),
-                layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: per_draw_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: previous_per_draw_buffer.as_entire_binding(),
-                    },
-                ],
-            })
-        };
-        let material_array_bind_group =
-            renderer
-                .get_device()
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("pass_pbr_opaque_material_array_bind_group"),
-                    layout: &pipeline.bind_group_layouts[MATERIAL_BIND_GROUP_ARRAY],
-                    entries: &[wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: renderer.get_material_buffer().as_entire_binding(),
-                    }],
-                });
+        let per_draw_bind_group = pbr_opaque_vertex::Group3 {
+            per_draw_array: &per_draw_buffer,
+            previous_per_draw_array: &previous_per_draw_buffer,
+        }
+        .create(
+            renderer.get_device(),
+            &pipeline.bind_group_layouts[MATERIAL_BIND_GROUP_PERDRAW],
+        );
+        let material_array_bind_group = pbr_opaque_fragment::Group2 {
+            material_array: renderer.get_material_buffer(),
+        }
+        .create(
+            renderer.get_device(),
+            &pipeline.bind_group_layouts[MATERIAL_BIND_GROUP_ARRAY],
+        );
 
         // The oct maps carry their own seam borders: clamp, and pick mips explicitly
         // (oct_ibl.hlsl), so no mip filtering

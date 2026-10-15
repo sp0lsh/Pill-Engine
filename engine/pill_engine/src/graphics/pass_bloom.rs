@@ -4,8 +4,8 @@ use crate::config::{
 };
 use crate::ecs::RenderStateComponent;
 use crate::graphics::fullscreen::{
-    create_fullscreen_pipeline, draw_fullscreen, draw_fullscreen_with_load, linear_clamp_sampler,
-    target_view, uniform_buffer, Binding, CachedBindGroup,
+    create_fullscreen_pipeline, draw_fullscreen, draw_fullscreen_with_load, input_view,
+    linear_clamp_sampler, target_view, uniform_buffer, CachedBindGroup,
 };
 use crate::graphics::shader_bindings::{
     bloom_composite_fragment, bloom_downsample_fragment, bloom_upsample_fragment,
@@ -191,11 +191,11 @@ impl Pass for PassBloom {
                 "pass_bloom_downsample",
                 &state.downsample,
                 &mut state.downsample_bind_groups[level],
-                &[
-                    Binding::Target(source),
-                    Binding::Sampler(&state.sampler),
-                    Binding::Buffer(params),
-                ],
+                &bloom_downsample_fragment::Group0 {
+                    source_texture: input_view(renderer, source, "pass_bloom")?,
+                    linear_sampler: &state.sampler,
+                    params: params,
+                },
                 target_view(renderer, mip, "pass_bloom")?,
             )?;
             source = mip;
@@ -214,11 +214,11 @@ impl Pass for PassBloom {
                 "pass_bloom_upsample",
                 &state.upsample,
                 &mut state.upsample_bind_groups[level],
-                &[
-                    Binding::Target(pair[1]),
-                    Binding::Sampler(&state.sampler),
-                    Binding::Buffer(&state.upsample_params),
-                ],
+                &bloom_upsample_fragment::Group0 {
+                    source_texture: input_view(renderer, pair[1], "pass_bloom")?,
+                    linear_sampler: &state.sampler,
+                    params: &state.upsample_params,
+                },
                 target_view(renderer, pair[0], "pass_bloom")?,
                 wgpu::LoadOp::Load,
             )?;
@@ -232,12 +232,12 @@ impl Pass for PassBloom {
             "pass_bloom_composite",
             &state.composite,
             &mut state.composite_bind_group,
-            &[
-                Binding::Target(self.input),
-                Binding::Target(bloom),
-                Binding::Sampler(&state.sampler),
-                Binding::Buffer(&state.composite_params),
-            ],
+            &bloom_composite_fragment::Group0 {
+                scene_texture: input_view(renderer, self.input, "pass_bloom")?,
+                bloom_texture: input_view(renderer, bloom, "pass_bloom")?,
+                linear_sampler: &state.sampler,
+                params: &state.composite_params,
+            },
             target_view(renderer, self.output, "pass_bloom")?,
         )
     }

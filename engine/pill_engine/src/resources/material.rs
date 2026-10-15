@@ -360,7 +360,6 @@ pub(crate) fn set_renderer_textures(
     let bind_group = RendererMaterial::create_textures_bind_group(
         engine.renderer.get_device(),
         &engine.resource_manager,
-        name,
         textures,
     )?;
     engine

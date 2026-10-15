@@ -112,7 +112,7 @@ impl RendererMaterial {
         debug!(LogContext::Rendering => "Creating material {}", name.name_style());
 
         let textures_bind_group =
-            Self::create_textures_bind_group(device, resource_manager, name, textures)?;
+            Self::create_textures_bind_group(device, resource_manager, textures)?;
 
         Ok(Self {
             name: name.to_string(),
@@ -145,7 +145,6 @@ impl RendererMaterial {
     pub(crate) fn create_textures_bind_group(
         device: &wgpu::Device,
         resource_manager: &ResourceManager,
-        name: &str,
         textures: &MaterialTextures,
     ) -> Result<wgpu::BindGroup> {
         let slots = [
@@ -178,27 +177,24 @@ impl RendererMaterial {
             );
         }
 
-        let mut entries = Vec::with_capacity(renderer_textures.len() * 2);
-        for (slot, texture) in renderer_textures.iter().enumerate() {
-            entries.push(wgpu::BindGroupEntry {
-                binding: slot as u32 * 2,
-                resource: wgpu::BindingResource::TextureView(&texture.texture_view),
-            });
-            entries.push(wgpu::BindGroupEntry {
-                binding: slot as u32 * 2 + 1,
-                resource: wgpu::BindingResource::Sampler(&texture.sampler),
-            });
-        }
-
+        let [base_color, normal, metallic_roughness, emissive] = renderer_textures[..] else {
+            unreachable!("one texture per slot");
+        };
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("material_textures_bind_group_layout"),
             entries: &material_textures_layout_entries(),
         });
-        Ok(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some(&format!("{}_textures", name)),
-            layout: &layout,
-            entries: &entries,
-        }))
+        Ok(pbr_opaque_fragment::Group1 {
+            base_color_texture: &base_color.texture_view,
+            base_color_sampler: &base_color.sampler,
+            normal_texture: &normal.texture_view,
+            normal_sampler: &normal.sampler,
+            metallic_roughness_texture: &metallic_roughness.texture_view,
+            metallic_roughness_sampler: &metallic_roughness.sampler,
+            emissive_texture: &emissive.texture_view,
+            emissive_sampler: &emissive.sampler,
+        }
+        .create(device, &layout))
     }
 }
 

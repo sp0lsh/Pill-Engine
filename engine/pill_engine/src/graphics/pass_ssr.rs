@@ -1,8 +1,8 @@
 use crate::config::SSR_FRAGMENT_SHADER;
 use crate::ecs::RenderStateComponent;
 use crate::graphics::fullscreen::{
-    create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, target_view, uniform_buffer,
-    Binding, CachedBindGroup,
+    create_fullscreen_pipeline, draw_fullscreen, input_view, linear_clamp_sampler, target_view,
+    uniform_buffer, CachedBindGroup,
 };
 use crate::graphics::ibl::IblFrame;
 use crate::graphics::projection::depth_unpack;
@@ -147,15 +147,15 @@ impl Pass for PassSsr {
             "pass_ssr",
             &state.pipeline,
             &mut state.bind_group,
-            &[
-                Binding::Target(self.color),
-                Binding::Target(self.depth),
-                Binding::Target(self.surface[0]),
-                Binding::Target(self.surface[1]),
-                Binding::View(&ibl.specular_view),
-                Binding::Sampler(&state.prefilter_sampler),
-                Binding::Buffer(&state.params),
-            ],
+            &ssr_fragment::Group0 {
+                t_color: input_view(renderer, self.color, "pass_ssr")?,
+                t_depth: input_view(renderer, self.depth, "pass_ssr")?,
+                t_surface: input_view(renderer, self.surface[0], "pass_ssr")?,
+                t_normal: input_view(renderer, self.surface[1], "pass_ssr")?,
+                t_prefilter: &ibl.specular_view,
+                s_prefilter: &state.prefilter_sampler,
+                params: &state.params,
+            },
             target_view(renderer, self.output, "pass_ssr")?,
         )
     }

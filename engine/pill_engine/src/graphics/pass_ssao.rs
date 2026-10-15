@@ -4,13 +4,14 @@ use crate::config::{
 };
 use crate::ecs::RenderStateComponent;
 use crate::graphics::fullscreen::{
-    create_fullscreen_pipeline, draw_fullscreen, target_view, uniform_buffer, Binding,
+    create_fullscreen_pipeline, draw_fullscreen, input_view, target_view, uniform_buffer,
     CachedBindGroup,
 };
 use crate::graphics::projection::depth_unpack;
 use crate::graphics::shader_bindings::{
     ssao_apply_fragment, ssao_blur_fragment, ssao_depth_downsample_fragment, ssao_fragment,
     structs::{SsaoApplyParams, SsaoBlurParams, SsaoDownsampleParams, SsaoParams},
+    BindGroupResources, Binding,
 };
 use crate::graphics::{
     FrameTarget, Pass, PassTextureHandle, PillRenderer, Pipeline, RendererTargetDesc, TargetSize,
@@ -262,86 +263,86 @@ impl Pass for PassSsao {
             _ => (self.color, false),
         };
         let [depth0, depth1, depth2, depth3] = state.depth_chain;
-        let steps: [(&str, &Pipeline, Vec<Binding>, PassTextureHandle); 8] = [
+        let steps: [(&str, &Pipeline, &dyn BindGroupResources, PassTextureHandle); 8] = [
             (
                 "pass_ssao_depth_0",
                 &state.downsample,
-                vec![
-                    Binding::Target(self.depth),
-                    Binding::Buffer(&state.downsample_first_params),
-                ],
+                &ssao_depth_downsample_fragment::Group0 {
+                    t_source: input_view(renderer, self.depth, "pass_ssao")?,
+                    params: &state.downsample_first_params,
+                },
                 depth0,
             ),
             (
                 "pass_ssao_depth_1",
                 &state.downsample,
-                vec![
-                    Binding::Target(depth0),
-                    Binding::Buffer(&state.downsample_params),
-                ],
+                &ssao_depth_downsample_fragment::Group0 {
+                    t_source: input_view(renderer, depth0, "pass_ssao")?,
+                    params: &state.downsample_params,
+                },
                 depth1,
             ),
             (
                 "pass_ssao_depth_2",
                 &state.downsample,
-                vec![
-                    Binding::Target(depth1),
-                    Binding::Buffer(&state.downsample_params),
-                ],
+                &ssao_depth_downsample_fragment::Group0 {
+                    t_source: input_view(renderer, depth1, "pass_ssao")?,
+                    params: &state.downsample_params,
+                },
                 depth2,
             ),
             (
                 "pass_ssao_depth_3",
                 &state.downsample,
-                vec![
-                    Binding::Target(depth2),
-                    Binding::Buffer(&state.downsample_params),
-                ],
+                &ssao_depth_downsample_fragment::Group0 {
+                    t_source: input_view(renderer, depth2, "pass_ssao")?,
+                    params: &state.downsample_params,
+                },
                 depth3,
             ),
             (
                 "pass_ssao_occlusion",
                 &state.occlusion,
-                vec![
-                    Binding::Target(depth0),
-                    Binding::Target(depth1),
-                    Binding::Target(depth2),
-                    Binding::Target(depth3),
-                    Binding::Buffer(&state.occlusion_params),
-                ],
+                &ssao_fragment::Group0 {
+                    t_depth0: input_view(renderer, depth0, "pass_ssao")?,
+                    t_depth1: input_view(renderer, depth1, "pass_ssao")?,
+                    t_depth2: input_view(renderer, depth2, "pass_ssao")?,
+                    t_depth3: input_view(renderer, depth3, "pass_ssao")?,
+                    params: &state.occlusion_params,
+                },
                 state.raw,
             ),
             (
                 "pass_ssao_blur_horizontal",
                 &state.blur,
-                vec![
-                    Binding::Target(state.raw),
-                    Binding::Target(depth0),
-                    Binding::Buffer(&state.blur_horizontal_params),
-                ],
+                &ssao_blur_fragment::Group0 {
+                    t_ssao: input_view(renderer, state.raw, "pass_ssao")?,
+                    t_depth: input_view(renderer, depth0, "pass_ssao")?,
+                    params: &state.blur_horizontal_params,
+                },
                 state.blurred_horizontal,
             ),
             (
                 "pass_ssao_blur_vertical",
                 &state.blur,
-                vec![
-                    Binding::Target(state.blurred_horizontal),
-                    Binding::Target(depth0),
-                    Binding::Buffer(&state.blur_vertical_params),
-                ],
+                &ssao_blur_fragment::Group0 {
+                    t_ssao: input_view(renderer, state.blurred_horizontal, "pass_ssao")?,
+                    t_depth: input_view(renderer, depth0, "pass_ssao")?,
+                    params: &state.blur_vertical_params,
+                },
                 state.blurred,
             ),
             (
                 "pass_ssao_apply",
                 &state.apply,
-                vec![
-                    Binding::Target(color),
-                    Binding::Target(self.ambient),
-                    Binding::Target(state.blurred),
-                    Binding::Target(depth0),
-                    Binding::Target(self.depth),
-                    Binding::Buffer(&state.apply_params),
-                ],
+                &ssao_apply_fragment::Group0 {
+                    t_color: input_view(renderer, color, "pass_ssao")?,
+                    t_ambient: input_view(renderer, self.ambient, "pass_ssao")?,
+                    t_ssao: input_view(renderer, state.blurred, "pass_ssao")?,
+                    t_ssao_depth: input_view(renderer, depth0, "pass_ssao")?,
+                    t_depth: input_view(renderer, self.depth, "pass_ssao")?,
+                    params: &state.apply_params,
+                },
                 self.output,
             ),
         ];
@@ -373,7 +374,7 @@ impl Pass for PassSsao {
                 label,
                 pipeline,
                 bind_group,
-                &bindings,
+                bindings,
                 target_view(renderer, output, label)?,
             )?;
         }

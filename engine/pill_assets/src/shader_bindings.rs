@@ -3,7 +3,8 @@
 //! plus one `structs` module with a `#[repr(C)]` mirror of every uniform / storage struct, padded
 //! to the offsets slangc reports for WGSL.
 //!
-//! The generated code expects `Binding { group: u32, binding: u32 }` in its parent module.
+//! The generated code expects `Binding { group: u32, binding: u32 }` and the trait
+//! `BindGroupResources` (`create(&self, device, layout) -> wgpu::BindGroup`) in its parent module.
 //!
 //! Binding properties the shader can't express come from `include/bindings.hlsl` attributes:
 //! `[Unfilterable]`, `[Depth]` (textures), `[Comparison]`, `[NonFiltering]` (samplers),
@@ -89,8 +90,8 @@ fn shader_module(stem: &str, reflection: &Value, structs: &mut Structs) -> Resul
     };
 
     let mut constants = String::new();
-    // group → (binding, entry type source)
-    let mut groups: BTreeMap<u32, BTreeMap<u32, String>> = BTreeMap::new();
+    // group → binding → (parameter name, entry type source)
+    let mut groups: BTreeMap<u32, BTreeMap<u32, (String, String)>> = BTreeMap::new();
     let parameters = reflection["parameters"]
         .as_array()
         .context("no `parameters`")?;
@@ -118,7 +119,12 @@ fn shader_module(stem: &str, reflection: &Value, structs: &mut Structs) -> Resul
             .map(|list| list.iter().filter_map(|a| a["name"].as_str()).collect())
             .unwrap_or_default();
         let ty = binding_type(stem, name, parameter, &attributes, structs)?;
-        if groups.entry(group).or_default().insert(index, ty).is_some() {
+        if groups
+            .entry(group)
+            .or_default()
+            .insert(index, (name.to_owned(), ty))
+            .is_some()
+        {
             bail!("{name}: binding {index} of group {group} declared twice");
         }
         let _ = writeln!(
@@ -141,7 +147,7 @@ fn shader_module(stem: &str, reflection: &Value, structs: &mut Structs) -> Resul
     let group_count = groups.keys().next_back().map_or(0, |last| last + 1);
     for group in 0..group_count {
         out += "            vec![\n";
-        for (binding, ty) in groups.get(&group).into_iter().flatten() {
+        for (binding, (_, ty)) in groups.get(&group).into_iter().flatten() {
             let _ = writeln!(
                 out,
                 "                wgpu::BindGroupLayoutEntry {{ binding: {binding}, visibility: STAGE, ty: {ty}, count: None }},"
@@ -149,8 +155,51 @@ fn shader_module(stem: &str, reflection: &Value, structs: &mut Structs) -> Resul
         }
         out += "            ],\n";
     }
-    out += "        ]\n    }\n}\n";
+    out += "        ]\n    }\n";
+    for (group, bindings) in &groups {
+        out += &group_struct(stem, *group, bindings);
+    }
+    out += "}\n";
     Ok(out)
+}
+
+/// `Group<N>`: one field per binding of the group (buffers, views, samplers by reference) and
+/// `create`, the bind group with each at its binding.
+fn group_struct(stem: &str, group: u32, bindings: &BTreeMap<u32, (String, String)>) -> String {
+    let mut fields = String::new();
+    let mut entries = String::new();
+    for (binding, (name, ty)) in bindings {
+        let field = rust_ident(name);
+        let (field_type, resource) = if ty.contains("has_dynamic_offset: true") {
+            (
+                "wgpu::BufferBinding<'a>",
+                format!("wgpu::BindingResource::Buffer(self.{field}.clone())"),
+            )
+        } else if ty.starts_with("wgpu::BindingType::Buffer") {
+            (
+                "&'a wgpu::Buffer",
+                format!("self.{field}.as_entire_binding()"),
+            )
+        } else if ty.starts_with("wgpu::BindingType::Sampler") {
+            (
+                "&'a wgpu::Sampler",
+                format!("wgpu::BindingResource::Sampler(self.{field})"),
+            )
+        } else {
+            (
+                "&'a wgpu::TextureView",
+                format!("wgpu::BindingResource::TextureView(self.{field})"),
+            )
+        };
+        let _ = writeln!(fields, "        pub {field}: {field_type},");
+        let _ = writeln!(
+            entries,
+            "                    wgpu::BindGroupEntry {{ binding: {binding}, resource: {resource} }},"
+        );
+    }
+    format!(
+        "    /// Resources of bind group {group}, one per binding\n    pub struct Group{group}<'a> {{\n{fields}    }}\n    impl Group{group}<'_> {{\n        /// The bind group of these resources for `layout`, the pipeline's group {group} layout\n        pub fn create(&self, device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> wgpu::BindGroup {{\n            device.create_bind_group(&wgpu::BindGroupDescriptor {{\n                label: Some(\"{stem}_group{group}\"),\n                layout,\n                entries: &[\n{entries}                ],\n            }})\n        }}\n    }}\n    impl super::BindGroupResources for Group{group}<'_> {{\n        fn create(&self, device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> wgpu::BindGroup {{\n            Group{group}::create(self, device, layout)\n        }}\n    }}\n"
+    )
 }
 
 /// `wgpu::BindingType` source of one parameter.
@@ -457,6 +506,25 @@ mod tests {
         let out = generate(&[shader("x_fragment", json)]).unwrap();
         assert!(out.contains("pub b: f32,\n        pub _pad20: [u32; 3],"));
         assert!(out.contains("size_of::<Params>() == 32"));
+    }
+
+    #[test]
+    fn group_struct_fields_by_binding_kind() {
+        let json = r#"{"parameters": [
+            {"name": "color", "binding": {"kind": "descriptorTableSlot", "index": 0},
+             "type": {"kind": "resource", "baseShape": "texture2D", "resultType": {"kind": "scalar", "scalarType": "float32"}}},
+            {"name": "linear", "binding": {"kind": "descriptorTableSlot", "index": 1}, "type": {"kind": "samplerState"}},
+            {"name": "camera", "userAttribs": [{"name": "DynamicOffset", "arguments": []}],
+             "binding": {"kind": "descriptorTableSlot", "space": 1, "index": 0},
+             "type": {"kind": "constantBuffer", "elementType": {"kind": "struct", "name": "C",
+                 "fields": [{"name": "a", "type": {"kind": "scalar", "scalarType": "float32"}, "binding": {"kind": "uniform", "offset": 0, "size": 4}}]}}}]}"#;
+        let out = generate(&[shader("x_fragment", json.to_owned())]).unwrap();
+        assert!(out.contains("pub struct Group0<'a> {\n        pub color: &'a wgpu::TextureView,\n        pub linear: &'a wgpu::Sampler,\n    }"));
+        assert!(out.contains(
+            "pub struct Group1<'a> {\n        pub camera: wgpu::BufferBinding<'a>,\n    }"
+        ));
+        assert!(out.contains("wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(self.linear) },"));
+        assert!(out.contains("label: Some(\"x_fragment_group1\")"));
     }
 
     #[test]

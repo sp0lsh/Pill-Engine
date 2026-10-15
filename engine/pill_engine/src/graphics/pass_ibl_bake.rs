@@ -227,20 +227,11 @@ impl Pass for PassIblBake {
             } else {
                 &state.source_mip_views[level - 1]
             };
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("pass_ibl_bake_downsample"),
-                layout: &state.downsample.bind_group_layouts[0],
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(input),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&state.equirect_sampler),
-                    },
-                ],
-            });
+            let bind_group = ibl_downsample_fragment::Group0 {
+                source: input,
+                source_sampler: &state.equirect_sampler,
+            }
+            .create(device, &state.downsample.bind_group_layouts[0]);
             draw_into(
                 encoder,
                 "pass_ibl_bake_downsample",
@@ -255,24 +246,12 @@ impl Pass for PassIblBake {
             .map(|level| mip_view(&frame.specular_texture, level))
             .chain([mip_view(&frame.irradiance_texture, 0)]);
         for (target, params) in targets.zip(&state.params) {
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("pass_ibl_bake"),
-                layout: &state.bake.bind_group_layouts[0],
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&state.source_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&state.equirect_sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: params.as_entire_binding(),
-                    },
-                ],
-            });
+            let bind_group = ibl_bake_fragment::Group0 {
+                source: &state.source_view,
+                source_sampler: &state.equirect_sampler,
+                params,
+            }
+            .create(device, &state.bake.bind_group_layouts[0]);
             draw_into(encoder, "pass_ibl_bake", &state.bake, &bind_group, &target);
         }
         frame.generation += 1;

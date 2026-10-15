@@ -129,26 +129,12 @@ impl Pass for PassDdgiProbes {
             .as_ref()
             .is_none_or(|(generation, _)| *generation != frame.generation)
         {
-            let group = renderer
-                .get_device()
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("pass_ddgi_probes"),
-                    layout: &pipeline.bind_group_layouts[0],
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: camera_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: frame.params.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: frame.probes.as_entire_binding(),
-                        },
-                    ],
-                });
+            let group = ddgi_probes_debug_vertex::Group0 {
+                camera: camera_buffer,
+                ddgi: &frame.params,
+                ddgi_probes: &frame.probes,
+            }
+            .create(renderer.get_device(), &pipeline.bind_group_layouts[0]);
             self.group = Some((frame.generation, group));
         }
         let (_, group) = self

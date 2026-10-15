@@ -263,34 +263,22 @@ impl ShadowCasters {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         })?;
         let device = renderer.get_device();
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some(label),
-            layout: &pipeline.bind_group_layouts[0],
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: &camera_buffer,
-                    offset: 0,
-                    size: wgpu::BufferSize::new(matrix_size),
-                }),
-            }],
-        });
-        let per_draw_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some(label),
-            layout: &pipeline.bind_group_layouts[1],
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: per_draw_buffer.as_entire_binding(),
-            }],
-        });
-        let material_array_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some(label),
-            layout: &cutout_pipeline.bind_group_layouts[3],
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: renderer.get_material_buffer().as_entire_binding(),
-            }],
-        });
+        let camera_bind_group = shadow_caster_vertex::Group0 {
+            shadow_camera: wgpu::BufferBinding {
+                buffer: &camera_buffer,
+                offset: 0,
+                size: wgpu::BufferSize::new(matrix_size),
+            },
+        }
+        .create(device, &pipeline.bind_group_layouts[0]);
+        let per_draw_bind_group = shadow_caster_vertex::Group1 {
+            per_draw_array: &per_draw_buffer,
+        }
+        .create(device, &pipeline.bind_group_layouts[1]);
+        let material_array_bind_group = shadow_caster_cutout_fragment::Group3 {
+            material_array: renderer.get_material_buffer(),
+        }
+        .create(device, &cutout_pipeline.bind_group_layouts[3]);
         Ok(Self {
             pipeline,
             two_sided_pipeline,
@@ -369,13 +357,21 @@ impl ShadowCasters {
         }
         render_pass.set_pipeline(&self.pipeline.pipeline);
         render_pass.set_bind_group(
-            0,
+            shadow_caster_vertex::SHADOW_CAMERA.group,
             &self.camera_bind_group,
             &[(map as u64 * self.camera_stride) as u32],
         );
-        render_pass.set_bind_group(1, &self.per_draw_bind_group, &[]);
+        render_pass.set_bind_group(
+            shadow_caster_vertex::PER_DRAW_ARRAY.group,
+            &self.per_draw_bind_group,
+            &[],
+        );
         // Read by the cutout pipeline only; bound once for all of its materials
-        render_pass.set_bind_group(3, &self.material_array_bind_group, &[]);
+        render_pass.set_bind_group(
+            shadow_caster_cutout_fragment::MATERIAL_ARRAY.group,
+            &self.material_array_bind_group,
+            &[],
+        );
         let end = range.end.min(casters.len()).min(self.max_instances);
         let mut first = range.start;
         // Casters are sorted by group (`Caster::group`): culled opaque, double-sided opaque, then
@@ -407,7 +403,11 @@ impl ShadowCasters {
                 if bound_cutout.is_none() {
                     render_pass.set_pipeline(&self.cutout_pipeline.pipeline);
                 }
-                render_pass.set_bind_group(2, &material.textures_bind_group, &[]);
+                render_pass.set_bind_group(
+                    shadow_caster_cutout_fragment::BASE_COLOR_TEXTURE.group,
+                    &material.textures_bind_group,
+                    &[],
+                );
                 bound_cutout = Some(material_handle);
             }
             if let Ok(mesh) = world.resources.get_resource::<RendererMesh>(&mesh_handle) {

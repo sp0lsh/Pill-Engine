@@ -2,6 +2,7 @@
 //! full-screen triangle and one color target.
 
 use crate::config::FULLSCREEN_VERTEX_SHADER;
+use crate::graphics::shader_bindings::BindGroupResources;
 use crate::graphics::{PassTextureHandle, PillRenderer, Pipeline, PipelineDesc, ShaderDesc};
 
 use pill_core::Result;
@@ -66,42 +67,28 @@ pub(crate) fn uniform_buffer<T>(renderer: &dyn PillRenderer, label: &str) -> wgp
         })
 }
 
-/// One bind group resource, in binding order.
-pub(crate) enum Binding<'a> {
-    Target(PassTextureHandle),
-    /// A texture that is not a pass target (e.g. an IBL map); its view is created only when
-    /// the bind group is (re)built.
-    Texture(PassTextureHandle),
-    /// A view the pass holds itself (e.g. the baked IBL maps).
-    View(&'a wgpu::TextureView),
-    Sampler(&'a wgpu::Sampler),
-    Buffer(&'a wgpu::Buffer),
-}
-
 /// Group 0 of one draw site, kept until a resize replaces the target views it holds. Each call
-/// site owns one and always passes the same bindings.
+/// site owns one and always passes the same resources.
 #[derive(Default)]
 pub(crate) struct CachedBindGroup {
     bind_group: Option<(u64, wgpu::BindGroup)>,
 }
 
 impl CachedBindGroup {
-    /// The cached group, rebuilt from `bindings` (binding i = bindings[i]) after a resize.
+    /// The cached group, rebuilt from `resources` after a resize.
     fn get(
         &mut self,
         renderer: &dyn PillRenderer,
-        label: &str,
         pipeline: &Pipeline,
-        bindings: &[Binding],
-    ) -> Result<&wgpu::BindGroup> {
+        resources: &dyn BindGroupResources,
+    ) -> &wgpu::BindGroup {
         let generation = renderer.target_generation();
         if !matches!(&self.bind_group, Some((built, _)) if *built == generation) {
-            self.bind_group = Some((
-                generation,
-                create_bind_group(renderer, label, pipeline, bindings)?,
-            ));
+            let bind_group =
+                resources.create(renderer.get_device(), &pipeline.bind_group_layouts[0]);
+            self.bind_group = Some((generation, bind_group));
         }
-        Ok(&self.bind_group.as_ref().expect("bind group just built").1)
+        &self.bind_group.as_ref().expect("bind group just built").1
     }
 }
 
@@ -112,7 +99,7 @@ pub(crate) fn draw_fullscreen(
     label: &str,
     pipeline: &Pipeline,
     cache: &mut CachedBindGroup,
-    bindings: &[Binding],
+    resources: &dyn BindGroupResources,
     output: &wgpu::TextureView,
 ) -> Result<()> {
     draw_fullscreen_with_load(
@@ -121,7 +108,7 @@ pub(crate) fn draw_fullscreen(
         label,
         pipeline,
         cache,
-        bindings,
+        resources,
         output,
         wgpu::LoadOp::Clear(wgpu::Color::BLACK),
     )
@@ -135,11 +122,11 @@ pub(crate) fn draw_fullscreen_with_load(
     label: &str,
     pipeline: &Pipeline,
     cache: &mut CachedBindGroup,
-    bindings: &[Binding],
+    resources: &dyn BindGroupResources,
     output: &wgpu::TextureView,
     load: wgpu::LoadOp<wgpu::Color>,
 ) -> Result<()> {
-    let bind_group = cache.get(renderer, label, pipeline, bindings)?;
+    let bind_group = cache.get(renderer, pipeline, resources);
 
     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some(label),
@@ -161,52 +148,15 @@ pub(crate) fn draw_fullscreen_with_load(
     Ok(())
 }
 
-/// Group 0 from `bindings` (binding i = bindings[i]).
-fn create_bind_group(
-    renderer: &dyn PillRenderer,
+/// View of a pass target read by a full-screen pass.
+pub(crate) fn input_view<'a>(
+    renderer: &'a dyn PillRenderer,
+    handle: PassTextureHandle,
     label: &str,
-    pipeline: &Pipeline,
-    bindings: &[Binding],
-) -> Result<wgpu::BindGroup> {
-    // Views of `Binding::Texture`s, owned here for the entries to borrow
-    let mut texture_views = Vec::with_capacity(bindings.len());
-    for binding in bindings {
-        texture_views.push(match binding {
-            Binding::Texture(handle) => Some(
-                renderer
-                    .get_texture_view(*handle)
-                    .ok_or_else(|| format!("{label}: input texture missing"))?,
-            ),
-            _ => None,
-        });
-    }
-    let mut entries = Vec::with_capacity(bindings.len());
-    for (index, (binding, texture_view)) in bindings.iter().zip(&texture_views).enumerate() {
-        let resource = match (binding, texture_view) {
-            (Binding::Target(handle), _) => wgpu::BindingResource::TextureView(
-                renderer
-                    .get_render_target_view(*handle)
-                    .ok_or_else(|| format!("{label}: input target missing"))?,
-            ),
-            (Binding::Texture(_), view) => wgpu::BindingResource::TextureView(
-                view.as_ref().expect("texture views resolved above"),
-            ),
-            (Binding::View(view), _) => wgpu::BindingResource::TextureView(view),
-            (Binding::Sampler(sampler), _) => wgpu::BindingResource::Sampler(sampler),
-            (Binding::Buffer(buffer), _) => buffer.as_entire_binding(),
-        };
-        entries.push(wgpu::BindGroupEntry {
-            binding: index as u32,
-            resource,
-        });
-    }
-    Ok(renderer
-        .get_device()
-        .create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some(label),
-            layout: &pipeline.bind_group_layouts[0],
-            entries: &entries,
-        }))
+) -> Result<&'a wgpu::TextureView> {
+    renderer
+        .get_render_target_view(handle)
+        .ok_or_else(|| format!("{label}: input target missing").into())
 }
 
 /// View of a pass output target.
