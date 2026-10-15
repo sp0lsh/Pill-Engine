@@ -10,7 +10,6 @@
 // Not implemented: near-field scatter-as-gather + Tile Max CoC, CoC pre-multiply
 //   [Gotanda09], bilateral upscale, diaphragm shape.
 
-// Mirrors DofParams in pass_depth_of_field.rs
 struct DofParams {
     float focus_point;    // focus distance in view-space units
     float focus_scale;    // CoC gain; 0.0 disables the pass

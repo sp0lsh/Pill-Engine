@@ -1,29 +1,18 @@
 use crate::config::SSR_FRAGMENT_SHADER;
 use crate::ecs::RenderStateComponent;
 use crate::graphics::fullscreen::{
-    create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, sampler_entry, target_view,
-    texture_entry, uniform_buffer, uniform_entry, Binding, CachedBindGroup,
+    create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, target_view, uniform_buffer,
+    Binding, CachedBindGroup,
 };
 use crate::graphics::ibl::IblFrame;
 use crate::graphics::projection::depth_unpack;
 use crate::graphics::renderer::camera_view_projection;
+use crate::graphics::shader_bindings::{ssr_fragment, structs::SsrParams};
 use crate::graphics::{FrameTarget, Pass, PassTextureHandle, PillRenderer, Pipeline, WorldQuery};
 
 use pill_core::Result;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-
-/// Mirrors `SsrParams` in ssr_fragment.hlsl.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct SsrParams {
-    view_projection: [[f32; 4]; 4],
-    inverse_view_projection: [[f32; 4]; 4],
-    camera: [f32; 4],
-    depth: [f32; 4],
-    march: [f32; 4],
-    screen: [f32; 4],
-}
 
 struct SsrState {
     pipeline: Pipeline,
@@ -83,15 +72,7 @@ impl Pass for PassSsr {
             renderer,
             "pass_ssr",
             SSR_FRAGMENT_SHADER,
-            vec![
-                texture_entry(0, false),
-                texture_entry(1, false),
-                texture_entry(2, false),
-                texture_entry(3, false),
-                texture_entry(4, true),
-                sampler_entry(5),
-                uniform_entry(6),
-            ],
+            ssr_fragment::layout(),
             hdr_format,
             None,
         )?;

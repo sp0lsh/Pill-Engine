@@ -6,33 +6,6 @@ use crate::graphics::{PassTextureHandle, PillRenderer, Pipeline, PipelineDesc, S
 
 use pill_core::Result;
 
-/// Sampled 2D texture; `filterable: false` for depth and 32-bit float targets read with Load.
-pub(crate) fn texture_entry(binding: u32, filterable: bool) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Texture {
-            multisampled: false,
-            view_dimension: wgpu::TextureViewDimension::D2,
-            sample_type: wgpu::TextureSampleType::Float { filterable },
-        },
-        count: None,
-    }
-}
-
-pub(crate) fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-        count: None,
-    }
-}
-
-pub(crate) fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    uniform_entry_for(binding, wgpu::ShaderStages::FRAGMENT)
-}
-
 /// Uniform buffer entry visible to `visibility`.
 pub(crate) fn uniform_entry_for(
     binding: u32,
@@ -50,13 +23,13 @@ pub(crate) fn uniform_entry_for(
     }
 }
 
-/// Full-screen pipeline: `fragment_shader` (`fs_main`) with bind group 0 = `entries`, writing
-/// one `format` target with `blend` (None = replace).
+/// Full-screen pipeline: `fragment_shader` (`fs_main`) with its generated `layout` (group 0 only),
+/// writing one `format` target with `blend` (None = replace).
 pub(crate) fn create_fullscreen_pipeline(
     renderer: &mut dyn PillRenderer,
     label: &str,
     fragment_shader: &str,
-    entries: Vec<wgpu::BindGroupLayoutEntry>,
+    layout: Vec<Vec<wgpu::BindGroupLayoutEntry>>,
     format: wgpu::TextureFormat,
     blend: Option<wgpu::BlendState>,
 ) -> Result<Pipeline> {
@@ -72,7 +45,7 @@ pub(crate) fn create_fullscreen_pipeline(
         },
         fragment_constants: &[],
         vertex_buffers: &[],
-        bind_groups: vec![entries],
+        bind_groups: layout,
         targets: &[Some(wgpu::ColorTargetState {
             format,
             blend,

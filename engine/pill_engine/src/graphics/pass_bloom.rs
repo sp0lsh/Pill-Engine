@@ -5,8 +5,11 @@ use crate::config::{
 use crate::ecs::RenderStateComponent;
 use crate::graphics::fullscreen::{
     create_fullscreen_pipeline, draw_fullscreen, draw_fullscreen_with_load, linear_clamp_sampler,
-    sampler_entry, target_view, texture_entry, uniform_buffer, uniform_entry, Binding,
-    CachedBindGroup,
+    target_view, uniform_buffer, Binding, CachedBindGroup,
+};
+use crate::graphics::shader_bindings::{
+    bloom_composite_fragment, bloom_downsample_fragment, bloom_upsample_fragment,
+    structs::{BloomCompositeParams, BloomDownsampleParams, BloomUpsampleParams},
 };
 use crate::graphics::{
     FrameTarget, Pass, PassTextureHandle, PillRenderer, Pipeline, RendererTargetDesc, TargetSize,
@@ -14,30 +17,6 @@ use crate::graphics::{
 };
 
 use pill_core::Result;
-
-/// Mirrors `BloomDownsampleParams` in bloom_downsample_fragment.hlsl.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct DownsampleParams {
-    karis_average: u32,
-    _padding: [f32; 3],
-}
-
-/// Mirrors `BloomUpsampleParams` in bloom_upsample_fragment.hlsl.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct UpsampleParams {
-    radius: [f32; 2],
-    _padding: [f32; 2],
-}
-
-/// Mirrors `BloomCompositeParams` in bloom_composite_fragment.hlsl.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct CompositeParams {
-    strength: f32,
-    _padding: [f32; 3],
-}
 
 struct BloomState {
     downsample: Pipeline,
@@ -94,12 +73,11 @@ impl Pass for PassBloom {
                 size: TargetSize::SurfaceDivisor(2 << level),
             })?);
         }
-        let single_input = || vec![texture_entry(0, true), sampler_entry(1), uniform_entry(2)];
         let downsample = create_fullscreen_pipeline(
             renderer,
             "pass_bloom_downsample",
             BLOOM_DOWNSAMPLE_FRAGMENT_SHADER,
-            single_input(),
+            bloom_downsample_fragment::layout(),
             hdr_format,
             None,
         )?;
@@ -107,7 +85,7 @@ impl Pass for PassBloom {
             renderer,
             "pass_bloom_upsample",
             BLOOM_UPSAMPLE_FRAGMENT_SHADER,
-            single_input(),
+            bloom_upsample_fragment::layout(),
             hdr_format,
             Some(wgpu::BlendState {
                 color: wgpu::BlendComponent {
@@ -122,26 +100,21 @@ impl Pass for PassBloom {
             renderer,
             "pass_bloom_composite",
             BLOOM_COMPOSITE_FRAGMENT_SHADER,
-            vec![
-                texture_entry(0, true),
-                texture_entry(1, true),
-                sampler_entry(2),
-                uniform_entry(3),
-            ],
+            bloom_composite_fragment::layout(),
             hdr_format,
             None,
         )?;
 
-        let karis_params = uniform_buffer::<DownsampleParams>(renderer, "pass_bloom_karis");
-        let plain_params = uniform_buffer::<DownsampleParams>(renderer, "pass_bloom_plain");
+        let karis_params = uniform_buffer::<BloomDownsampleParams>(renderer, "pass_bloom_karis");
+        let plain_params = uniform_buffer::<BloomDownsampleParams>(renderer, "pass_bloom_plain");
         let queue = renderer.get_queue();
         for (buffer, karis_average) in [(&karis_params, 1), (&plain_params, 0)] {
             queue.write_buffer(
                 buffer,
                 0,
-                bytemuck::bytes_of(&DownsampleParams {
+                bytemuck::bytes_of(&BloomDownsampleParams {
                     karis_average,
-                    _padding: [0.0; 3],
+                    ..bytemuck::Zeroable::zeroed()
                 }),
             );
         }
@@ -153,8 +126,11 @@ impl Pass for PassBloom {
             sampler: linear_clamp_sampler(renderer),
             karis_params,
             plain_params,
-            upsample_params: uniform_buffer::<UpsampleParams>(renderer, "pass_bloom_upsample"),
-            composite_params: uniform_buffer::<CompositeParams>(renderer, "pass_bloom_composite"),
+            upsample_params: uniform_buffer::<BloomUpsampleParams>(renderer, "pass_bloom_upsample"),
+            composite_params: uniform_buffer::<BloomCompositeParams>(
+                renderer,
+                "pass_bloom_composite",
+            ),
             downsample_bind_groups: mips.iter().map(|_| CachedBindGroup::default()).collect(),
             upsample_bind_groups: mips.iter().map(|_| CachedBindGroup::default()).collect(),
             composite_bind_group: CachedBindGroup::default(),
@@ -181,20 +157,20 @@ impl Pass for PassBloom {
         queue.write_buffer(
             &state.upsample_params,
             0,
-            bytemuck::bytes_of(&UpsampleParams {
+            bytemuck::bytes_of(&BloomUpsampleParams {
                 radius: [
                     render_state.bloom.radius,
                     render_state.bloom.radius * aspect,
                 ],
-                _padding: [0.0; 2],
+                ..bytemuck::Zeroable::zeroed()
             }),
         );
         queue.write_buffer(
             &state.composite_params,
             0,
-            bytemuck::bytes_of(&CompositeParams {
+            bytemuck::bytes_of(&BloomCompositeParams {
                 strength: render_state.bloom.strength,
-                _padding: [0.0; 3],
+                ..bytemuck::Zeroable::zeroed()
             }),
         );
 

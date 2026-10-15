@@ -7,7 +7,8 @@
 //
 // Outputs the AO visibility (R8); the bilateral passes read view depth from the depth chain.
 
-// Mirrors SsaoParams in pass_ssao.rs
+#include "include/bindings.hlsl"
+
 struct SsaoParams {
     float tan_half_x;     // tan(fov/2) * aspect
     float tan_half_y;     // tan(fov/2)
@@ -20,10 +21,10 @@ struct SsaoParams {
 };
 
 // View-space depth at ½, ¼, ⅛ and 1/16 resolution
-[[vk::binding(0, 0)]] Texture2D<float> t_depth0;
-[[vk::binding(1, 0)]] Texture2D<float> t_depth1;
-[[vk::binding(2, 0)]] Texture2D<float> t_depth2;
-[[vk::binding(3, 0)]] Texture2D<float> t_depth3;
+[[vk::binding(0, 0)]] [Unfilterable] Texture2D<float> t_depth0;
+[[vk::binding(1, 0)]] [Unfilterable] Texture2D<float> t_depth1;
+[[vk::binding(2, 0)]] [Unfilterable] Texture2D<float> t_depth2;
+[[vk::binding(3, 0)]] [Unfilterable] Texture2D<float> t_depth3;
 [[vk::binding(4, 0)]] ConstantBuffer<SsaoParams> params;
 
 static const float PI      = 3.14159265;

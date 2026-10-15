@@ -1,7 +1,6 @@
 // [Sousa13] §Final Composite: vertical half of the near blur, then near-over-far packed into one
 // lerp factor (alpha), so PassMotionBlur composites both layers with the full-res image for free.
 
-// Mirrors DofNearParams in pass_depth_of_field.rs
 struct DofNearParams {
     float focus_point;
     float focus_scale;

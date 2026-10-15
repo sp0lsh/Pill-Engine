@@ -1,9 +1,10 @@
 use crate::config::LENS_FRAGMENT_SHADER;
 use crate::ecs::RenderStateComponent;
 use crate::graphics::fullscreen::{
-    create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, sampler_entry,
-    texture_entry, uniform_buffer, uniform_entry, Binding, CachedBindGroup,
+    create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, uniform_buffer, Binding,
+    CachedBindGroup,
 };
+use crate::graphics::shader_bindings::{lens_fragment, structs::LensParams};
 use crate::graphics::{
     FrameTarget, Pass, PassTextureHandle, PillRenderer, Pipeline, TextureData, WorldQuery,
 };
@@ -11,22 +12,6 @@ use crate::graphics::{
 use pill_core::Result;
 
 const GRAIN_SIZE: usize = 256;
-
-/// Mirrors `LensParams` in lens_fragment.hlsl.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct LensParams {
-    ca_scale: f32,
-    distortion: f32,
-    vignette: f32,
-    grain_strength: f32,
-    grain_offset_x: i32,
-    grain_offset_y: i32,
-    grain_pixel_scale: f32,
-    aspect_yx: f32,
-    grade_gamma: [f32; 4],
-    grade_params: [f32; 4],
-}
 
 struct LensState {
     pipeline: Pipeline,
@@ -128,13 +113,7 @@ impl Pass for PassLens {
             renderer,
             "pass_lens",
             LENS_FRAGMENT_SHADER,
-            vec![
-                texture_entry(0, true),
-                sampler_entry(1),
-                uniform_entry(2),
-                texture_entry(3, true),
-                sampler_entry(4),
-            ],
+            lens_fragment::layout(),
             output_format,
             None,
         )?;

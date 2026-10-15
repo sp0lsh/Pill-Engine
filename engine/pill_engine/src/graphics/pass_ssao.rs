@@ -4,10 +4,14 @@ use crate::config::{
 };
 use crate::ecs::RenderStateComponent;
 use crate::graphics::fullscreen::{
-    create_fullscreen_pipeline, draw_fullscreen, target_view, texture_entry, uniform_buffer,
-    uniform_entry, Binding, CachedBindGroup,
+    create_fullscreen_pipeline, draw_fullscreen, target_view, uniform_buffer, Binding,
+    CachedBindGroup,
 };
 use crate::graphics::projection::depth_unpack;
+use crate::graphics::shader_bindings::{
+    ssao_apply_fragment, ssao_blur_fragment, ssao_depth_downsample_fragment, ssao_fragment,
+    structs::{SsaoApplyParams, SsaoBlurParams, SsaoDownsampleParams, SsaoParams},
+};
 use crate::graphics::{
     FrameTarget, Pass, PassTextureHandle, PillRenderer, Pipeline, RendererTargetDesc, TargetSize,
     WorldQuery,
@@ -30,48 +34,6 @@ const BLUR_SIGMA_PX: f32 = 2.0;
 /// Blur depth sigma as a fraction of view depth (an absolute threshold suits only one distance).
 const BLUR_SIGMA_DEPTH_RELATIVE: f32 = 0.02;
 const UPSAMPLE_SIGMA_DEPTH_RELATIVE: f32 = 0.01;
-
-/// Mirrors `SsaoParams` in ssao_fragment.hlsl.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct SsaoParams {
-    tan_half_x: f32,
-    tan_half_y: f32,
-    radius: f32,
-    intensity: f32,
-    power: f32,
-    _padding: [f32; 3],
-}
-
-/// Mirrors `SsaoDownsampleParams` in ssao_depth_downsample_fragment.hlsl.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct SsaoDownsampleParams {
-    depth_mul: f32,
-    depth_add: f32,
-    /// 1: the source is the scene depth buffer.
-    linearize: f32,
-    _padding: f32,
-}
-
-/// Mirrors `SsaoBlurParams` in ssao_blur_fragment.hlsl.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct SsaoBlurParams {
-    blur_dir: [f32; 2],
-    sigma_px: f32,
-    sigma_depth_relative: f32,
-}
-
-/// Mirrors `SsaoApplyParams` in ssao_apply_fragment.hlsl.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct SsaoApplyParams {
-    strength: f32,
-    sigma_depth_relative: f32,
-    depth_mul: f32,
-    depth_add: f32,
-}
 
 struct SsaoState {
     downsample: Pipeline,
@@ -167,7 +129,7 @@ impl Pass for PassSsao {
             renderer,
             "pass_ssao_depth_downsample",
             SSAO_DEPTH_DOWNSAMPLE_FRAGMENT_SHADER,
-            vec![texture_entry(0, false), uniform_entry(1)],
+            ssao_depth_downsample_fragment::layout(),
             DEPTH_CHAIN_FORMAT,
             None,
         )?;
@@ -175,13 +137,7 @@ impl Pass for PassSsao {
             renderer,
             "pass_ssao_occlusion",
             SSAO_FRAGMENT_SHADER,
-            vec![
-                texture_entry(0, false),
-                texture_entry(1, false),
-                texture_entry(2, false),
-                texture_entry(3, false),
-                uniform_entry(4),
-            ],
+            ssao_fragment::layout(),
             SSAO_TARGET_FORMAT,
             None,
         )?;
@@ -189,11 +145,7 @@ impl Pass for PassSsao {
             renderer,
             "pass_ssao_blur",
             SSAO_BLUR_FRAGMENT_SHADER,
-            vec![
-                texture_entry(0, false),
-                texture_entry(1, false),
-                uniform_entry(2),
-            ],
+            ssao_blur_fragment::layout(),
             SSAO_TARGET_FORMAT,
             None,
         )?;
@@ -201,14 +153,7 @@ impl Pass for PassSsao {
             renderer,
             "pass_ssao_apply",
             SSAO_APPLY_FRAGMENT_SHADER,
-            vec![
-                texture_entry(0, false),
-                texture_entry(1, false),
-                texture_entry(2, false),
-                texture_entry(3, false),
-                texture_entry(4, false),
-                uniform_entry(5),
-            ],
+            ssao_apply_fragment::layout(),
             hdr_format,
             None,
         )?;
@@ -225,7 +170,7 @@ impl Pass for PassSsao {
                 bytemuck::bytes_of(&SsaoBlurParams {
                     blur_dir,
                     sigma_px: BLUR_SIGMA_PX,
-                    sigma_depth_relative: BLUR_SIGMA_DEPTH_RELATIVE,
+                    sigma_depth_rel: BLUR_SIGMA_DEPTH_RELATIVE,
                 }),
             );
         }
@@ -283,7 +228,7 @@ impl Pass for PassSsao {
                 radius: settings.radius.max(1e-3),
                 intensity: settings.intensity,
                 power: settings.power,
-                _padding: [0.0; 3],
+                ..bytemuck::Zeroable::zeroed()
             }),
         );
         for (buffer, linearize) in [
@@ -297,7 +242,7 @@ impl Pass for PassSsao {
                     depth_mul,
                     depth_add,
                     linearize,
-                    _padding: 0.0,
+                    ..bytemuck::Zeroable::zeroed()
                 }),
             );
         }
@@ -306,7 +251,7 @@ impl Pass for PassSsao {
             0,
             bytemuck::bytes_of(&SsaoApplyParams {
                 strength: settings.strength.clamp(0.0, 1.0),
-                sigma_depth_relative: UPSAMPLE_SIGMA_DEPTH_RELATIVE,
+                sigma_depth_rel: UPSAMPLE_SIGMA_DEPTH_RELATIVE,
                 depth_mul,
                 depth_add,
             }),

@@ -1,11 +1,12 @@
 use crate::config::{IBL_BAKE_FRAGMENT_SHADER, IBL_DOWNSAMPLE_FRAGMENT_SHADER};
 use crate::ecs::RenderStateComponent;
-use crate::graphics::fullscreen::{
-    create_fullscreen_pipeline, sampler_entry, texture_entry, uniform_buffer, uniform_entry,
-};
+use crate::graphics::fullscreen::{create_fullscreen_pipeline, uniform_buffer};
 use crate::graphics::ibl::{
     IblFrame, IBL_FORMAT, IBL_IRRADIANCE_SIZE, IBL_SPECULAR_MIPS, IBL_SPECULAR_MIP_ROUGHNESS,
     IBL_SPECULAR_SIZE,
+};
+use crate::graphics::shader_bindings::{
+    ibl_bake_fragment, ibl_downsample_fragment, structs::IblBakeParams,
 };
 use crate::graphics::{FrameTarget, Pass, PassTextureHandle, PillRenderer, Pipeline, WorldQuery};
 
@@ -22,19 +23,6 @@ const SOURCE_MIPS: u32 = 10;
 const SPECULAR_SAMPLES: u32 = 64;
 /// Cosine samples per irradiance texel.
 const IRRADIANCE_SAMPLES: u32 = 256;
-
-/// Mirrors `IblBakeParams` in ibl_bake_fragment.hlsl.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct IblBakeParams {
-    size: f32,
-    roughness: f32,
-    mode: f32,
-    sample_count: f32,
-    source_size: [f32; 2],
-    source_max_lod: f32,
-    _padding: f32,
-}
 
 struct IblBakeState {
     downsample: Pipeline,
@@ -120,7 +108,7 @@ impl Pass for PassIblBake {
             renderer,
             "pass_ibl_bake_downsample",
             IBL_DOWNSAMPLE_FRAGMENT_SHADER,
-            vec![texture_entry(0, true), sampler_entry(1)],
+            ibl_downsample_fragment::layout(),
             IBL_FORMAT,
             None,
         )?;
@@ -128,7 +116,7 @@ impl Pass for PassIblBake {
             renderer,
             "pass_ibl_bake",
             IBL_BAKE_FRAGMENT_SHADER,
-            vec![texture_entry(0, true), sampler_entry(1), uniform_entry(2)],
+            ibl_bake_fragment::layout(),
             IBL_FORMAT,
             None,
         )?;

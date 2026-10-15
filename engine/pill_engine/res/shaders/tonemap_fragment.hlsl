@@ -1,7 +1,7 @@
 [[vk::binding(0, 0)]] Texture2D    hdr_texture;
 [[vk::binding(1, 0)]] SamplerState hdr_sampler;
 
-// Mirrors TonemapParams in pass_tonemap.rs (RenderStateComponent::tonemap)
+// From RenderStateComponent::tonemap
 struct TonemapParams {
     uint  mode;                  // 0 = pass-through, 1 = extended Reinhard, 2 = Lottes
     float inverse_white_squared; // Reinhard: 1/W², 0 for an infinite white point (plain c/(1 + c))

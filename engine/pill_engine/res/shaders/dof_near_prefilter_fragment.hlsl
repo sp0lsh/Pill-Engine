@@ -1,6 +1,5 @@
 // [Sousa13] §Near Field Processing: premultiply the near layer by CoC so only near fragments blur — cheap partial-occlusion approximation.
 
-// Mirrors DofNearParams in pass_depth_of_field.rs
 struct DofNearParams {
     float focus_point;
     float focus_scale;

@@ -1,22 +1,12 @@
 use crate::config::{FXAA_FRAGMENT_SHADER, LDR_TARGET_FORMAT};
 use crate::graphics::fullscreen::{
-    create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, sampler_entry, target_view,
-    texture_entry, uniform_buffer, uniform_entry, Binding, CachedBindGroup,
+    create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, target_view, uniform_buffer,
+    Binding, CachedBindGroup,
 };
+use crate::graphics::shader_bindings::{fxaa_fragment, structs::FxaaParams};
 use crate::graphics::{FrameTarget, Pass, PassTextureHandle, PillRenderer, Pipeline, WorldQuery};
 
 use pill_core::Result;
-
-/// Mirrors `FxaaParams` in fxaa_fragment.hlsl.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct FxaaParams {
-    reciprocal_frame: [f32; 2],
-    subpixel: f32,
-    edge_threshold: f32,
-    edge_threshold_min: f32,
-    _padding: [f32; 3],
-}
 
 struct FxaaState {
     pipeline: Pipeline,
@@ -63,7 +53,7 @@ impl Pass for PassFxaa {
             renderer,
             "pass_fxaa",
             FXAA_FRAGMENT_SHADER,
-            vec![texture_entry(0, true), sampler_entry(1), uniform_entry(2)],
+            fxaa_fragment::layout(),
             LDR_TARGET_FORMAT,
             None,
         )?;
@@ -89,11 +79,11 @@ impl Pass for PassFxaa {
             .expect("PassFxaa: state not initialized — call init() before draw()");
         let (width, height) = renderer.get_render_size();
         let params = FxaaParams {
-            reciprocal_frame: [1.0 / width.max(1) as f32, 1.0 / height.max(1) as f32],
-            subpixel: self.subpixel,
+            rcp_frame: [1.0 / width.max(1) as f32, 1.0 / height.max(1) as f32],
+            subpix: self.subpixel,
             edge_threshold: self.edge_threshold,
             edge_threshold_min: self.edge_threshold_min,
-            _padding: [0.0; 3],
+            ..bytemuck::Zeroable::zeroed()
         };
         renderer
             .get_queue()

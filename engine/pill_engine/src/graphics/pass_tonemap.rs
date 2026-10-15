@@ -1,9 +1,10 @@
 use crate::config::{LDR_TARGET_FORMAT, TONEMAP_FRAGMENT_SHADER};
 use crate::ecs::{RenderStateComponent, Tonemap};
 use crate::graphics::fullscreen::{
-    create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, sampler_entry, target_view,
-    texture_entry, uniform_buffer, uniform_entry, Binding, CachedBindGroup,
+    create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, target_view, uniform_buffer,
+    Binding, CachedBindGroup,
 };
+use crate::graphics::shader_bindings::{structs::TonemapParams, tonemap_fragment};
 use crate::graphics::{FrameTarget, Pass, PassTextureHandle, PillRenderer, Pipeline, WorldQuery};
 
 use pill_core::Result;
@@ -22,27 +23,14 @@ struct TonemapState {
     bind_group: CachedBindGroup,
 }
 
-/// Mirrors `TonemapParams` in tonemap_fragment.hlsl.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable, Default)]
-struct TonemapParams {
-    mode: u32,                  // 0 = pass-through, 1 = Reinhard, 2 = Lottes
-    inverse_white_squared: f32, // Reinhard: 1/W², 0 for an infinite white point
-    contrast: f32,              // Lottes a
-    shoulder: f32,              // Lottes d
-    b: f32,                     // Lottes b, c (solved from the art parameters)
-    c: f32,
-    _padding: [f32; 2],
-}
-
 impl TonemapParams {
     fn from(tonemap: Tonemap) -> Self {
         match tonemap {
-            Tonemap::None => Self::default(),
+            Tonemap::None => bytemuck::Zeroable::zeroed(),
             Tonemap::Reinhard { white_point } => Self {
                 mode: 1,
                 inverse_white_squared: 1.0 / (white_point * white_point),
-                ..Self::default()
+                ..bytemuck::Zeroable::zeroed()
             },
             Tonemap::Lottes {
                 contrast,
@@ -58,7 +46,7 @@ impl TonemapParams {
                     shoulder,
                     b,
                     c,
-                    ..Self::default()
+                    ..bytemuck::Zeroable::zeroed()
                 }
             }
         }
@@ -128,7 +116,7 @@ impl Pass for PassTonemap {
             renderer,
             "pass_tonemap",
             TONEMAP_FRAGMENT_SHADER,
-            vec![texture_entry(0, true), sampler_entry(1), uniform_entry(2)],
+            tonemap_fragment::layout(),
             output_format,
             None,
         )?;

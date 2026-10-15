@@ -1,12 +1,14 @@
 // Depth buffer → view-space distance (R16Float), for the depth of field passes.
 
+#include "include/bindings.hlsl"
+
 struct DepthUnpack {
     float depth_mul; // distance = depth_mul / (depth_add - depth)
     float depth_add;
     float2 _padding;
 };
 
-[[vk::binding(0, 0)]] Texture2D<float> depth_texture;
+[[vk::binding(0, 0)]] [Unfilterable] Texture2D<float> depth_texture;
 [[vk::binding(1, 0)]] ConstantBuffer<DepthUnpack> params;
 
 [shader("fragment")]

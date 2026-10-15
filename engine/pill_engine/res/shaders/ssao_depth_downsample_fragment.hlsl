@@ -3,7 +3,8 @@
 // wall texel at an edge and moves occlusion, an average invents a surface that exists nowhere.
 // The first level reads the Depth32Float scene depth and linearizes it.
 
-// Mirrors SsaoDownsampleParams in pass_ssao.rs
+#include "include/bindings.hlsl"
+
 struct SsaoDownsampleParams {
     float depth_mul;  // view distance = depth_mul / (depth_add - depth)
     float depth_add;
@@ -11,7 +12,7 @@ struct SsaoDownsampleParams {
     float _pad;
 };
 
-[[vk::binding(0, 0)]] Texture2D<float> t_source;
+[[vk::binding(0, 0)]] [Unfilterable] Texture2D<float> t_source;
 [[vk::binding(1, 0)]] ConstantBuffer<SsaoDownsampleParams> params;
 
 float source_depth(int2 texel, int2 max_texel) {

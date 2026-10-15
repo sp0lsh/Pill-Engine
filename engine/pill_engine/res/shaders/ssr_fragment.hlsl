@@ -10,8 +10,8 @@
 // opaque pass left out of `color` (pbr_opaque_fragment.hlsl).
 #include "include/octahedral.hlsl"
 #include "include/oct_ibl.hlsl"
+#include "include/bindings.hlsl"
 
-// Mirrors SsrParams in pass_ssr.rs
 struct SsrParams {
     column_major float4x4 view_projection;
     column_major float4x4 inverse_view_projection;
@@ -21,10 +21,10 @@ struct SsrParams {
     float4 screen;  // x = edge fade (fraction of the screen)
 };
 
-[[vk::binding(0, 0)]] Texture2D<float4>           t_color;     // opaque scene, specular IBL left out
-[[vk::binding(1, 0)]] Texture2D<float>            t_depth;     // Depth32Float
-[[vk::binding(2, 0)]] Texture2D<float4>           t_surface;   // rgb = specular weight, a = roughness
-[[vk::binding(3, 0)]] Texture2D<float2>           t_normal;    // octahedral normal
+[[vk::binding(0, 0)]] [Unfilterable] Texture2D<float4>           t_color;     // opaque scene, specular IBL left out
+[[vk::binding(1, 0)]] [Unfilterable] Texture2D<float>            t_depth;     // Depth32Float
+[[vk::binding(2, 0)]] [Unfilterable] Texture2D<float4>           t_surface;   // rgb = specular weight, a = roughness
+[[vk::binding(3, 0)]] [Unfilterable] Texture2D<float2>           t_normal;    // octahedral normal
 [[vk::binding(4, 0)]] Texture2D<float4>           t_prefilter; // specular IBL (octahedral, mips by roughness)
 [[vk::binding(5, 0)]] SamplerState                s_prefilter;
 [[vk::binding(6, 0)]] ConstantBuffer<SsrParams>   params;

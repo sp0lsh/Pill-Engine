@@ -5,15 +5,16 @@
 // noise, while at range it accepts across genuine silhouettes. Each tap is weighted on its
 // residual against the plane extrapolated from the two immediate neighbours.
 
-// Mirrors SsaoBlurParams in pass_ssao.rs
+#include "include/bindings.hlsl"
+
 struct SsaoBlurParams {
     float2 blur_dir;        // (1,0) horizontal, (0,1) vertical
     float  sigma_px;        // spatial sigma, half-res pixels
     float  sigma_depth_rel; // depth sigma as a fraction of view depth
 };
 
-[[vk::binding(0, 0)]] Texture2D<float4> t_ssao;   // half-res AO (r)
-[[vk::binding(1, 0)]] Texture2D<float>  t_depth;  // half-res view depth (depth chain level 0)
+[[vk::binding(0, 0)]] [Unfilterable] Texture2D<float4> t_ssao;   // half-res AO (r)
+[[vk::binding(1, 0)]] [Unfilterable] Texture2D<float>  t_depth;  // half-res view depth (depth chain level 0)
 [[vk::binding(2, 0)]] ConstantBuffer<SsaoBlurParams> params;
 
 static const int TAP_HALF = 4;   // 9 taps, matching the 4x4 noise cell the AO pass writes

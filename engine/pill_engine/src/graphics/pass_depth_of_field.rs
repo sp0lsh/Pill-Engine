@@ -5,10 +5,15 @@ use crate::config::{
 };
 use crate::ecs::RenderStateComponent;
 use crate::graphics::fullscreen::{
-    create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, sampler_entry, target_view,
-    texture_entry, uniform_buffer, uniform_entry, Binding, CachedBindGroup,
+    create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, target_view, uniform_buffer,
+    Binding, CachedBindGroup,
 };
 use crate::graphics::projection::depth_unpack;
+use crate::graphics::shader_bindings::{
+    dof_bokeh_fragment, dof_downsample_fragment, dof_near_blur_fragment,
+    dof_near_composite_fragment, dof_near_prefilter_fragment, linearize_depth_fragment,
+    structs::{DepthUnpack, DofNearParams, DofParams},
+};
 use crate::graphics::{
     FrameTarget, Pass, PassTextureHandle, PillRenderer, Pipeline, RendererTargetDesc, TargetSize,
     WorldQuery,
@@ -22,38 +27,6 @@ const LINEAR_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
 const NEAR_SIGMA_PX: f32 = 2.7;
 /// Past sigma 4 the 25 taps leave gaps and thin near features alias through.
 const NEAR_SIGMA_MAX_PX: f32 = 4.0;
-
-/// Mirrors `DepthUnpack` in linearize_depth_fragment.hlsl.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct DepthUnpack {
-    depth_mul: f32,
-    depth_add: f32,
-    _padding: [f32; 2],
-}
-
-/// Mirrors `DofParams` in dof_bokeh_fragment.hlsl.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct DofParams {
-    focus_point: f32,
-    focus_scale: f32,
-    squeeze_x: f32,
-    _padding: f32,
-}
-
-/// Mirrors `DofNearParams` in the dof_near_*.hlsl shaders.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct DofNearParams {
-    focus_point: f32,
-    focus_scale: f32,
-    near_blur_scale: f32,
-    near_cut: f32,
-    near_sigma_px: f32,
-    _padding: f32,
-    blur_dir: [f32; 2],
-}
 
 struct Stage {
     pipeline: Pipeline,
@@ -121,11 +94,11 @@ fn stage<T>(
     renderer: &mut dyn PillRenderer,
     label: &str,
     shader: &str,
-    entries: Vec<wgpu::BindGroupLayoutEntry>,
+    layout: Vec<Vec<wgpu::BindGroupLayoutEntry>>,
     format: wgpu::TextureFormat,
 ) -> Result<Stage> {
     Ok(Stage {
-        pipeline: create_fullscreen_pipeline(renderer, label, shader, entries, format, None)?,
+        pipeline: create_fullscreen_pipeline(renderer, label, shader, layout, format, None)?,
         params: uniform_buffer::<T>(renderer, label),
     })
 }
@@ -146,14 +119,14 @@ impl Pass for PassDepthOfField {
             renderer,
             "pass_dof_linearize_depth",
             LINEARIZE_DEPTH_FRAGMENT_SHADER,
-            vec![texture_entry(0, false), uniform_entry(1)],
+            linearize_depth_fragment::layout(),
             LINEAR_DEPTH_FORMAT,
         )?;
         let downsample = create_fullscreen_pipeline(
             renderer,
             "pass_dof_downsample",
             DOF_DOWNSAMPLE_FRAGMENT_SHADER,
-            vec![texture_entry(0, true)],
+            dof_downsample_fragment::layout(),
             DOF_TARGET_FORMAT,
             None,
         )?;
@@ -161,42 +134,28 @@ impl Pass for PassDepthOfField {
             renderer,
             "pass_dof_bokeh",
             DOF_BOKEH_FRAGMENT_SHADER,
-            vec![
-                texture_entry(0, true),
-                texture_entry(1, true),
-                uniform_entry(2),
-                sampler_entry(3),
-            ],
+            dof_bokeh_fragment::layout(),
             DOF_TARGET_FORMAT,
         )?;
         let near_prefilter = stage::<DofNearParams>(
             renderer,
             "pass_dof_near_prefilter",
             DOF_NEAR_PREFILTER_FRAGMENT_SHADER,
-            vec![
-                texture_entry(0, true),
-                texture_entry(1, true),
-                uniform_entry(2),
-            ],
+            dof_near_prefilter_fragment::layout(),
             DOF_TARGET_FORMAT,
         )?;
         let near_blur = stage::<DofNearParams>(
             renderer,
             "pass_dof_near_blur",
             DOF_NEAR_BLUR_FRAGMENT_SHADER,
-            vec![texture_entry(0, true), uniform_entry(1), sampler_entry(2)],
+            dof_near_blur_fragment::layout(),
             DOF_TARGET_FORMAT,
         )?;
         let near_composite = stage::<DofNearParams>(
             renderer,
             "pass_dof_near_composite",
             DOF_NEAR_COMPOSITE_FRAGMENT_SHADER,
-            vec![
-                texture_entry(0, true),
-                texture_entry(1, true),
-                uniform_entry(2),
-                sampler_entry(3),
-            ],
+            dof_near_composite_fragment::layout(),
             DOF_TARGET_FORMAT,
         )?;
 

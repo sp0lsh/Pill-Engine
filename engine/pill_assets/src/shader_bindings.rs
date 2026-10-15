@@ -167,7 +167,11 @@ fn binding_type(
         Some("constantBuffer") => {
             let element = &ty["elementType"];
             if element["kind"] == "struct" {
-                type_layout(stem, element, structs)?;
+                // WGSL rounds a uniform struct up to 16-byte alignment; the binding size says so
+                let binding_size = ty["elementVarLayout"]["binding"]["size"]
+                    .as_u64()
+                    .unwrap_or(0);
+                struct_layout(stem, element, binding_size as u32, structs)?;
             }
             format!(
                 "wgpu::BindingType::Buffer {{ ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: {}, min_binding_size: None }}",
@@ -299,31 +303,40 @@ fn type_layout(stem: &str, ty: &Value, structs: &mut Structs) -> Result<TypeLayo
                 size: stride * count,
             }
         }
-        Some("struct") => {
-            let name = ty["name"].as_str().context("struct without name")?;
-            let def = struct_def(stem, ty, structs)?;
-            let layout = TypeLayout {
-                rust_type: name.to_owned(),
-                align: def.align,
-                size: def.size,
-            };
-            match structs.get(name) {
-                Some((existing, first)) if *existing != def => {
-                    bail!("struct {name} differs between {first} and {stem}")
-                }
-                Some(_) => {}
-                None => {
-                    structs.insert(name.to_owned(), (def, stem.to_owned()));
-                }
-            }
-            layout
-        }
+        Some("struct") => struct_layout(stem, ty, 0, structs)?,
         other => bail!("unsupported type kind {other:?}"),
     })
 }
 
-/// Fields of a reflected struct in offset order, with `_pad<offset>` fields over the gaps.
-fn struct_def(stem: &str, ty: &Value, structs: &mut Structs) -> Result<StructDef> {
+/// `type_layout` of struct `ty`, at least `min_size` bytes, added to `structs`.
+fn struct_layout(
+    stem: &str,
+    ty: &Value,
+    min_size: u32,
+    structs: &mut Structs,
+) -> Result<TypeLayout> {
+    let name = ty["name"].as_str().context("struct without name")?;
+    let def = struct_def(stem, ty, min_size, structs)?;
+    let layout = TypeLayout {
+        rust_type: name.to_owned(),
+        align: def.align,
+        size: def.size,
+    };
+    match structs.get(name) {
+        Some((existing, first)) if *existing != def => {
+            bail!("struct {name} differs between {first} and {stem}")
+        }
+        Some(_) => {}
+        None => {
+            structs.insert(name.to_owned(), (def, stem.to_owned()));
+        }
+    }
+    Ok(layout)
+}
+
+/// Fields of a reflected struct in offset order, with `_pad<offset>` fields over the gaps and up
+/// to `min_size`.
+fn struct_def(stem: &str, ty: &Value, min_size: u32, structs: &mut Structs) -> Result<StructDef> {
     let mut members = Vec::new();
     for field in ty["fields"].as_array().context("struct without fields")? {
         let name = field["name"].as_str().context("field without name")?;
@@ -345,7 +358,7 @@ fn struct_def(stem: &str, ty: &Value, structs: &mut Structs) -> Result<StructDef
         .map(|(offset, _, layout)| offset + layout.size)
         .max()
         .unwrap_or(0);
-    let size = end.div_ceil(align) * align;
+    let size = (end.div_ceil(align) * align).max(min_size);
 
     let mut fields = Vec::new();
     let mut cursor = 0;
@@ -432,6 +445,18 @@ mod tests {
         let out = generate(&[shader("x_fragment", json)]).unwrap();
         assert!(out.contains("pub a: u32,\n        pub _pad4: [u32; 2],\n        pub b: f32,"));
         assert!(out.contains("size_of::<Params>() == 16"));
+    }
+
+    #[test]
+    fn uniform_binding_size_32_over_20_byte_struct_pads_to_32() {
+        let fields = [scalar("a", "float32", 0), scalar("b", "float32", 16)];
+        let json = uniform_shader("Params", &fields).replace(
+            r#"]}}}]}"#,
+            r#"]}, "elementVarLayout": {"binding": {"kind": "uniform", "offset": 0, "size": 32}}}}]}"#,
+        );
+        let out = generate(&[shader("x_fragment", json)]).unwrap();
+        assert!(out.contains("pub b: f32,\n        pub _pad20: [u32; 3],"));
+        assert!(out.contains("size_of::<Params>() == 32"));
     }
 
     #[test]

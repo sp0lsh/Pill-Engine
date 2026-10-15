@@ -1,6 +1,5 @@
 // Separable Gaussian, horizontal half (the vertical half is in dof_near_composite): the near field is a soft veil, not bokeh, so 2N taps buy the smoothness N^2 would.
 
-// Mirrors DofNearParams in pass_depth_of_field.rs
 struct DofNearParams {
     float focus_point;
     float focus_scale;

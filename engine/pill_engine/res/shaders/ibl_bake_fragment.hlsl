@@ -7,7 +7,6 @@
 #include "include/octahedral.hlsl"
 #include "include/equirect.hlsl"
 
-// Mirrors IblBakeParams in pass_ibl_bake.rs
 struct IblBakeParams {
     float size;         // target mip width and height, border included
     float roughness;    // GGX roughness (specular)

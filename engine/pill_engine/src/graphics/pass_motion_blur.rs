@@ -1,27 +1,14 @@
 use crate::config::MOTION_BLUR_FRAGMENT_SHADER;
 use crate::ecs::RenderStateComponent;
 use crate::graphics::fullscreen::{
-    create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, sampler_entry, target_view,
-    texture_entry, uniform_buffer, uniform_entry, Binding, CachedBindGroup,
+    create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, target_view, uniform_buffer,
+    Binding, CachedBindGroup,
 };
 use crate::graphics::projection::depth_unpack;
+use crate::graphics::shader_bindings::{motion_blur_fragment, structs::MotionBlurParams};
 use crate::graphics::{FrameTarget, Pass, PassTextureHandle, PillRenderer, Pipeline, WorldQuery};
 
 use pill_core::Result;
-
-/// Mirrors `MotionBlurParams` in motion_blur_fragment.hlsl.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct MotionBlurParams {
-    velocity_scale: f32,
-    min_speed: f32,
-    depth_softness: f32,
-    max_samples: u32,
-    depth_mul: f32,
-    depth_add: f32,
-    has_depth_of_field: u32,
-    max_radius: f32,
-}
 
 struct MotionBlurState {
     pipeline: Pipeline,
@@ -89,14 +76,7 @@ impl Pass for PassMotionBlur {
             renderer,
             "pass_motion_blur",
             MOTION_BLUR_FRAGMENT_SHADER,
-            vec![
-                texture_entry(0, true),
-                texture_entry(1, true),
-                texture_entry(2, false),
-                uniform_entry(3),
-                sampler_entry(4),
-                texture_entry(5, true),
-            ],
+            motion_blur_fragment::layout(),
             hdr_format,
             None,
         )?;

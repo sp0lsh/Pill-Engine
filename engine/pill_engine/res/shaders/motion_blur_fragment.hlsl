@@ -3,6 +3,8 @@
 // With depth of field, every sample is first composited with the quarter-res DoF result
 // (lerp by its alpha = CoC², [Sousa13 §Final Composite]), so the upsample costs no extra pass.
 
+#include "include/bindings.hlsl"
+
 struct MotionBlurParams {
     float velocity_scale; // shutter fraction of the frame interval, 0 = off
     float min_speed;      // pixels; slower pixels are copied
@@ -16,7 +18,7 @@ struct MotionBlurParams {
 
 [[vk::binding(0, 0)]] Texture2D<float4> color_texture;
 [[vk::binding(1, 0)]] Texture2D<float4> velocity_texture;
-[[vk::binding(2, 0)]] Texture2D<float>  depth_texture;
+[[vk::binding(2, 0)]] [Unfilterable] Texture2D<float>  depth_texture;
 [[vk::binding(3, 0)]] ConstantBuffer<MotionBlurParams> params;
 [[vk::binding(4, 0)]] SamplerState linear_sampler;
 [[vk::binding(5, 0)]] Texture2D<float4> depth_of_field_texture; // rgb = blurred, a = blend; unused without DoF

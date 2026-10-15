@@ -3,7 +3,8 @@
 // too. The sky writes no ambient, so this is a no-op there. Runs before the translucent pass, so
 // translucent surfaces are not darkened by the opaque ambient behind them.
 
-// Mirrors SsaoApplyParams in pass_ssao.rs
+#include "include/bindings.hlsl"
+
 struct SsaoApplyParams {
     float strength;         // 0 = pass the colour through untouched
     float sigma_depth_rel;  // upsample depth sigma as a fraction of view depth
@@ -11,11 +12,11 @@ struct SsaoApplyParams {
     float depth_add;
 };
 
-[[vk::binding(0, 0)]] Texture2D<float4> t_color;    // full-res hdr
-[[vk::binding(1, 0)]] Texture2D<float4> t_ambient;  // full-res indirect term
-[[vk::binding(2, 0)]] Texture2D<float4> t_ssao;       // half-res AO (r)
-[[vk::binding(3, 0)]] Texture2D<float>  t_ssao_depth; // half-res view depth (depth chain level 0)
-[[vk::binding(4, 0)]] Texture2D<float>  t_depth;      // full-res Depth32Float
+[[vk::binding(0, 0)]] [Unfilterable] Texture2D<float4> t_color;    // full-res hdr
+[[vk::binding(1, 0)]] [Unfilterable] Texture2D<float4> t_ambient;  // full-res indirect term
+[[vk::binding(2, 0)]] [Unfilterable] Texture2D<float4> t_ssao;       // half-res AO (r)
+[[vk::binding(3, 0)]] [Unfilterable] Texture2D<float>  t_ssao_depth; // half-res view depth (depth chain level 0)
+[[vk::binding(4, 0)]] [Unfilterable] Texture2D<float>  t_depth;      // full-res Depth32Float
 [[vk::binding(5, 0)]] ConstantBuffer<SsaoApplyParams> params;
 
 [shader("fragment")]
