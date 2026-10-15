@@ -153,8 +153,6 @@ struct Draw {
     previous: DrawTransform,
 }
 
-/// One instanced draw: a run of equal render keys (same material and mesh) in the sorted
-/// per-draw array; instances `first..first + count` of the storage buffer.
 /// Scene pipeline variant: with the PassSsr outputs, the alpha-test shader, no back-face culling.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
 struct SceneVariant {
@@ -173,6 +171,8 @@ impl SceneVariant {
     }
 }
 
+/// One instanced draw: a run of equal render keys (same material and mesh) in the sorted
+/// per-draw array; instances `first..first + count` of the storage buffer.
 struct DrawBatch {
     material_handle: RendererMaterialHandle,
     mesh_handle: RendererMeshHandle,

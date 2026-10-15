@@ -88,17 +88,20 @@ pub fn gltf_resource_uris(gltf_bytes: &[u8]) -> Result<GltfResourceUris> {
     })
 }
 
-/// Texture kind of each document image, from the first material slot that uses it (`None` when
-/// unused): lets a caller cook images (e.g. KTX2 → RTEX) before [`parse_gltf_scene`].
-pub fn gltf_image_kinds(gltf_bytes: &[u8]) -> Result<Vec<Option<TextureType>>> {
+/// Texture kinds each document image is used as (empty when unused; an image bound as base color
+/// and as a linear map is both): lets a caller cook images (e.g. KTX2 → RTEX) per kind before
+/// [`parse_gltf_scene`].
+pub fn gltf_image_kinds(gltf_bytes: &[u8]) -> Result<Vec<Vec<TextureType>>> {
     let (doc, _) =
         Doc::from_bytes(gltf_bytes).map_err(|e| PillError::from(format!("parse glTF: {e:?}")))?;
-    let mut kinds = vec![None; doc.images.len()];
+    let mut kinds = vec![Vec::new(); doc.images.len()];
     for material in &doc.materials {
         for (texture, kind) in material_textures(material).into_iter().zip(SLOT_KINDS) {
             if let Some(image) = texture.and_then(|index| texture_image(&doc, index)) {
-                if let Some(slot) = kinds.get_mut(image) {
-                    slot.get_or_insert(kind);
+                if let Some(image_kinds) = kinds.get_mut(image) {
+                    if !image_kinds.contains(&kind) {
+                        image_kinds.push(kind);
+                    }
                 }
             }
         }
@@ -146,17 +149,22 @@ fn texture_image(doc: &Doc, texture: usize) -> Option<usize> {
     })
 }
 
+/// Pre-cooked RTEX per (image index, texture kind), for [`parse_gltf_scene`].
+pub type CookedImages = std::collections::HashMap<(usize, TextureType), Vec<u8>>;
+
 /// Parses a glTF/glb into uploadable scene data; resource names start with `name_prefix`, so
 /// several scenes can be loaded into one engine.
 ///
 /// `external_buffers` / `external_images` are indexed 1:1 with the document's buffers/images (the
 /// order from [`gltf_resource_uris`]); entries that were `None` there may be empty. Images are
-/// JPEG, PNG, or already-cooked RTEX (e.g. BC7 from KTX2), which is moved out, not copied.
+/// JPEG or PNG. `cooked` holds already-cooked RTEX (e.g. BC7 from KTX2) per (image, kind), as
+/// [`gltf_image_kinds`] lists them; those are moved out and used in place of decoding.
 pub fn parse_gltf_scene(
     name_prefix: &str,
     gltf_bytes: &[u8],
     external_buffers: &[Vec<u8>],
     external_images: &mut [Vec<u8>],
+    cooked: &mut CookedImages,
 ) -> Result<GltfSceneData> {
     use std::borrow::Cow;
     use std::collections::{HashMap, HashSet};
@@ -214,7 +222,7 @@ pub fn parse_gltf_scene(
     for images in &material_images {
         for (image, kind) in images.iter().zip(SLOT_KINDS) {
             if let Some(image) = *image {
-                if seen.insert((image, kind)) {
+                if seen.insert((image, kind)) && !cooked.contains_key(&(image, kind)) {
                     *kinds_left.entry(image).or_default() += 1;
                 }
             }
@@ -235,18 +243,8 @@ pub fn parse_gltf_scene(
                 *slot = Some(existing);
                 continue;
             }
-            // Pre-cooked RTEX: uploaded as is, moved out on its last use
-            if external_images
-                .get(image)
-                .is_some_and(|bytes| bytes.starts_with(b"RTEX"))
-            {
-                let left = kinds_left.get_mut(&image).expect("counted above");
-                *left -= 1;
-                let rtex = if *left > 0 {
-                    external_images[image].clone()
-                } else {
-                    std::mem::take(&mut external_images[image])
-                };
+            // Pre-cooked RTEX for this kind: uploaded as is
+            if let Some(rtex) = cooked.remove(&(image, kind)) {
                 texture_index.insert((image, kind), textures.len());
                 *slot = Some(textures.len());
                 textures.push(GltfTextureData {
@@ -811,7 +809,14 @@ mod tests {
           "materials":[],"textures":[],"images":[]
         }"#;
 
-        let scene = parse_gltf_scene("t", json.as_bytes(), &[buf], &mut []).expect("parse");
+        let scene = parse_gltf_scene(
+            "t",
+            json.as_bytes(),
+            &[buf],
+            &mut [],
+            &mut CookedImages::new(),
+        )
+        .expect("parse");
         assert_eq!(scene.meshes.len(), 1);
         let rmsh = &scene.meshes[0].rmsh;
         assert_eq!(&rmsh[0..4], b"RMSH");
@@ -875,26 +880,54 @@ mod tests {
     fn truncated_buffer_is_rejected() {
         let json = doc(ONE_NODE, "", "b.bin", "");
         let buffer = triangle_buffer()[..30].to_vec();
-        assert!(parse_gltf_scene("t", json.as_bytes(), &[buffer], &mut []).is_err());
+        assert!(parse_gltf_scene(
+            "t",
+            json.as_bytes(),
+            &[buffer],
+            &mut [],
+            &mut CookedImages::new()
+        )
+        .is_err());
     }
 
     #[test]
     fn node_cycle_is_rejected() {
         let scene = r#","scene":0,"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0,"children":[1]},{"children":[0]}]"#;
         let json = doc(scene, "", "b.bin", "");
-        assert!(parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &mut []).is_err());
+        assert!(parse_gltf_scene(
+            "t",
+            json.as_bytes(),
+            &[triangle_buffer()],
+            &mut [],
+            &mut CookedImages::new()
+        )
+        .is_err());
     }
 
     #[test]
     fn material_index_out_of_range_is_rejected() {
         let json = doc(ONE_NODE, r#","material":3"#, "b.bin", "");
-        assert!(parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &mut []).is_err());
+        assert!(parse_gltf_scene(
+            "t",
+            json.as_bytes(),
+            &[triangle_buffer()],
+            &mut [],
+            &mut CookedImages::new()
+        )
+        .is_err());
     }
 
     #[test]
     fn no_scenes_uses_every_mesh_untransformed() {
         let json = doc("", "", "b.bin", "");
-        let scene = parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &mut []).unwrap();
+        let scene = parse_gltf_scene(
+            "t",
+            json.as_bytes(),
+            &[triangle_buffer()],
+            &mut [],
+            &mut CookedImages::new(),
+        )
+        .unwrap();
         assert_eq!(scene.meshes.len(), 1);
         assert_eq!(scene.meshes[0].name, "t_mesh_m0_0");
         let (position, _) = vertex(&scene.meshes[0].rmsh, 1);
@@ -915,7 +948,8 @@ mod tests {
             gltf_resource_uris(json.as_bytes()).unwrap().buffers,
             vec![None]
         );
-        let scene = parse_gltf_scene("t", json.as_bytes(), &[], &mut []).unwrap();
+        let scene =
+            parse_gltf_scene("t", json.as_bytes(), &[], &mut [], &mut CookedImages::new()).unwrap();
         let (position, _) = vertex(&scene.meshes[0].rmsh, 2);
         assert_eq!(position, [0.0, 1.0, 0.0]);
     }
@@ -928,7 +962,14 @@ mod tests {
             "b.bin",
             r#","materials":[{"emissiveFactor":[1,0.5,0]}]"#,
         );
-        let scene = parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &mut []).unwrap();
+        let scene = parse_gltf_scene(
+            "t",
+            json.as_bytes(),
+            &[triangle_buffer()],
+            &mut [],
+            &mut CookedImages::new(),
+        )
+        .unwrap();
         assert_eq!(scene.materials[0].emissive_color, [1.0, 0.5, 0.0]);
     }
 
@@ -936,8 +977,14 @@ mod tests {
     fn prefixes_give_disjoint_names() {
         let json = doc(ONE_NODE, "", "b.bin", "");
         let names = |prefix| {
-            let scene =
-                parse_gltf_scene(prefix, json.as_bytes(), &[triangle_buffer()], &mut []).unwrap();
+            let scene = parse_gltf_scene(
+                prefix,
+                json.as_bytes(),
+                &[triangle_buffer()],
+                &mut [],
+                &mut CookedImages::new(),
+            )
+            .unwrap();
             let mut names: Vec<String> = scene.materials.into_iter().map(|m| m.name).collect();
             names.extend(scene.meshes.into_iter().map(|m| m.name));
             names
@@ -950,8 +997,14 @@ mod tests {
     fn unreferenced_unsupported_image_is_not_decoded() {
         let json = doc(ONE_NODE, "", "b.bin", r#","images":[{"uri":"x.webp"}]"#);
         let mut images = vec![b"RIFF....WEBP".to_vec()];
-        let scene =
-            parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &mut images).unwrap();
+        let scene = parse_gltf_scene(
+            "t",
+            json.as_bytes(),
+            &[triangle_buffer()],
+            &mut images,
+            &mut CookedImages::new(),
+        )
+        .unwrap();
         assert!(scene.textures.is_empty());
     }
 
@@ -974,13 +1027,19 @@ mod tests {
         assert_eq!(
             gltf_image_kinds(json.as_bytes()).unwrap(),
             vec![
-                Some(TextureType::Color),
-                Some(TextureType::MetallicRoughness)
+                vec![TextureType::Color],
+                vec![TextureType::MetallicRoughness]
             ]
         );
-        let mut images = vec![b"RTEXbase".to_vec(), b"RTEXspec".to_vec()];
-        let scene =
-            parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &mut images).unwrap();
+        let mut cooked = basisu_cooked();
+        let scene = parse_gltf_scene(
+            "t",
+            json.as_bytes(),
+            &[triangle_buffer()],
+            &mut [],
+            &mut cooked,
+        )
+        .unwrap();
         let material = &scene.materials[0];
         let albedo = &scene.textures[material.albedo.unwrap()];
         let specular = &scene.textures[material.specular.unwrap()];
@@ -990,15 +1049,58 @@ mod tests {
         );
         assert_eq!(specular.kind, TextureType::MetallicRoughness);
         // Moved out, not copied
-        assert!(images.iter().all(Vec::is_empty));
+        assert!(cooked.is_empty());
+    }
+
+    fn basisu_cooked() -> CookedImages {
+        CookedImages::from([
+            ((0, TextureType::Color), b"RTEXbase".to_vec()),
+            ((1, TextureType::MetallicRoughness), b"RTEXspec".to_vec()),
+        ])
+    }
+
+    #[test]
+    fn image_used_as_color_and_linear_map_gets_each_kinds_cook() {
+        let material = r#","materials":[{
+            "pbrMetallicRoughness":{"baseColorTexture":{"index":0},
+              "metallicRoughnessTexture":{"index":0}}}],
+          "textures":[{"extensions":{"KHR_texture_basisu":{"source":0}}}],
+          "images":[{"uri":"shared.ktx2"}]"#;
+        let json = doc(ONE_NODE, r#","material":0"#, "b.bin", material);
+        assert_eq!(
+            gltf_image_kinds(json.as_bytes()).unwrap(),
+            vec![vec![TextureType::Color, TextureType::MetallicRoughness]]
+        );
+        let mut cooked = CookedImages::from([
+            ((0, TextureType::Color), b"RTEXsrgb".to_vec()),
+            ((0, TextureType::MetallicRoughness), b"RTEXlinear".to_vec()),
+        ]);
+        let scene = parse_gltf_scene(
+            "t",
+            json.as_bytes(),
+            &[triangle_buffer()],
+            &mut [],
+            &mut cooked,
+        )
+        .unwrap();
+        let material = &scene.materials[0];
+        let albedo = &scene.textures[material.albedo.unwrap()];
+        let metallic_roughness = &scene.textures[material.metallic_roughness.unwrap()];
+        assert_eq!(albedo.rtex, b"RTEXsrgb");
+        assert_eq!(metallic_roughness.rtex, b"RTEXlinear");
     }
 
     #[test]
     fn mask_cutoff_double_sided_and_transmission_are_kept() {
         let json = doc(ONE_NODE, r#","material":0"#, "b.bin", BASISU_MATERIAL);
-        let mut images = vec![b"RTEXbase".to_vec(), b"RTEXspec".to_vec()];
-        let scene =
-            parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &mut images).unwrap();
+        let scene = parse_gltf_scene(
+            "t",
+            json.as_bytes(),
+            &[triangle_buffer()],
+            &mut [],
+            &mut basisu_cooked(),
+        )
+        .unwrap();
         let material = &scene.materials[0];
         assert_eq!(material.alpha_mode, GltfAlphaMode::Mask(0.3));
         assert!(material.double_sided);
@@ -1008,7 +1110,14 @@ mod tests {
     #[test]
     fn default_material_is_rough_metal() {
         let json = doc(ONE_NODE, "", "b.bin", "");
-        let scene = parse_gltf_scene("t", json.as_bytes(), &[triangle_buffer()], &mut []).unwrap();
+        let scene = parse_gltf_scene(
+            "t",
+            json.as_bytes(),
+            &[triangle_buffer()],
+            &mut [],
+            &mut CookedImages::new(),
+        )
+        .unwrap();
         let default = &scene.materials[scene.meshes[0].material];
         assert_eq!((default.metallic, default.roughness), (1.0, 1.0));
     }

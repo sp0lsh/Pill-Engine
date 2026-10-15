@@ -78,7 +78,6 @@ pub struct DepthOfField {
     pub anamorphic_squeeze: f32,
 }
 
-/// PostFx chain screen-space ambient occlusion; darkens only the indirect (IBL) light.
 /// What the PBR passes show: the lit image, or only the light reaching the surfaces (every
 /// surface a white diffuse material without specular or emission, for auditing light levels).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -91,6 +90,7 @@ pub enum DebugView {
     DetailLighting,
 }
 
+/// PostFx chain screen-space ambient occlusion; darkens only the indirect (IBL) light.
 #[derive(Clone, Copy, Debug)]
 pub struct Ssao {
     /// Blend of the occlusion (0 = off, 1 = full).

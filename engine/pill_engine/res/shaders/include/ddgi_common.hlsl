@@ -49,7 +49,8 @@ struct DdgiParams {
 
 // L1 SH radiance of one probe: sh[0] = L0, sh[1..3] = L1 (y, z, x); rgb in xyz. sh[0].w = the
 // probe's weight, 0 after a reset (the grid moved and exposed it) rising to 1 over its first updates;
-// sh[1].w = updates since the reset; sh[2].w = 1 when it started from a neighbour's lighting
+// sh[1].w = updates since the reset; sh[2].w = 1 when it started from a neighbour's lighting;
+// sh[3].w = share of its rays hitting backfaces, averaged over frames (ddgi_color_compute.hlsl)
 struct DdgiProbe {
     float4 sh[4];
     // xyz: relocation offset from the grid position (m); w: 0 = not relocated yet, 1 = relocated

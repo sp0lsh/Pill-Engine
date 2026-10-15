@@ -4,6 +4,11 @@
 // TraceRay_Closest / TraceRay_Any (raytracingHF.hlsli): a stack of node indices, slab test per
 // node, Möller–Trumbore per triangle. Layout mirrors GpuBvhNode / GpuTriangle in ddgi/bvh.rs.
 // The includer declares `bvh_nodes` and `bvh_triangles`.
+//
+// Alpha-tested triangles (coverage below 1 in the albedo alpha) stop a ray with probability
+// `coverage`, decided by a hash of the ray's `seed` and the triangle: partial occlusion that the
+// probes' averaging over rays and frames turns into the texture's average opacity. Their hits
+// are never backfaces (a leaf card has no inside).
 
 struct BvhNode {
     float3 min;
@@ -13,7 +18,7 @@ struct BvhNode {
 };
 struct BvhTriangle {
     float3 v0;
-    uint   albedo; // RGBA8, r in the low byte
+    uint   albedo; // RGBA8, r in the low byte; alpha = coverage
     float3 e1;
     uint   pad0;
     float3 e2;
@@ -41,6 +46,18 @@ float bvh_box_entry(BvhNode node, float3 origin, float3 inv_direction, float tma
     return t_in <= t_out ? t_in : 3.4e38;
 }
 
+uint bvh_hash(uint value) {
+    uint state = value * 747796405u + 2891336453u;
+    uint word  = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+// Whether the triangle stops this ray (always, unless alpha-tested)
+bool bvh_blocks(uint triangle_index, uint seed) {
+    uint coverage = bvh_triangles[triangle_index].albedo >> 24;
+    return coverage == 255u || (bvh_hash(seed ^ bvh_hash(triangle_index)) & 255u) < coverage;
+}
+
 // Möller–Trumbore; returns the ray length to the hit or a huge value, and whether the hit side
 // faces away from the ray (counter-clockwise front faces, as the PBR pipeline culls)
 float bvh_triangle(BvhTriangle triangle, float3 origin, float3 direction, out bool backface) {
@@ -60,7 +77,7 @@ float bvh_triangle(BvhTriangle triangle, float3 origin, float3 direction, out bo
     return (u < 0.0 || u > 1.0 || v < 0.0 || u + v > 1.0 || t <= 0.0) ? 3.4e38 : t;
 }
 
-BvhHit bvh_trace_closest(float3 origin, float3 direction, float tmax) {
+BvhHit bvh_trace_closest(float3 origin, float3 direction, float tmax, uint seed) {
     BvhHit hit;
     hit.distance = tmax;
     hit.triangle = 0;
@@ -81,11 +98,11 @@ BvhHit bvh_trace_closest(float3 origin, float3 direction, float tmax) {
                 uint triangle_index = node.left_or_first + i;
                 bool backface;
                 float t = bvh_triangle(bvh_triangles[triangle_index], origin, direction, backface);
-                if (t < hit.distance) {
+                if (t < hit.distance && bvh_blocks(triangle_index, seed)) {
                     hit.distance = t;
                     hit.triangle = triangle_index;
                     hit.found    = true;
-                    hit.backface = backface;
+                    hit.backface = backface && (bvh_triangles[triangle_index].albedo >> 24) == 255u;
                 }
             }
         } else {
@@ -97,7 +114,7 @@ BvhHit bvh_trace_closest(float3 origin, float3 direction, float tmax) {
 }
 
 // Whether anything blocks the ray before `tmax` (shadow rays)
-bool bvh_trace_any(float3 origin, float3 direction, float tmax) {
+bool bvh_trace_any(float3 origin, float3 direction, float tmax, uint seed) {
     float3 inv_direction = 1.0 / direction;
     uint stack[BVH_STACK_SIZE];
     uint depth = 0;
@@ -110,8 +127,10 @@ bool bvh_trace_any(float3 origin, float3 direction, float tmax) {
         }
         if (node.count > 0) {
             for (uint i = 0; i < node.count; i++) {
+                uint triangle_index = node.left_or_first + i;
                 bool backface;
-                if (bvh_triangle(bvh_triangles[node.left_or_first + i], origin, direction, backface) < tmax) {
+                if (bvh_triangle(bvh_triangles[triangle_index], origin, direction, backface) < tmax
+                    && bvh_blocks(triangle_index, seed)) {
                     return true;
                 }
             }

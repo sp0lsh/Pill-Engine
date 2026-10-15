@@ -31,6 +31,7 @@ struct DdgiRay {
 [[vk::binding(8, 0)]] RWStructuredBuffer<DdgiRay>       ddgi_rays;
 
 static const uint THREADS = 128;
+static const uint DISPATCH_WIDTH = 32768;
 
 static const uint RAY_CYCLE = 16;
 
@@ -74,7 +75,7 @@ float3 direct_irradiance(float3 P, float3 N, uint seed) {
     float3 origin = P + N * 0.01;
     float3 to_sun = -ddgi.sun_direction;
     float  sun_dot = dot(N, to_sun);
-    if (sun_dot > 0.0 && any(ddgi.sun_radiance > 0.0) && !bvh_trace_any(origin, to_sun, 1.0e30)) {
+    if (sun_dot > 0.0 && any(ddgi.sun_radiance > 0.0) && !bvh_trace_any(origin, to_sun, 1.0e30, pcg_hash(seed + 1u))) {
         irradiance += ddgi.sun_radiance * sun_dot;
     }
     if (ddgi.light_count > 0) {
@@ -84,7 +85,7 @@ float3 direct_irradiance(float3 P, float3 N, uint seed) {
         float  attenuation = punctual_attenuation(light, P, incoming, distance_square);
         float  light_dot = dot(N, incoming);
         if (attenuation > 0.0 && light_dot > 0.0
-            && !bvh_trace_any(origin, incoming, sqrt(distance_square) - 0.02)) {
+            && !bvh_trace_any(origin, incoming, sqrt(distance_square) - 0.02, pcg_hash(seed + 2u))) {
             irradiance += light.color_intensity.rgb * light.color_intensity.w * attenuation * light_dot
                         * float(ddgi.light_count);
         }
@@ -94,7 +95,9 @@ float3 direct_irradiance(float3 P, float3 N, uint seed) {
 
 [shader("compute")]
 [numthreads(THREADS, 1, 1)]
-void cs_main(uint3 id : SV_DispatchThreadID) {
+void cs_main(uint3 dispatch_id : SV_DispatchThreadID) {
+    // Rows of DISPATCH_WIDTH workgroups (pass_ddgi.rs TRACE_DISPATCH_WIDTH)
+    uint3 id = uint3(dispatch_id.x + dispatch_id.y * DISPATCH_WIDTH * THREADS, 0, 0);
     uint ray_count = ddgi.rays_per_probe;
     if (id.x >= ddgi.probe_count * ddgi.cascade_count * ray_count) {
         return;
@@ -114,7 +117,7 @@ void cs_main(uint3 id : SV_DispatchThreadID) {
     {
         float3 fibonacci = spherical_fibonacci(float(ray * RAY_CYCLE + slice), float(ray_count * RAY_CYCLE));
         float3 direction = normalize(rotate(probe_rotation(probe_index, cycle), fibonacci));
-        BvhHit hit = bvh_trace_closest(probe_pos, direction, 1.0e30);
+        BvhHit hit = bvh_trace_closest(probe_pos, direction, 1.0e30, pcg_hash(id.x ^ pcg_hash(ddgi.frame)));
         DdgiRay result;
         if (!hit.found) {
             result.direction_depth = float4(direction, -1.0);

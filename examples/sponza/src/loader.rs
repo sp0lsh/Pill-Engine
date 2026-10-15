@@ -6,7 +6,7 @@
 //! (`pill_engine`'s `gltf_loading` feature). This module is just I/O + orchestration: the fetch is
 //! the only platform-specific part (browser `fetch` on WASM, `ureq` threads on native).
 
-use pill_engine::game::{gltf_resource_uris, ibl, parse_gltf_scene, GltfSceneData};
+use pill_engine::game::{gltf_resource_uris, ibl, parse_gltf_scene, CookedImages, GltfSceneData};
 
 use crate::fetch;
 
@@ -50,7 +50,13 @@ pub async fn load() -> Result<SponzaCpu, String> {
             / (1024.0 * 1024.0)
     );
 
-    let scene = parse_gltf_scene("sponza", &gltf_bytes, &resolved, &mut images)
+    let scene = parse_gltf_scene(
+        "sponza",
+        &gltf_bytes,
+        &resolved,
+        &mut images,
+        &mut CookedImages::new(),
+    )
         .map_err(|e| e.to_string())?;
     finish(scene, &hdr)
 }

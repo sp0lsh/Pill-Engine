@@ -9,7 +9,7 @@ use anyhow::{anyhow, Result};
 use basisu::{DecodeFlags, TargetFormat, Transcoder};
 
 /// Changes whenever the cooked output does, so callers can version their caches.
-pub const COOK_VERSION: u32 = 2;
+pub const COOK_VERSION: u32 = 3;
 
 /// How a texture's texels are filtered and stored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,6 +49,7 @@ pub fn ktx2_to_rtex(bytes: &[u8], kind: TextureKind) -> Result<Vec<u8>> {
     // The last stored level in RGBA8 seeds the generated ones; the base level gives the average
     let base = transcode(0, TargetFormat::Rgba32)?;
     let average_color = average_color(&base, kind);
+    let base_coverage = alpha_coverage(&base, 1.0);
     if mips.len() < mip_count as usize {
         let last = mips.len() as u32 - 1;
         let mut level = if last == 0 {
@@ -65,6 +66,9 @@ pub fn ktx2_to_rtex(bytes: &[u8], kind: TextureKind) -> Result<Vec<u8>> {
         while mips.len() < mip_count as usize {
             level = downsample(&level, level_width, level_height, kind);
             (level_width, level_height) = ((level_width / 2).max(1), (level_height / 2).max(1));
+            if transcoder.has_alpha() {
+                preserve_alpha_coverage(&mut level, base_coverage);
+            }
             mips.push(encode_bc7(&level, level_width, level_height, &settings));
         }
     }
@@ -109,6 +113,39 @@ fn encode_bc7(
             stride: padded_width * 4,
         },
     )
+}
+
+/// Alpha-test cutoff the coverage is preserved at (glTF's default `alphaCutoff`).
+const COVERAGE_CUTOFF: f32 = 0.5;
+
+/// Fraction of texels whose alpha, scaled by `scale`, passes the alpha test at `COVERAGE_CUTOFF`.
+fn alpha_coverage(rgba: &[u8], scale: f32) -> f32 {
+    let texels = rgba.len() / 4;
+    let passing = rgba
+        .chunks_exact(4)
+        .filter(|texel| texel[3] as f32 / 255.0 * scale >= COVERAGE_CUTOFF)
+        .count();
+    passing as f32 / texels.max(1) as f32
+}
+
+/// Scales a generated level's alpha so as many texels pass the alpha test as in the base level:
+/// box-filtered alpha falls below the cutoff at foliage edges and alpha-tested cards thin out
+/// with distance (method: Castaño, "Computing Alpha Mipmaps", 2010).
+fn preserve_alpha_coverage(rgba: &mut [u8], coverage: f32) {
+    let (mut low, mut high) = (0.0_f32, 4.0_f32);
+    for _ in 0..12 {
+        let scale = 0.5 * (low + high);
+        if alpha_coverage(rgba, scale) < coverage {
+            low = scale;
+        } else {
+            high = scale;
+        }
+    }
+    // `high` reaches the coverage; the midpoint may fall just short
+    let scale = high;
+    for texel in rgba.chunks_exact_mut(4) {
+        texel[3] = (texel[3] as f32 * scale).min(255.0).round() as u8;
+    }
 }
 
 /// Next mip level: 2×2 box filter (an odd last row/column repeats). Color is averaged in linear
@@ -236,6 +273,27 @@ mod tests {
         let rgba = [255u8; 2 * 2 * 4];
         let blocks = encode_bc7(&rgba, 2, 2, &intel_tex_2::bc7::opaque_very_fast_settings());
         assert_eq!(blocks.len(), 16);
+    }
+
+    #[test]
+    fn alpha_mip_of_thin_leaf_keeps_base_coverage() {
+        // 8×8 base: one opaque texel per 2×2 block (a quarter of the texels pass the cutoff); a
+        // box filter alone gives every next-level texel alpha 0.25, so none would pass
+        let base: Vec<u8> = (0..64)
+            .flat_map(|index| {
+                let opaque = index % 2 == 0 && (index / 8) % 2 == 0;
+                [255, 255, 255, if opaque { 255 } else { 0 }]
+            })
+            .collect();
+        let coverage = alpha_coverage(&base, 1.0);
+        let mut next = downsample(&base, 8, 8, TextureKind::Color);
+        assert_eq!(alpha_coverage(&next, 1.0), 0.0);
+        preserve_alpha_coverage(&mut next, coverage);
+        assert!(
+            alpha_coverage(&next, 1.0) >= coverage,
+            "{}",
+            alpha_coverage(&next, 1.0)
+        );
     }
 
     #[test]

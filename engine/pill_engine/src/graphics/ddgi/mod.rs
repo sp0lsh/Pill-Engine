@@ -95,9 +95,21 @@ impl ProbeGrid {
         }
     }
 
-    /// Same probe layout and storage (only the origin may differ).
+    /// Same probe layout and storage (only the origin may differ): same dims, spacing and anchor
+    /// (world position of cell 0 — constant for a camera-following grid, the fitted minimum
+    /// otherwise, so a fitted grid that moves gets new storage).
     pub(crate) fn same_storage(&self, other: &Self) -> bool {
-        self.dims == other.dims && self.cell == other.cell
+        let anchor = |grid: &Self| {
+            grid.min
+                - Vector3f::new(
+                    grid.origin[0] as f32,
+                    grid.origin[1] as f32,
+                    grid.origin[2] as f32,
+                ) * grid.cell
+        };
+        self.dims == other.dims
+            && self.cell == other.cell
+            && anchor(self).abs_diff_eq(anchor(other), 1e-3)
     }
 
     /// Storage coordinate of a logical one, as `ddgi_storage_coord` in the shaders.
@@ -335,6 +347,18 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn same_storage_scrolled_camera_grid_yes_moved_fitted_grid_no() {
+        let grid = ProbeGrid::around(Vector3f::new(1.0, 2.0, 3.0), 2.0);
+        let scrolled = ProbeGrid::around(Vector3f::new(7.0, 2.0, 3.0), 2.0);
+        assert!(grid.same_storage(&scrolled));
+        let bounds = (Vector3f::ZERO, Vector3f::splat(10.0));
+        let fitted = ProbeGrid::fit(bounds, 1.0);
+        let moved = ProbeGrid::fit((bounds.0 + Vector3f::X, bounds.1 + Vector3f::X), 1.0);
+        assert!(!fitted.same_storage(&moved));
+        assert!(fitted.same_storage(&ProbeGrid::fit(bounds, 1.0)));
     }
 
     #[test]

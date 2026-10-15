@@ -108,8 +108,8 @@ pub mod game {
 
     #[cfg(feature = "gltf_loading")]
     pub use crate::resources::{
-        gltf_image_kinds, gltf_resource_uris, parse_gltf_scene, GltfAlphaMode, GltfMaterialData,
-        GltfMeshData, GltfResourceUris, GltfSceneData, GltfTextureData,
+        gltf_image_kinds, gltf_resource_uris, parse_gltf_scene, CookedImages, GltfAlphaMode,
+        GltfMaterialData, GltfMeshData, GltfResourceUris, GltfSceneData, GltfTextureData,
     };
     // IBL bake, shared with the build-time cooker (lives in pill_assets, surfaced here for games).
     #[cfg(feature = "ibl_bake")]

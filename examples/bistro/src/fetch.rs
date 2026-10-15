@@ -42,26 +42,34 @@ pub fn map_parallel<T: Sync, R: Send>(
     work: impl Fn(&T) -> Result<R, String> + Sync,
 ) -> Result<Vec<R>, String> {
     let next = AtomicUsize::new(0);
-    let mut results: Vec<(usize, Result<R, String>)> = std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..threads.min(items.len()).max(1))
-            .map(|_| {
-                scope.spawn(|| {
-                    let mut done = Vec::new();
-                    loop {
-                        let index = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(item) = items.get(index) else {
-                            return done;
-                        };
-                        done.push((index, work(item)));
-                    }
+    let mut results: Vec<(usize, Result<R, String>)> =
+        std::thread::scope(|scope| -> Result<_, String> {
+            let workers: Vec<_> = (0..threads.min(items.len()).max(1))
+                .map(|_| {
+                    scope.spawn(|| {
+                        let mut done = Vec::new();
+                        loop {
+                            let index = next.fetch_add(1, Ordering::Relaxed);
+                            let Some(item) = items.get(index) else {
+                                return done;
+                            };
+                            done.push((index, work(item)));
+                        }
+                    })
                 })
-            })
-            .collect();
-        workers
-            .into_iter()
-            .flat_map(|worker| worker.join().unwrap_or_default())
-            .collect()
-    });
+                .collect();
+            // A worker that panicked lost the results it had: fail the whole call rather than return
+            // fewer results than items
+            let mut results = Vec::with_capacity(items.len());
+            for worker in workers {
+                results.extend(
+                    worker
+                        .join()
+                        .map_err(|_| "worker thread panicked".to_string())?,
+                );
+            }
+            Ok(results)
+        })?;
     results.sort_unstable_by_key(|(index, _)| *index);
     results.into_iter().map(|(_, result)| result).collect()
 }
@@ -91,4 +99,20 @@ fn download(url: &str) -> Result<Vec<u8>, String> {
         .read_to_end(&mut bytes)
         .map_err(|e| format!("read {url}: {e}"))?;
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_parallel_worker_panic_is_an_error_not_fewer_results() {
+        let result = map_parallel(&[1, 2, 3, 4], 2, |&item| {
+            if item == 2 {
+                panic!("cook failed");
+            }
+            Ok(item)
+        });
+        assert!(result.is_err());
+    }
 }

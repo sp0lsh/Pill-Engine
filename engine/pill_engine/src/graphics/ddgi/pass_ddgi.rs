@@ -29,6 +29,10 @@ const PROBE_BYTES: u64 = 80;
 /// and the rays per probe meanwhile: more rays keep the faster blend from passing ray noise
 /// through as jitter.
 const CATCH_UP_FRAMES: u32 = 96;
+/// Share of rays an alpha-tested triangle stops in the trace (its texture's holes, on average).
+const CUTOUT_COVERAGE: f32 = 0.5;
+/// Workgroups per row of the trace dispatch (`DISPATCH_WIDTH` in ddgi_trace_compute.hlsl).
+const TRACE_DISPATCH_WIDTH: u32 = 32768;
 const CATCH_UP_BLEND: f32 = 1.0 / 32.0;
 const CATCH_UP_RAYS: u32 = 16;
 /// Bytes of one radiance texel's history (its mean) — `ddgi_history` in the DDGI shaders.
@@ -280,10 +284,16 @@ impl PassDdgi {
             else {
                 continue;
             };
-            let albedo = mesh_rendering
+            let material = mesh_rendering
                 .material_handle
                 .as_ref()
-                .and_then(|handle| world.resources.get_resource::<Material>(handle).ok())
+                .and_then(|handle| world.resources.get_resource::<Material>(handle).ok());
+            // Alpha-tested (foliage cards): stops a share of the rays instead of all of them
+            let coverage = match material {
+                Some(material) if material.alpha_cutoff > 0.0 => CUTOUT_COVERAGE,
+                _ => 1.0,
+            };
+            let albedo = material
                 .map(|material| {
                     let texture_average = material
                         .albedo_texture
@@ -312,6 +322,7 @@ impl PassDdgi {
                         position(corner[2]),
                     ],
                     albedo,
+                    coverage,
                 });
             }
         }
@@ -689,6 +700,9 @@ impl Pass for PassDdgi {
         };
         let cascade_probes = grids[0].probe_count();
         let mut reset: Vec<[u32; 2]> = Vec::new();
+        // Cascades with exposed probes this frame: they update this frame, so the depth pass
+        // rewrites the copied probes' atlas tiles (the copy only fills their history)
+        let mut reset_mask = 0u32;
         match &mut self.storage {
             Some(storage)
                 if storage.grids.len() == grids.len()
@@ -714,6 +728,7 @@ impl Pass for PassDdgi {
                             ]
                         }));
                         *old = *new;
+                        reset_mask |= 1 << cascade;
                     }
                 }
             }
@@ -800,7 +815,7 @@ impl Pass for PassDdgi {
                 self.frame_index
                     .is_multiple_of(CASCADE_UPDATE_EVERY[cascade])
             })
-            .fold(0u32, |mask, cascade| mask | 1 << cascade);
+            .fold(reset_mask, |mask, cascade| mask | 1 << cascade);
         let mut cascades = [GpuDdgiCascade::default(); MAX_CASCADES];
         for (cascade, grid) in grids.iter().enumerate() {
             cascades[cascade] = GpuDdgiCascade::new(grid);
@@ -867,17 +882,23 @@ impl Pass for PassDdgi {
         pass.set_pipeline(&pipelines.relocate.pipeline);
         pass.set_bind_group(0, &bindings.relocate_group, &[]);
         pass.dispatch_workgroups(probe_count.div_ceil(64), 1, 1);
-        // Trace: one thread per ray of every probe (128 per workgroup, `THREADS` in the shader;
-        // the largest grid × 256 rays stays within 65535 workgroups)
+        // Trace: one thread per ray of every probe (128 per workgroup, `THREADS` in the shader),
+        // in rows of TRACE_DISPATCH_WIDTH workgroups: 4 cascades × 256 rays exceed the 65535
+        // workgroups one dimension allows
         let ray_groups = (probe_count * rays).div_ceil(128);
-        for (pipeline, group, groups) in [
-            (&pipelines.trace, &bindings.trace_group, ray_groups),
-            (&pipelines.color, &bindings.color_group, probe_count),
-            (&pipelines.depth, &bindings.depth_group, probe_count),
+        let trace_size = (
+            ray_groups.min(TRACE_DISPATCH_WIDTH),
+            ray_groups.div_ceil(TRACE_DISPATCH_WIDTH),
+        );
+        // Color and depth: one workgroup per probe, at most 4 × 14336
+        for (pipeline, group, (width, height)) in [
+            (&pipelines.trace, &bindings.trace_group, trace_size),
+            (&pipelines.color, &bindings.color_group, (probe_count, 1)),
+            (&pipelines.depth, &bindings.depth_group, (probe_count, 1)),
         ] {
             pass.set_pipeline(&pipeline.pipeline);
             pass.set_bind_group(0, group, &[]);
-            pass.dispatch_workgroups(groups, 1, 1);
+            pass.dispatch_workgroups(width, height, 1);
         }
         drop(pass);
 

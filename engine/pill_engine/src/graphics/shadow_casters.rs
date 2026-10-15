@@ -23,13 +23,24 @@ use pill_core::{Matrix4f, PillSlotMapKey, Result, Vector3f, Vector4f};
 use std::num::NonZeroU32;
 use std::ops::Range;
 
-/// A mesh drawn into a shadow map; `cutout` = its alpha-tested or double-sided material, drawn
-/// with the alpha test and without culling.
+/// A mesh drawn into a shadow map; `cutout` = its alpha-tested material, drawn with the alpha
+/// test and without culling; `double_sided` opaque casters are drawn without culling.
 #[derive(Clone, Copy)]
 pub(crate) struct Caster {
     pub(crate) mesh: RendererMeshHandle,
     pub(crate) cutout: Option<RendererMaterialHandle>,
+    pub(crate) double_sided: bool,
     pub(crate) transform: DrawTransform,
+}
+
+impl Caster {
+    /// Draw group, in draw order: culled opaque, double-sided opaque, then cutout by material.
+    fn group(&self) -> u64 {
+        match self.cutout {
+            Some(material) => material.data().index as u64 + 2,
+            None => self.double_sided as u64,
+        }
+    }
 }
 
 /// A shadow-casting mesh entity: model matrix, mesh-local bounds and the world-space corners and
@@ -75,8 +86,10 @@ pub(crate) fn gather_casters(world: &WorldQuery<'_>, out: &mut Vec<CasterCandida
         if renderer_material.translucent {
             continue;
         }
-        let cutout =
-            (renderer_material.alpha_tested || renderer_material.double_sided).then_some(material);
+        // Only the alpha test needs the material in the caster shader; double-sided opaque casters
+        // just skip culling
+        let cutout = renderer_material.alpha_tested.then_some(material);
+        let double_sided = renderer_material.double_sided;
         let Some(version) = NonZeroU32::new(fields.mesh_version.into()) else {
             continue;
         };
@@ -88,6 +101,7 @@ pub(crate) fn gather_casters(world: &WorldQuery<'_>, out: &mut Vec<CasterCandida
         let caster = Caster {
             mesh,
             cutout,
+            double_sided,
             transform,
         };
         let model = transform.model_matrix();
@@ -143,6 +157,8 @@ pub(crate) fn keep_nearest<T>(items: &mut Vec<T>, capacity: usize, distance: imp
 /// `max_instances` caster transforms across all maps of a frame.
 pub(crate) struct ShadowCasters {
     pipeline: Pipeline,
+    // Opaque, no culling: double-sided casters without an alpha test
+    two_sided_pipeline: Pipeline,
     // Alpha test, no culling: casters with a `cutout` material
     cutout_pipeline: Pipeline,
     camera_buffer: wgpu::Buffer,
@@ -167,28 +183,32 @@ impl ShadowCasters {
     ) -> Result<Self> {
         let map_capacity = map_capacity.max(1);
         let max_instances = max_instances.max(1);
-        let pipeline = renderer.create_pipeline(PipelineDesc {
-            label: Some(label),
-            vs: ShaderDesc {
-                source: SHADOW_CASTER_VERTEX_SHADER,
-                entry_func: "vs_main",
-            },
-            ps: ShaderDesc {
-                source: SHADOW_CASTER_FRAGMENT_SHADER,
-                entry_func: "fs_main",
-            },
-            vertex_buffers: &[RendererMesh::data_layout_descriptor()],
-            bind_groups: vec![vec![camera_entry()], vec![per_draw_storage_entry(0)]],
-            targets: &[],
-            depth_stencil: Some(caster_depth_state(constant_bias, slope_bias)),
-            multisample: wgpu::MultisampleState::default(),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-        })?;
+        let mut opaque_pipeline = |cull_mode: Option<wgpu::Face>| {
+            renderer.create_pipeline(PipelineDesc {
+                label: Some(label),
+                vs: ShaderDesc {
+                    source: SHADOW_CASTER_VERTEX_SHADER,
+                    entry_func: "vs_main",
+                },
+                ps: ShaderDesc {
+                    source: SHADOW_CASTER_FRAGMENT_SHADER,
+                    entry_func: "fs_main",
+                },
+                vertex_buffers: &[RendererMesh::data_layout_descriptor()],
+                bind_groups: vec![vec![camera_entry()], vec![per_draw_storage_entry(0)]],
+                targets: &[],
+                depth_stencil: Some(caster_depth_state(constant_bias, slope_bias)),
+                multisample: wgpu::MultisampleState::default(),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode,
+                    ..Default::default()
+                },
+            })
+        };
+        let pipeline = opaque_pipeline(Some(wgpu::Face::Back))?;
+        let two_sided_pipeline = opaque_pipeline(None)?;
 
         let cutout_pipeline = renderer.create_pipeline(PipelineDesc {
             label: Some(label),
@@ -258,6 +278,7 @@ impl ShadowCasters {
         });
         Ok(Self {
             pipeline,
+            two_sided_pipeline,
             cutout_pipeline,
             camera_buffer,
             camera_stride,
@@ -337,16 +358,23 @@ impl ShadowCasters {
         render_pass.set_bind_group(1, &self.per_draw_bind_group, &[]);
         let end = range.end.min(casters.len()).min(self.max_instances);
         let mut first = range.start;
-        // Casters are sorted with the plain ones first, then by cutout material
+        // Casters are sorted by group (`Caster::group`): culled opaque, double-sided opaque, then
+        // cutout by material
         let mut bound_cutout: Option<RendererMaterialHandle> = None;
+        let mut two_sided_bound = false;
         while first < end {
-            let (mesh_handle, cutout) = (casters[first].mesh, casters[first].cutout);
+            let (mesh_handle, group) = (casters[first].mesh, casters[first].group());
+            let cutout = casters[first].cutout;
             let mut run_end = first + 1;
             while run_end < end
                 && casters[run_end].mesh == mesh_handle
-                && casters[run_end].cutout == cutout
+                && casters[run_end].group() == group
             {
                 run_end += 1;
+            }
+            if group == 1 && !two_sided_bound {
+                render_pass.set_pipeline(&self.two_sided_pipeline.pipeline);
+                two_sided_bound = true;
             }
             if let Some(material_handle) = cutout.filter(|handle| bound_cutout != Some(*handle)) {
                 let Ok(material) = world
@@ -374,17 +402,10 @@ impl ShadowCasters {
     }
 }
 
-/// Sorts casters so equal meshes form instanced runs: plain casters first, then cutout ones by
-/// material (one pipeline switch and one material bind per material).
+/// Sorts casters so equal meshes form instanced runs within each draw group (`Caster::group`):
+/// one pipeline switch per group and one material bind per cutout material.
 pub(crate) fn sort_by_mesh(casters: &mut [Caster]) {
-    casters.sort_unstable_by_key(|caster| {
-        (
-            caster
-                .cutout
-                .map_or(0, |material| material.data().index as u64 + 1),
-            caster.mesh.data().index,
-        )
-    });
+    casters.sort_unstable_by_key(|caster| (caster.group(), caster.mesh.data().index));
 }
 
 fn camera_entry() -> wgpu::BindGroupLayoutEntry {
@@ -444,6 +465,7 @@ mod tests {
                 caster: Caster {
                     mesh: RendererMeshHandle::default(),
                     cutout: None,
+                    double_sided: false,
                     transform: DrawTransform::from(&crate::ecs::TransformComponent::default()),
                 },
                 model: Matrix4f::IDENTITY,

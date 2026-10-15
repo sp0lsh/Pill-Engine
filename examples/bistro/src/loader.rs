@@ -4,7 +4,8 @@
 
 use pill_assets::ktx2::{ktx2_to_rtex, TextureKind, COOK_VERSION};
 use pill_engine::game::{
-    gltf_image_kinds, gltf_resource_uris, ibl, parse_gltf_scene, GltfSceneData, TextureType,
+    gltf_image_kinds, gltf_resource_uris, ibl, parse_gltf_scene, CookedImages, GltfSceneData,
+    TextureType,
 };
 
 use crate::fetch;
@@ -57,22 +58,25 @@ pub fn load() -> Result<BistroCpu, String> {
         start.elapsed().as_secs_f32()
     ));
 
-    // Textures the materials use, cooked (or read back from the cook cache)
+    // Textures the materials use, cooked per kind they are used as (or read back from the cook
+    // cache)
     let cook_start = std::time::Instant::now();
     let jobs: Vec<(usize, &String, TextureType)> = uris
         .images
         .iter()
         .zip(&kinds)
         .enumerate()
-        .filter_map(|(index, (uri, kind))| Some((index, uri.as_ref()?, (*kind)?)))
+        .filter_map(|(index, (uri, kinds))| Some((index, uri.as_ref()?, kinds)))
+        .flat_map(|(index, uri, kinds)| kinds.iter().map(move |&kind| (index, uri, kind)))
         .collect();
-    let cooked = fetch::map_parallel(&jobs, PARALLEL_COOKS, |(_, uri, kind)| {
+    let rtexes = fetch::map_parallel(&jobs, PARALLEL_COOKS, |(_, uri, kind)| {
         cook_cached(uri, *kind)
     })?;
-    let mut images = vec![Vec::new(); uris.images.len()];
-    for ((index, _, _), rtex) in jobs.iter().zip(cooked) {
-        images[*index] = rtex;
-    }
+    let mut cooked: CookedImages = jobs
+        .iter()
+        .zip(rtexes)
+        .map(|(&(index, _, kind), rtex)| ((index, kind), rtex))
+        .collect();
     ui::set_status(format!(
         "Bistro: {} textures (BC7) in {:.1} s",
         jobs.len(),
@@ -80,8 +84,8 @@ pub fn load() -> Result<BistroCpu, String> {
     ));
 
     let parse_start = std::time::Instant::now();
-    let scene =
-        parse_gltf_scene(NAME, &gltf_bytes, &buffers, &mut images).map_err(|e| e.to_string())?;
+    let scene = parse_gltf_scene(NAME, &gltf_bytes, &buffers, &mut [], &mut cooked)
+        .map_err(|e| e.to_string())?;
     drop(buffers);
     let equirect = ibl::equirect_from_hdr(&hdr).map_err(|e| e.to_string())?;
     let ibl = ibl::bake_all(&equirect);

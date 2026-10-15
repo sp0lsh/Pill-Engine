@@ -255,8 +255,9 @@ fn spawn_assets(engine: &mut Engine, scene: SceneHandle, cpu: BistroCpu) -> Resu
         emission.materials.clear();
         emission.scale = None;
         for (index, material) in materials.iter().enumerate() {
+            // glTF emission is factor × texture: a zero factor emits nothing, texture or not
             let factor = material.emissive_color;
-            if material.emissive.is_none() && factor.iter().all(|&channel| channel <= 0.0) {
+            if factor.iter().all(|&channel| channel <= 0.0) {
                 continue;
             }
             let [red, green, blue] = factor;

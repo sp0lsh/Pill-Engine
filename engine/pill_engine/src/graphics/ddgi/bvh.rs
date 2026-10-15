@@ -18,11 +18,13 @@ pub(crate) const BVH_STACK_SIZE: usize = 32;
 /// than `BVH_STACK_SIZE` entries.
 pub(crate) const MAX_DEPTH: usize = BVH_STACK_SIZE - 2;
 
-/// A world-space triangle with the diffuse albedo of its material (linear RGB).
+/// A world-space triangle with the diffuse albedo of its material (linear RGB) and the share of
+/// rays it stops (1 = opaque; less for alpha-tested materials, whose texture has holes).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Triangle {
     pub(crate) vertices: [Vector3f; 3],
     pub(crate) albedo: [f32; 3],
+    pub(crate) coverage: f32,
 }
 
 /// BVH node in the GPU layout: interior if `count == 0` (left child = this + 1, right child =
@@ -36,7 +38,8 @@ pub(crate) struct GpuBvhNode {
     pub(crate) count: u32,
 }
 
-/// Triangle in the GPU layout: first vertex, the two edges from it, albedo packed as RGBA8.
+/// Triangle in the GPU layout: first vertex, the two edges from it, albedo packed as RGBA8 with
+/// the coverage in alpha.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct GpuTriangle {
@@ -116,7 +119,7 @@ impl Bvh {
                 let [a, b, c] = triangle.vertices;
                 GpuTriangle {
                     v0: a.to_array(),
-                    albedo: pack_rgba8(triangle.albedo),
+                    albedo: pack_rgba8(triangle.albedo, triangle.coverage),
                     e1: (b - a).to_array(),
                     _pad0: 0,
                     e2: (c - a).to_array(),
@@ -143,10 +146,11 @@ impl Bvh {
     }
 }
 
-/// Linear RGB in 0..1 → RGBA8 (r in the low byte), as `unpack_albedo` in bvh_trace.hlsl reads it.
-fn pack_rgba8([r, g, b]: [f32; 3]) -> u32 {
+/// Linear RGB and alpha in 0..1 → RGBA8 (r in the low byte), as `bvh_triangle_albedo` and
+/// `bvh_blocks` in bvh_trace.hlsl read it.
+fn pack_rgba8([r, g, b]: [f32; 3], alpha: f32) -> u32 {
     let byte = |value: f32| (value.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
-    byte(r) | byte(g) << 8 | byte(b) << 16 | 255 << 24
+    byte(r) | byte(g) << 8 | byte(b) << 16 | byte(alpha) << 24
 }
 
 struct Builder<'a> {
@@ -343,6 +347,7 @@ mod tests {
                 Triangle {
                     vertices: [vertex(), vertex(), vertex()],
                     albedo: [0.5; 3],
+                    coverage: 1.0,
                 }
             })
             .collect()
@@ -445,6 +450,7 @@ mod tests {
                         Vector3f::new(x, 0.0, 1.0),
                     ],
                     albedo: [0.5; 3],
+                    coverage: 1.0,
                 }
             })
             .collect();
@@ -465,7 +471,8 @@ mod tests {
 
     #[test]
     fn albedo_packs_red_in_the_low_byte() {
-        assert_eq!(pack_rgba8([1.0, 0.0, 0.0]), 0xFF0000FF);
-        assert_eq!(pack_rgba8([0.0, 0.0, 1.0]) & 0x00FF0000, 0x00FF0000);
+        assert_eq!(pack_rgba8([1.0, 0.0, 0.0], 1.0), 0xFF0000FF);
+        assert_eq!(pack_rgba8([0.0, 0.0, 1.0], 1.0) & 0x00FF0000, 0x00FF0000);
+        assert_eq!(pack_rgba8([0.0; 3], 0.5) >> 24, 128);
     }
 }

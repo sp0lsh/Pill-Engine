@@ -18,8 +18,10 @@ struct DdgiRay {
 
 static const uint TEXELS = DDGI_COLOR_RESOLUTION * DDGI_COLOR_RESOLUTION;
 static const float DDGI_WARMUP_UPDATES = 32.0;
-// Share of backface hits above which a probe is taken as inside geometry
+// Share of backface hits above which a probe is taken as inside geometry, and the blend of its
+// average over frames (sh[3].w): a frame's 4–16 rays measure it only in steps of 6–25 %
 static const float RANDOM_RAY_BACKFACE_THRESHOLD = 0.1;
+static const float BACKFACE_BLEND = 1.0 / 16.0;
 groupshared float3 ray_directions[TEXELS];
 groupshared float4 ray_radiance[TEXELS]; // w: backface hit
 groupshared float3 texel_radiance[TEXELS];
@@ -62,11 +64,16 @@ void cs_main(uint3 group : SV_GroupID, uint2 thread : SV_GroupThreadID, uint thr
         GroupMemoryBarrierWithGroupSync();
     }
     // Backface hits are ignored, and a probe whose rays hit backfaces RANDOM_RAY_BACKFACE_THRESHOLD
-    // of the time is probably inside geometry: it keeps its lighting this frame instead of
+    // of the time on average is probably inside geometry: it keeps its lighting instead of
     // averaging the unlit inside of a wall. Every thread counts the same rays, so the whole group
     // returns together
-    uint max_backfaces = uint(float(ray_count) * RANDOM_RAY_BACKFACE_THRESHOLD);
-    if (backfaces > 0 && backfaces >= max_backfaces) {
+    float backface_share = lerp(ddgi_probes_out[probe_index].sh[3].w, float(backfaces) / float(ray_count), BACKFACE_BLEND);
+    if (backfaces == ray_count || backface_share > RANDOM_RAY_BACKFACE_THRESHOLD) {
+        // Every thread has read the probe above; thread 0 only moves the average on
+        GroupMemoryBarrierWithGroupSync();
+        if (thread_index == 0) {
+            ddgi_probes_out[probe_index].sh[3].w = backface_share;
+        }
         return;
     }
     uint history_index = probe_index * TEXELS + thread_index;
@@ -114,7 +121,7 @@ void cs_main(uint3 group : SV_GroupID, uint2 thread : SV_GroupThreadID, uint thr
         probe.sh[0] = float4(sh0 * scale, weight);
         probe.sh[1] = float4(sh1 * scale, count);
         probe.sh[2] = float4(sh2 * scale, copied);
-        probe.sh[3] = float4(sh3 * scale, 0.0);
+        probe.sh[3] = float4(sh3 * scale, backface_share);
         probe.offset = relocation;
         ddgi_probes_out[probe_index] = probe;
     }
