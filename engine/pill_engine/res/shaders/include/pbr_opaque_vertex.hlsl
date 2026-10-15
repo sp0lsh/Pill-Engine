@@ -32,12 +32,14 @@ struct VertexOutput {
                         float4 sv_position         : SV_POSITION;
 };
 
+// RendererMesh streams: slot 0 position; slot 1 packed attributes. Normal and tangent arrive as
+// Unorm10_10_10_2 of v * 0.5 + 0.5; the tangent's alpha codes the bitangent sign (mesh.rs
+// TANGENT_CODE_*: 0 = -1, 1/3 = no tangent frame, 1 = +1).
 struct VertexInput {
     [[vk::location(0)]] float3 position;
     [[vk::location(4)]] float2 texture_coordinates;
-    [[vk::location(5)]] float3 normal;
-    [[vk::location(6)]] float3 tangent;
-    [[vk::location(7)]] float3 bitangent;
+    [[vk::location(5)]] float4 packed_normal;
+    [[vk::location(6)]] float4 packed_tangent;
 };
 
 // Zero for (near) zero-length input, so degenerate tangents don't turn into NaN
@@ -65,12 +67,18 @@ VertexOutput vs_main(VertexInput input, uint instance_id : SV_InstanceID) {
         output.previous_clip_position  = mul(camera.previous_view_projection, float4(previous_world_position, 1.0));
     }
 #endif
+    float3 normal       = input.packed_normal.xyz * 2.0 - 1.0;
+    int    tangent_code = (int)round(input.packed_tangent.w * 3.0);
+    // No tangent frame: zero tangent and bitangent, the fragment shader keeps the vertex normal
+    float3 tangent      = tangent_code == 1 ? float3(0.0, 0.0, 0.0) : input.packed_tangent.xyz * 2.0 - 1.0;
+    float3 bitangent    = cross(normal, tangent) * (tangent_code == 0 ? -1.0 : 1.0);
+
     output.texture_coordinates = input.texture_coordinates;
     output.world_position      = world_position;
     // Inverse-transpose of R*S is R*S^-1: divide by scale so non-uniform scale keeps normals perpendicular
-    output.world_normal        = normalize(mul(rotation, input.normal / transform.scale.xyz));
+    output.world_normal        = normalize(mul(rotation, normal / transform.scale.xyz));
     // Tangents lie in the surface, so they transform like positions (R*S)
-    output.world_tangent       = safe_normalize(mul(rotation, input.tangent * transform.scale.xyz));
-    output.world_bitangent     = safe_normalize(mul(rotation, input.bitangent * transform.scale.xyz));
+    output.world_tangent       = safe_normalize(mul(rotation, tangent * transform.scale.xyz));
+    output.world_bitangent     = safe_normalize(mul(rotation, bitangent * transform.scale.xyz));
     return output;
 }

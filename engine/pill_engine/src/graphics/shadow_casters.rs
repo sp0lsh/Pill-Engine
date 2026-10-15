@@ -194,7 +194,7 @@ impl ShadowCasters {
                     source: SHADOW_CASTER_FRAGMENT_SHADER,
                     entry_func: "fs_main",
                 },
-                vertex_buffers: &[RendererMesh::data_layout_descriptor()],
+                vertex_buffers: &[RendererMesh::position_layout_descriptor()],
                 bind_groups: vec![vec![camera_entry()], vec![per_draw_storage_entry(0)]],
                 targets: &[],
                 depth_stencil: Some(caster_depth_state(constant_bias, slope_bias)),
@@ -220,7 +220,7 @@ impl ShadowCasters {
                 source: SHADOW_CASTER_CUTOUT_FRAGMENT_SHADER,
                 entry_func: "fs_main",
             },
-            vertex_buffers: &[RendererMesh::data_layout_descriptor()],
+            vertex_buffers: &RendererMesh::data_layout_descriptors(),
             // Groups 2 and 3 are the material's own texture and parameter bind groups
             bind_groups: vec![
                 vec![camera_entry()],
@@ -392,7 +392,12 @@ impl ShadowCasters {
                 bound_cutout = Some(material_handle);
             }
             if let Ok(mesh) = world.resources.get_resource::<RendererMesh>(&mesh_handle) {
-                render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                // Cutouts read uvs from the attribute stream; the other casters only positions
+                if cutout.is_some() {
+                    mesh.set_vertex_buffers(&mut render_pass);
+                } else {
+                    mesh.set_position_buffer(&mut render_pass);
+                }
                 render_pass
                     .set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 render_pass.draw_indexed(0..mesh.index_count, 0, first as u32..run_end as u32);

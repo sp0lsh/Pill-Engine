@@ -247,6 +247,50 @@ impl MeshVertex {
     pub(crate) fn position(&self) -> [f32; 3] {
         self.position
     }
+
+    /// GPU attribute stream entry (`RendererMesh::attribute_buffer`): 12 bytes instead of the 44
+    /// bytes of uv, normal, tangent and bitangent here.
+    pub(crate) fn packed_attributes(&self) -> PackedVertexAttributes {
+        let normal = Vector3f::from_array(self.normal);
+        let tangent = Vector3f::from_array(self.tangent);
+        let bitangent = Vector3f::from_array(self.bitangent);
+        let tangent_code = if tangent.length_squared() <= 1e-12 {
+            TANGENT_CODE_NO_FRAME
+        } else if normal.cross(tangent).dot(bitangent) < 0.0 {
+            TANGENT_CODE_NEGATIVE
+        } else {
+            TANGENT_CODE_POSITIVE
+        };
+        PackedVertexAttributes {
+            normal: pack_unit_vector(normal, 0),
+            tangent: pack_unit_vector(tangent, tangent_code),
+            texture_coordinates: self
+                .texture_coordinates
+                .map(|value| half::f16::from_f32(value).to_bits()),
+        }
+    }
+}
+
+/// 2-bit alpha of the packed tangent: bitangent = sign · cross(normal, tangent), or no tangent
+/// frame (degenerate UVs) — mirrored in include/pbr_opaque_vertex.hlsl.
+pub(crate) const TANGENT_CODE_NEGATIVE: u32 = 0;
+pub(crate) const TANGENT_CODE_NO_FRAME: u32 = 1;
+pub(crate) const TANGENT_CODE_POSITIVE: u32 = 3;
+
+/// Packed vertex attributes: normal and tangent as `Unorm10_10_10_2` of v·0.5 + 0.5 (wgpu has no
+/// signed 10:10:10:2 vertex format), uv as `Float16x2`.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct PackedVertexAttributes {
+    pub(crate) normal: u32,
+    pub(crate) tangent: u32,
+    pub(crate) texture_coordinates: [u16; 2],
+}
+
+/// Components of a unit vector in 10 bits each (r in the low bits) plus a 2-bit alpha.
+fn pack_unit_vector(vector: Vector3f, alpha: u32) -> u32 {
+    let unorm10 = |value: f32| ((value.clamp(-1.0, 1.0) * 0.5 + 0.5) * 1023.0).round() as u32;
+    unorm10(vector.x) | (unorm10(vector.y) << 10) | (unorm10(vector.z) << 20) | (alpha << 30)
 }
 
 pub struct MeshData {
@@ -590,5 +634,76 @@ impl MeshData {
         ];
 
         MeshData { vertices, indices }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unpack_unit_vector(packed: u32) -> (Vector3f, u32) {
+        let component = |shift: u32| ((packed >> shift) & 1023) as f32 / 1023.0 * 2.0 - 1.0;
+        (
+            Vector3f::new(component(0), component(10), component(20)),
+            packed >> 30,
+        )
+    }
+
+    fn vertex(normal: [f32; 3], tangent: [f32; 3], bitangent: [f32; 3]) -> MeshVertex {
+        MeshVertex {
+            position: [0.0; 3],
+            texture_coordinates: [0.0; 2],
+            normal,
+            tangent,
+            bitangent,
+        }
+    }
+
+    #[test]
+    fn vertex_pack_normal_round_trip_error_within_one_step() {
+        let normal = Vector3f::new(0.3, -0.5, 0.8).normalize();
+        let packed = vertex(normal.to_array(), [1.0, 0.0, 0.0], [0.0; 3]).packed_attributes();
+        let (decoded, _) = unpack_unit_vector(packed.normal);
+        assert!((decoded - normal).abs().max_element() <= 2.0 / 1023.0);
+    }
+
+    #[test]
+    fn vertex_pack_cube_faces_bitangent_sign_reconstructs_bitangent() {
+        for vertex in MeshData::cube(1.0).vertices {
+            let packed = vertex.packed_attributes();
+            let (normal, _) = unpack_unit_vector(packed.normal);
+            let (tangent, code) = unpack_unit_vector(packed.tangent);
+            let sign = if code == TANGENT_CODE_NEGATIVE {
+                -1.0
+            } else {
+                1.0
+            };
+            let reconstructed = normal.cross(tangent) * sign;
+            let stored = Vector3f::from_array(vertex.bitangent).normalize();
+            assert!((reconstructed - stored).abs().max_element() < 0.01);
+        }
+    }
+
+    #[test]
+    fn vertex_pack_zero_tangent_no_frame_code() {
+        let packed = vertex([0.0, 0.0, 1.0], [0.0; 3], [0.0; 3]).packed_attributes();
+        assert_eq!(packed.tangent >> 30, TANGENT_CODE_NO_FRAME);
+    }
+
+    #[test]
+    fn vertex_pack_mirrored_bitangent_negative_code() {
+        let packed = vertex([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, -1.0, 0.0]).packed_attributes();
+        assert_eq!(packed.tangent >> 30, TANGENT_CODE_NEGATIVE);
+    }
+
+    #[test]
+    fn vertex_pack_uv_239_exact_in_f16() {
+        let mut tiled = vertex([0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        tiled.texture_coordinates = [239.0, -0.5];
+        let packed = tiled.packed_attributes();
+        let decoded = packed
+            .texture_coordinates
+            .map(|bits| half::f16::from_bits(bits).to_f32());
+        assert_eq!(decoded, [239.0, -0.5]);
     }
 }

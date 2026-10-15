@@ -767,7 +767,7 @@ impl PassPBROpaque {
                 },
                 entry_func: "fs_main",
             },
-            vertex_buffers: &[RendererMesh::data_layout_descriptor()],
+            vertex_buffers: &RendererMesh::data_layout_descriptors(),
             bind_groups,
             targets: &color_targets,
             depth_stencil: Some(wgpu::DepthStencilState {
@@ -1636,7 +1636,7 @@ impl Pass for PassPBROpaque {
             else {
                 continue;
             };
-            render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+            mesh.set_vertex_buffers(&mut render_pass);
             render_pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             // One instanced draw per batch: instance_index in [first, first+count) selects per-draw data.
             render_pass.draw_indexed(

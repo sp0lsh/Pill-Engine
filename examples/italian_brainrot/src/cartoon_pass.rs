@@ -107,7 +107,7 @@ impl Pass for CartoonPass {
                 source: FRAGMENT_SHADER,
                 entry_func: "fs_main",
             },
-            vertex_buffers: &[RendererMesh::data_layout_descriptor()],
+            vertex_buffers: &RendererMesh::data_layout_descriptors(),
             bind_groups,
             targets: &[Some(wgpu::ColorTargetState {
                 format: renderer.get_hdr_format(),
@@ -293,7 +293,7 @@ impl Pass for CartoonPass {
                 .find(|(handle, _)| handle == texture_handle)
                 .expect("CartoonPass: texture bind group built above");
             render_pass.set_bind_group(BIND_GROUP_TEXTURE as u32, texture_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+            mesh.set_vertex_buffers(&mut render_pass);
             render_pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             let instance = instance as u32;
             render_pass.draw_indexed(0..mesh.index_count, 0, instance..instance + 1);

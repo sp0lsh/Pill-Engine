@@ -22,6 +22,7 @@ pub use resource_storage::ResourceStorage;
 #[cfg(not(target_arch = "wasm32"))]
 pub use sound::{Sound, SoundHandle};
 
+pub(crate) use mesh::PackedVertexAttributes;
 pub use mesh::{Mesh, MeshData, MeshHandle, MeshVertex};
 
 pub(crate) use texture::parse_cooked_tex;
