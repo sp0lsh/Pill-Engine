@@ -7,16 +7,17 @@ use crate::config::{
     SHADOW_CASTER_FRAGMENT_SHADER, SHADOW_CASTER_VERTEX_SHADER, SHADOW_MAP_FORMAT,
 };
 use crate::ecs::{MeshRenderingComponent, TransformComponent};
-use crate::graphics::pass_pbr_opaque::{
-    per_draw_storage_entry, DrawTransform, PER_DRAW_STRIDE_BYTES,
+use crate::graphics::pass_pbr_opaque::{DrawTransform, PER_DRAW_STRIDE_BYTES};
+use crate::graphics::shader_bindings::{
+    merge_layouts, shadow_caster_cutout_fragment, shadow_caster_cutout_vertex,
+    shadow_caster_fragment, shadow_caster_vertex, structs::ShadowCamera,
 };
 use crate::graphics::{
     decompose_render_queue_key, BufferDesc, PillRenderer, Pipeline, PipelineDesc,
     RendererMaterialHandle, RendererMeshHandle, ShaderDesc, WorldQuery,
 };
 use crate::renderer::resources::{
-    material_array_layout_entries, material_textures_layout_entries, RendererMaterial,
-    RendererMesh, Vertex,
+    material_textures_layout_entries, RendererMaterial, RendererMesh, Vertex,
 };
 
 use pill_core::{Matrix4f, PillSlotMapKey, Result, Vector3f, Vector4f};
@@ -197,7 +198,10 @@ impl ShadowCasters {
                 },
                 fragment_constants: &[],
                 vertex_buffers: &[RendererMesh::position_layout_descriptor()],
-                bind_groups: vec![vec![camera_entry()], vec![per_draw_storage_entry(0)]],
+                bind_groups: merge_layouts(&[
+                    shadow_caster_vertex::layout(),
+                    shadow_caster_fragment::layout(),
+                ]),
                 targets: &[],
                 depth_stencil: Some(caster_depth_state(constant_bias, slope_bias)),
                 multisample: wgpu::MultisampleState::default(),
@@ -224,13 +228,13 @@ impl ShadowCasters {
             },
             fragment_constants: &[],
             vertex_buffers: &RendererMesh::data_layout_descriptors(),
-            // Group 2 is the material's texture bind group, group 3 the material array
-            bind_groups: vec![
-                vec![camera_entry()],
-                vec![per_draw_storage_entry(0)],
-                material_textures_layout_entries(),
-                material_array_layout_entries(),
-            ],
+            // Group 2 is the material's texture bind group (all its textures, the shader reads
+            // base_color only), group 3 the material array
+            bind_groups: merge_layouts(&[
+                shadow_caster_cutout_vertex::layout(),
+                shadow_caster_cutout_fragment::layout(),
+                vec![vec![], vec![], material_textures_layout_entries()],
+            ]),
             targets: &[],
             depth_stencil: Some(caster_depth_state(constant_bias, slope_bias)),
             multisample: wgpu::MultisampleState::default(),
@@ -242,7 +246,7 @@ impl ShadowCasters {
             },
         })?;
 
-        let matrix_size = std::mem::size_of::<[[f32; 4]; 4]>() as u64;
+        let matrix_size = std::mem::size_of::<ShadowCamera>() as u64;
         let alignment = renderer
             .get_device()
             .limits()
@@ -317,7 +321,9 @@ impl ShadowCasters {
         for view_projection in view_projections.iter().take(self.map_capacity) {
             let start = self.staging.len();
             self.staging
-                .extend_from_slice(bytemuck::bytes_of(&view_projection.to_cols_array_2d()));
+                .extend_from_slice(bytemuck::bytes_of(&ShadowCamera {
+                    view_projection: view_projection.to_cols_array_2d(),
+                }));
             self.staging.resize(start + self.camera_stride as usize, 0);
         }
         if !self.staging.is_empty() {
@@ -424,19 +430,6 @@ impl ShadowCasters {
 /// one pipeline switch per group and one material bind per cutout material.
 pub(crate) fn sort_by_mesh(casters: &mut [Caster]) {
     casters.sort_unstable_by_key(|caster| (caster.group(), caster.mesh.data().index));
-}
-
-fn camera_entry() -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding: 0,
-        visibility: wgpu::ShaderStages::VERTEX,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: true,
-            min_binding_size: None,
-        },
-        count: None,
-    }
 }
 
 /// Depth write with polygon offset against self-shadowing (Filament's default approach).

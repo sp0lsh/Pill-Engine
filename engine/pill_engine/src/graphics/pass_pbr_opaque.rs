@@ -117,20 +117,6 @@ struct PreviousTransform {
 // binding 0 this frame's, binding 1 last frame's (motion vectors only).
 pub(crate) const PER_DRAW_STRIDE_BYTES: usize = std::mem::size_of::<DrawTransform>();
 
-/// Vertex-stage read-only storage buffer of per-draw `DrawTransform`s.
-pub(crate) fn per_draw_storage_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::VERTEX,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: true },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-
 pub const MATERIAL_BIND_GROUP_GLOBALS: usize = pbr_opaque_fragment::SCENE.group as usize;
 pub const MATERIAL_BIND_GROUP_TEXTURES: usize =
     pbr_opaque_fragment::BASE_COLOR_TEXTURE.group as usize;

@@ -1,11 +1,12 @@
 // Shadow caster: positions only, transformed like the PBR vertex shader into light clip space.
 
+#include "include/bindings.hlsl"
 #include "include/draw_transform.hlsl"
 
 struct ShadowCamera {
     column_major float4x4 view_projection; // world → light clip space
 };
-[[vk::binding(0, 0)]] ConstantBuffer<ShadowCamera> shadow_camera;
+[[vk::binding(0, 0)]] [DynamicOffset] ConstantBuffer<ShadowCamera> shadow_camera; // one per shadow map
 [[vk::binding(0, 1)]] StructuredBuffer<DrawTransform> per_draw_array;
 
 [shader("vertex")]

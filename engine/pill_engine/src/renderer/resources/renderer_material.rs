@@ -82,16 +82,9 @@ pub(crate) struct MaterialTextures {
 }
 
 /// Bind group layout of the material textures: (texture, sampler) pairs for base_color, normal,
-/// metallic_roughness, emissive. Shared by RendererMaterial, PassPBROpaque and the shadow casters.
+/// metallic_roughness, emissive. Shared by RendererMaterial and the shadow casters.
 pub(crate) fn material_textures_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
     let group = pbr_opaque_fragment::BASE_COLOR_TEXTURE.group as usize;
-    pbr_opaque_fragment::layout().swap_remove(group)
-}
-
-/// Layout of the material array bind group: the renderer's uniform array of `PackedMaterial`,
-/// indexed by material slot (`PillRenderer::get_material_buffer`).
-pub(crate) fn material_array_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
-    let group = pbr_opaque_fragment::MATERIAL_ARRAY.group as usize;
     pbr_opaque_fragment::layout().swap_remove(group)
 }
 
