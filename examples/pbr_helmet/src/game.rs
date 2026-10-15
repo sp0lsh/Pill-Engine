@@ -68,7 +68,7 @@ impl PillGame for Game {
             // Post chain for bloom on the emissive parts; its other effects stay off
             rs.pass_chain = PassChain::PostFx;
             rs.motion_blur = 0.0;
-            rs.ssao.strength = 0.0;
+            rs.ssao.strength = 1.0;
         }
 
         let scene = engine.create_scene("helmet")?;

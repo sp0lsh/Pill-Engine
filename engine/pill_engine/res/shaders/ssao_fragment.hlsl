@@ -5,7 +5,7 @@
 // ssao_depth_downsample_fragment.hlsl; positions and normals come from depth since this forward
 // renderer has no normal G-buffer.
 //
-// Outputs (ao, viewZ) — the downstream bilateral filter gets its guide channel in the same fetch.
+// Outputs the AO visibility (R8); the bilateral passes read view depth from the depth chain.
 
 // Mirrors SsaoParams in pass_ssao.rs
 struct SsaoParams {
@@ -112,7 +112,7 @@ float4 fs_main(float2 uv : TEXCOORD0) : SV_Target {
     float z = level_depth(0, coord);
     // Far plane / sky: nothing to occlude
     if (z <= 0.0 || z > 1e4) {
-        return float4(1.0, z, 0.0, 0.0);
+        return float4(1.0, 0.0, 0.0, 0.0);
     }
 
     // Normal from a 5-tap cross, the closer neighbour per axis: a one-sided difference across a
@@ -136,7 +136,7 @@ float4 fs_main(float2 uv : TEXCOORD0) : SV_Target {
     // View-space width of one half-res pixel at this depth → radius in pixels
     float screen_radius = effect_radius * (float)size.x / (z * 2.0 * params.tan_half_x);
     if (screen_radius < PIXEL_TOO_CLOSE) {
-        return float4(1.0, z, 0.0, 0.0);
+        return float4(1.0, 0.0, 0.0, 0.0);
     }
     float visibility = saturate((10.0 - screen_radius) / 100.0) * 0.5;
 
@@ -203,5 +203,5 @@ float4 fs_main(float2 uv : TEXCOORD0) : SV_Target {
 
     visibility = max(0.03, pow(saturate(visibility), max(params.power, 1e-4)));
     visibility = saturate(1.0 - (1.0 - visibility) * params.intensity);
-    return float4(visibility, z, 0.0, 0.0);
+    return float4(visibility, 0.0, 0.0, 0.0);
 }

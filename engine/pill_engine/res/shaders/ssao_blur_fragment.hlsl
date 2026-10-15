@@ -12,8 +12,9 @@ struct SsaoBlurParams {
     float  sigma_depth_rel; // depth sigma as a fraction of view depth
 };
 
-[[vk::binding(0, 0)]] Texture2D<float4> t_ssao;   // (ao, viewZ)
-[[vk::binding(1, 0)]] ConstantBuffer<SsaoBlurParams> params;
+[[vk::binding(0, 0)]] Texture2D<float4> t_ssao;   // half-res AO (r)
+[[vk::binding(1, 0)]] Texture2D<float>  t_depth;  // half-res view depth (depth chain level 0)
+[[vk::binding(2, 0)]] ConstantBuffer<SsaoBlurParams> params;
 
 static const int TAP_HALF = 4;   // 9 taps, matching the 4x4 noise cell the AO pass writes
 
@@ -25,15 +26,15 @@ float4 fs_main(float2 uv : TEXCOORD0) : SV_Target {
     int2 c    = clamp((int2)(uv * float2((float)w, (float)h)), int2(0, 0), maxc);
     int2 step = (int2)params.blur_dir;
 
-    float4 centre = t_ssao.Load(int3(c, 0));
-    float  z0     = centre.y;
+    float ao0 = t_ssao.Load(int3(c, 0)).x;
+    float z0  = t_depth.Load(int3(c, 0));
 
     if (z0 <= 0.0)
-        return centre;
+        return float4(ao0, 0.0, 0.0, 0.0);
 
     // Local gradient along the blur axis, one texel either side.
-    float zp = t_ssao.Load(int3(clamp(c + step, int2(0, 0), maxc), 0)).y;
-    float zm = t_ssao.Load(int3(clamp(c - step, int2(0, 0), maxc), 0)).y;
+    float zp = t_depth.Load(int3(clamp(c + step, int2(0, 0), maxc), 0));
+    float zm = t_depth.Load(int3(clamp(c - step, int2(0, 0), maxc), 0));
     float dzdt = 0.5 * (zp - zm);
 
     // Tolerance grows with distance — the same world-depth slab spans fewer pixels far away.
@@ -46,21 +47,22 @@ float4 fs_main(float2 uv : TEXCOORD0) : SV_Target {
 
     [loop]
     for (int i = -TAP_HALF; i <= TAP_HALF; i++) {
-        int2   tc  = clamp(c + step * i, int2(0, 0), maxc);
-        float4 tap = t_ssao.Load(int3(tc, 0));
+        int2  tc     = clamp(c + step * i, int2(0, 0), maxc);
+        float tap_ao = t_ssao.Load(int3(tc, 0)).x;
+        float tap_z  = t_depth.Load(int3(tc, 0));
 
         float fi = (float)i;
         // Residual against the plane through the centre, not against the centre depth itself.
         float predicted = z0 + dzdt * fi;
-        float residual  = tap.y - predicted;
+        float residual  = tap_z - predicted;
 
         float ws = exp(-fi * fi * inv_2s2);
         float wv = exp(-residual * residual * inv_2v2);
         float wt = ws * wv;
 
-        acc  += tap.x * wt;
+        acc  += tap_ao * wt;
         wsum += wt;
     }
 
-    return float4(acc / max(wsum, 1e-5), z0, 0.0, 0.0);
+    return float4(acc / max(wsum, 1e-5), 0.0, 0.0, 0.0);
 }

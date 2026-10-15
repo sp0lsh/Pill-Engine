@@ -17,8 +17,9 @@ use pill_core::Result;
 use std::cell::Cell;
 use std::rc::Rc;
 
-/// (ao, view depth) at half resolution; read with Load only.
-const SSAO_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Float;
+/// AO visibility at half resolution; read with Load only. The bilateral passes take view depth
+/// from the depth chain's first level, which has the same size.
+const SSAO_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 /// View-space depth chain; half floats quantise too coarsely at range for the AO radius.
 const DEPTH_CHAIN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 /// Depth chain levels at ½, ¼, ⅛, 1/16 of the surface (`MAX_MIP` + 1 in ssao_fragment.hlsl).
@@ -188,7 +189,11 @@ impl Pass for PassSsao {
             renderer,
             "pass_ssao_blur",
             SSAO_BLUR_FRAGMENT_SHADER,
-            vec![texture_entry(0, false), uniform_entry(1)],
+            vec![
+                texture_entry(0, false),
+                texture_entry(1, false),
+                uniform_entry(2),
+            ],
             SSAO_TARGET_FORMAT,
             None,
         )?;
@@ -201,7 +206,8 @@ impl Pass for PassSsao {
                 texture_entry(1, false),
                 texture_entry(2, false),
                 texture_entry(3, false),
-                uniform_entry(4),
+                texture_entry(4, false),
+                uniform_entry(5),
             ],
             hdr_format,
             None,
@@ -365,6 +371,7 @@ impl Pass for PassSsao {
                 &state.blur,
                 vec![
                     Binding::Target(state.raw),
+                    Binding::Target(depth0),
                     Binding::Buffer(&state.blur_horizontal_params),
                 ],
                 state.blurred_horizontal,
@@ -374,6 +381,7 @@ impl Pass for PassSsao {
                 &state.blur,
                 vec![
                     Binding::Target(state.blurred_horizontal),
+                    Binding::Target(depth0),
                     Binding::Buffer(&state.blur_vertical_params),
                 ],
                 state.blurred,
@@ -385,6 +393,7 @@ impl Pass for PassSsao {
                     Binding::Target(color),
                     Binding::Target(self.ambient),
                     Binding::Target(state.blurred),
+                    Binding::Target(depth0),
                     Binding::Target(self.depth),
                     Binding::Buffer(&state.apply_params),
                 ],

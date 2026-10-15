@@ -13,9 +13,10 @@ struct SsaoApplyParams {
 
 [[vk::binding(0, 0)]] Texture2D<float4> t_color;    // full-res hdr
 [[vk::binding(1, 0)]] Texture2D<float4> t_ambient;  // full-res indirect term
-[[vk::binding(2, 0)]] Texture2D<float4> t_ssao;     // half-res (ao, viewZ)
-[[vk::binding(3, 0)]] Texture2D<float>  t_depth;    // full-res Depth32Float
-[[vk::binding(4, 0)]] ConstantBuffer<SsaoApplyParams> params;
+[[vk::binding(2, 0)]] Texture2D<float4> t_ssao;       // half-res AO (r)
+[[vk::binding(3, 0)]] Texture2D<float>  t_ssao_depth; // half-res view depth (depth chain level 0)
+[[vk::binding(4, 0)]] Texture2D<float>  t_depth;      // full-res Depth32Float
+[[vk::binding(5, 0)]] ConstantBuffer<SsaoApplyParams> params;
 
 [shader("fragment")]
 float4 fs_main(float2 uv : TEXCOORD0) : SV_Target {
@@ -54,14 +55,15 @@ float4 fs_main(float2 uv : TEXCOORD0) : SV_Target {
     for (int dy = 0; dy < 2; dy++) {
         [unroll]
         for (int dx = 0; dx < 2; dx++) {
-            int2   tc  = clamp(base + int2(dx, dy), int2(0, 0), hmax);
-            float4 tap = t_ssao.Load(int3(tc, 0));
+            int2  tc     = clamp(base + int2(dx, dy), int2(0, 0), hmax);
+            float tap_ao = t_ssao.Load(int3(tc, 0)).x;
+            float tap_z  = t_ssao_depth.Load(int3(tc, 0));
 
             float bw = (dx == 0 ? 1.0 - f.x : f.x) * (dy == 0 ? 1.0 - f.y : f.y);
-            float dz = tap.y - z;
+            float dz = tap_z - z;
             float wt = bw * exp(-dz * dz * inv_2v2);
 
-            acc  += tap.x * wt;
+            acc  += tap_ao * wt;
             wsum += wt;
         }
     }
