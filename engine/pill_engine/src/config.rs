@@ -156,6 +156,19 @@ pub const PBR_OPAQUE_ALPHA_TEST_FRAGMENT_SHADER: &str =
 #[cfg(feature = "post_fx")]
 pub const PBR_OPAQUE_ALPHA_TEST_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/pbr_opaque_post_fx_alpha_test_fragment.wgsl");
+/// 16-bit BRDF variants of the two above, used when `PillRenderer::supports_f16`
+#[cfg(not(feature = "post_fx"))]
+pub const PBR_OPAQUE_F16_FRAGMENT_SHADER: &str =
+    include_str!("../res/shaders/pbr_opaque_f16_fragment.wgsl");
+#[cfg(feature = "post_fx")]
+pub const PBR_OPAQUE_F16_FRAGMENT_SHADER: &str =
+    include_str!("../res/shaders/pbr_opaque_post_fx_f16_fragment.wgsl");
+#[cfg(not(feature = "post_fx"))]
+pub const PBR_OPAQUE_ALPHA_TEST_F16_FRAGMENT_SHADER: &str =
+    include_str!("../res/shaders/pbr_opaque_alpha_test_f16_fragment.wgsl");
+#[cfg(feature = "post_fx")]
+pub const PBR_OPAQUE_ALPHA_TEST_F16_FRAGMENT_SHADER: &str =
+    include_str!("../res/shaders/pbr_opaque_post_fx_alpha_test_f16_fragment.wgsl");
 pub const BACKGROUND_VERTEX_SHADER: &str = include_str!("../res/shaders/background_vertex.wgsl");
 #[cfg(not(feature = "post_fx"))]
 pub const BACKGROUND_FRAGMENT_SHADER: &str =

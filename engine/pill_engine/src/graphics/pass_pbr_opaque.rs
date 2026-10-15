@@ -1,8 +1,9 @@
 use crate::config::{
     AMBIENT_TARGET_FORMAT, BACKGROUND_FRAGMENT_SHADER, BACKGROUND_VERTEX_SHADER,
-    DEFAULT_EQUIRECT_FALLBACK_PIXEL, DEPTH_TARGET_FORMAT, PBR_OPAQUE_ALPHA_TEST_FRAGMENT_SHADER,
-    PBR_OPAQUE_FRAGMENT_SHADER, PBR_OPAQUE_VERTEX_SHADER, SSR_NORMAL_TARGET_FORMAT,
-    SSR_SURFACE_TARGET_FORMAT, VELOCITY_TARGET_FORMAT,
+    DEFAULT_EQUIRECT_FALLBACK_PIXEL, DEPTH_TARGET_FORMAT,
+    PBR_OPAQUE_ALPHA_TEST_F16_FRAGMENT_SHADER, PBR_OPAQUE_ALPHA_TEST_FRAGMENT_SHADER,
+    PBR_OPAQUE_F16_FRAGMENT_SHADER, PBR_OPAQUE_FRAGMENT_SHADER, PBR_OPAQUE_VERTEX_SHADER,
+    SSR_NORMAL_TARGET_FORMAT, SSR_SURFACE_TARGET_FORMAT, VELOCITY_TARGET_FORMAT,
 };
 use crate::graphics::shadow_casters::{box_corners, frustum_planes, outside_frustum};
 use crate::{
@@ -775,10 +776,12 @@ impl PassPBROpaque {
                 entry_func: "vs_main",
             },
             ps: ShaderDesc {
-                source: if variant.alpha_test {
-                    PBR_OPAQUE_ALPHA_TEST_FRAGMENT_SHADER
-                } else {
-                    PBR_OPAQUE_FRAGMENT_SHADER
+                // 16-bit BRDF math where the device runs half floats
+                source: match (variant.alpha_test, renderer.supports_f16()) {
+                    (true, true) => PBR_OPAQUE_ALPHA_TEST_F16_FRAGMENT_SHADER,
+                    (true, false) => PBR_OPAQUE_ALPHA_TEST_FRAGMENT_SHADER,
+                    (false, true) => PBR_OPAQUE_F16_FRAGMENT_SHADER,
+                    (false, false) => PBR_OPAQUE_FRAGMENT_SHADER,
                 },
                 entry_func: "fs_main",
             },

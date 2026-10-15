@@ -95,10 +95,7 @@ pub fn load() -> Result<BistroCpu, String> {
         parse_start.elapsed().as_secs_f32(),
         start.elapsed().as_secs_f32()
     ));
-    Ok(BistroCpu {
-        scene,
-        equirect,
-    })
+    Ok(BistroCpu { scene, equirect })
 }
 
 /// RTEX v5 of a KTX2 image: from `build/cooked/`, else downloaded, cooked and stored there.

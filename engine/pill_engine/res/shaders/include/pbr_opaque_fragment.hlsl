@@ -146,48 +146,67 @@ static const float MIN_NORMAL_DOT_VIEW = 0.02;
 
 #include "oct_ibl.hlsl"
 
-float distribution_ggx(float3 normal, float3 half_vector, float roughness) {
-    // Add epsilon to avoid singularities at very low roughness.
-    float alpha           = max(roughness * roughness, 0.0025);
-    float alpha_squared   = alpha * alpha;
-    float normal_dot_half = max(dot(normal, half_vector), 0.0);
-    float denominator     = (normal_dot_half * normal_dot_half * (alpha_squared - 1.0) + 1.0);
-    return alpha_squared / (PI * denominator * denominator + 1e-7);
+// BRDF math in `real`: 16-bit floats in the PILL_F16 variants (double rate on most GPUs), else
+// 32-bit. Both evaluate the same formulas, arranged so every intermediate and every divisor's
+// reciprocal stays in normal fp16 range; radiances (light intensities can exceed it) stay float.
+// Bounds: D ≤ 891 (the 1e-7 term), the Smith visibility ≤ 1/(4·k²) ≈ 11.4.
+#ifdef PILL_F16
+typedef half  real;
+typedef half3 real3;
+// Kelemen's L·H² floor: 1e-7 is below fp16's smallest normal (6.1e-5)
+static const real MIN_DIVISOR = real(6.1e-5);
+#else
+typedef float  real;
+typedef float3 real3;
+static const real MIN_DIVISOR = 1e-7;
+#endif
+static const real REAL_PI = real(3.14159265359);
+
+// GGX D = α² / (π·d² + 1e-7), d = NoH²(α² − 1) + 1 = |N×H|² + (NoH·α)² (Lagrange's identity:
+// no 1 − NoH² cancellation near highlights in low precision, Filament). Numerator and
+// denominator are scaled by 32² = 1024: the 1e-7 term and α² (≥ 6.25e-6) become normal fp16,
+// and the denominator stays ≤ π·32² ≈ 3217, so its reciprocal (GPUs divide by multiplying with
+// it) does not fall below fp16's smallest normal and flush to zero.
+real distribution_ggx(real3 normal, real3 half_vector, real roughness) {
+    real  alpha_32      = max(roughness * roughness, real(0.0025)) * real(32.0);
+    real3 n_cross_h     = cross(normal, half_vector);
+    real  n_dot_h_alpha = max(dot(normal, half_vector), real(0.0)) * alpha_32 * real(0.17677670); // / √32
+    real  d_32          = dot(n_cross_h, n_cross_h) * real(32.0) + n_dot_h_alpha * n_dot_h_alpha;
+    return alpha_32 * alpha_32 / (REAL_PI * d_32 * d_32 + real(0.0001024));
 }
 
-float geometry_schlick_ggx(float normal_dot_view, float roughness) {
-    // Heitz's k for direct lighting approximation.
-    float roughness_plus_one = roughness + 1.0;
-    float k_factor           = (roughness_plus_one * roughness_plus_one) / 8.0;
-    return normal_dot_view / (normal_dot_view * (1.0 - k_factor) + k_factor);
-}
-
-float geometry_smith(float3 normal, float3 view_direction, float3 light_direction, float roughness) {
-    float normal_dot_view  = max(dot(normal, view_direction), 0.0);
-    float normal_dot_light = max(dot(normal, light_direction), 0.0);
-    return geometry_schlick_ggx(normal_dot_light, roughness) * geometry_schlick_ggx(normal_dot_view, roughness);
+// Smith-Schlick G / (4·NoV·NoL + 1e-4) (Heitz's k for direct light), with G's NoV·NoL factored
+// out of its denominators so the quotient stays bounded
+real visibility_smith(real normal_dot_view, real normal_dot_light, real roughness) {
+    real roughness_plus_one = roughness + real(1.0);
+    real k_factor           = roughness_plus_one * roughness_plus_one / real(8.0);
+    real view_light         = normal_dot_view * normal_dot_light;
+    // ≤ 0.25 over a divisor ≥ k² ≈ 0.022: no fp16 subnormals on either side
+    real normalized         = view_light / (real(4.0) * view_light + real(0.0001));
+    return normalized / ((normal_dot_light * (real(1.0) - k_factor) + k_factor)
+                       * (normal_dot_view * (real(1.0) - k_factor) + k_factor));
 }
 
 // Schlick Fresnel; an F0 of exactly zero (the lighting-only views) means no specular at all, so
 // it also drops the grazing term
-float specular_present(float3 base_reflectivity) {
-    return max(base_reflectivity.r, max(base_reflectivity.g, base_reflectivity.b)) > 0.0 ? 1.0 : 0.0;
+real specular_present(real3 base_reflectivity) {
+    return max(base_reflectivity.r, max(base_reflectivity.g, base_reflectivity.b)) > real(0.0) ? real(1.0) : real(0.0);
 }
 
-float3 fresnel_schlick(float cos_theta, float3 base_reflectivity) {
-    float grazing = pow(1.0 - cos_theta, 5.0) * specular_present(base_reflectivity);
-    return base_reflectivity + (float3(1.0, 1.0, 1.0) - base_reflectivity) * grazing;
+real3 fresnel_schlick(real cos_theta, real3 base_reflectivity) {
+    real grazing = pow(real(1.0) - cos_theta, real(5.0)) * specular_present(base_reflectivity);
+    return base_reflectivity + (real3(1.0, 1.0, 1.0) - base_reflectivity) * grazing;
 }
 
-float3 fresnel_schlick_roughness(float cos_theta, float3 base_reflectivity, float roughness) {
-    float grazing = pow(1.0 - cos_theta, 5.0) * specular_present(base_reflectivity);
-    return base_reflectivity + (max(float3(1.0 - roughness, 1.0 - roughness, 1.0 - roughness), base_reflectivity) - base_reflectivity) * grazing;
+real3 fresnel_schlick_roughness(real cos_theta, real3 base_reflectivity, real roughness) {
+    real grazing = pow(real(1.0) - cos_theta, real(5.0)) * specular_present(base_reflectivity);
+    real smooth  = real(1.0) - roughness;
+    return base_reflectivity + (max(real3(smooth, smooth, smooth), base_reflectivity) - base_reflectivity) * grazing;
 }
-
 
 // Kelemen visibility: cheaper than Smith, enough for a thin dielectric coat (Filament)
-float visibility_kelemen(float light_dot_half) {
-    return 0.25 / max(light_dot_half * light_dot_half, 1e-7);
+real visibility_kelemen(real light_dot_half) {
+    return real(0.25) / max(light_dot_half * light_dot_half, MIN_DIVISOR);
 }
 
 // Clear-coat specular lobe of one light: GGX D, Kelemen V, Schlick F with F0 = coat weight
@@ -196,14 +215,16 @@ float3 clearcoat_directional_light(
     float3 light_direction_to_surface, float4 light_color
 ) {
     float3 light_direction  = normalize(-light_direction_to_surface);
-    float3 half_vector      = normalize(view_direction + light_direction);
     float  normal_dot_light = max(dot(normal, light_direction), 0.0);
-    float  light_dot_half   = max(dot(light_direction, half_vector), 0.0);
-    float  distribution     = distribution_ggx(normal, half_vector, roughness);
-    float  fresnel          = weight + (1.0 - weight) * pow(1.0 - light_dot_half, 5.0);
-    // The grazing Fresnel term does not vanish at weight 0, so the weight also gates the lobe
-    return distribution * visibility_kelemen(light_dot_half) * fresnel * weight
-         * light_color.w * light_color.xyz * normal_dot_light;
+    real3  half_vector      = normalize(real3(view_direction) + real3(light_direction));
+    real   light_dot_half   = max(dot(real3(light_direction), half_vector), real(0.0));
+    real   coat             = real(weight);
+    real   distribution     = distribution_ggx(real3(normal), half_vector, real(roughness));
+    real   fresnel          = coat + (real(1.0) - coat) * pow(real(1.0) - light_dot_half, real(5.0));
+    // D (≤ 5100) · V (≤ 4096 at grazing L·H) can exceed fp16: their product in float. The
+    // grazing Fresnel term does not vanish at weight 0, so the weight also gates the lobe
+    float  lobe = float(distribution) * float(visibility_kelemen(light_dot_half)) * float(fresnel * coat);
+    return lobe * light_color.w * light_color.xyz * normal_dot_light;
 }
 
 float3 accumulate_directional_light(
@@ -212,16 +233,19 @@ float3 accumulate_directional_light(
     float3 light_direction_to_surface, float4 light_color
 ) {
     // light_direction_to_surface is direction from light to surface; incoming light is opposite.
-    float3 light_direction     = normalize(-light_direction_to_surface);
-    float3 half_vector         = normalize(view_direction + light_direction);
-    float3 radiance            = light_color.w * light_color.xyz;
-    float  normal_distribution = distribution_ggx(normal, half_vector, roughness);
-    float  geometry            = geometry_smith(normal, view_direction, light_direction, roughness);
-    float3 fresnel             = fresnel_schlick(max(dot(half_vector, view_direction), 0.0), base_reflectivity);
-    float3 diffuse_factor      = (float3(1.0, 1.0, 1.0) - fresnel) * (1.0 - metallic);
-    float  denominator         = 4.0 * max(dot(normal, view_direction), 0.0) * max(dot(normal, light_direction), 0.0) + 0.0001;
-    float3 specular            = (normal_distribution * geometry * fresnel) / float3(denominator, denominator, denominator);
-    return (diffuse_factor * (albedo / PI) + specular) * radiance * max(dot(normal, light_direction), 0.0);
+    float3 light_direction  = normalize(-light_direction_to_surface);
+    float  normal_dot_light = max(dot(normal, light_direction), 0.0);
+    real3  n                = real3(normal);
+    real3  v                = real3(view_direction);
+    real3  half_vector      = normalize(v + real3(light_direction));
+    real   rough            = real(roughness);
+    real   distribution     = distribution_ggx(n, half_vector, rough);
+    real   visibility       = visibility_smith(max(dot(n, v), real(0.0)), real(normal_dot_light), rough);
+    real3  fresnel          = fresnel_schlick(max(dot(half_vector, v), real(0.0)), real3(base_reflectivity));
+    real3  diffuse          = (real3(1.0, 1.0, 1.0) - fresnel) * (real(1.0) - real(metallic)) * real3(albedo) / REAL_PI;
+    real3  specular         = distribution * visibility * fresnel;
+    // BRDF in `real`, radiance in float
+    return float3(diffuse + specular) * light_color.w * light_color.xyz * normal_dot_light;
 }
 
 // POST_FX: targets 1 and 2 exist only when the pass has velocity / ambient targets; otherwise ignored.
@@ -424,7 +448,7 @@ FragmentOutput fs_main(
         outgoing_radiance += clearcoat_directional_light(normal, view_direction, clearcoat, coat_roughness, scene.light_direction2.xyz, scene.light_color2);
     }
     // Diffuse IBL ambient.
-    float3 specular_factor = fresnel_schlick(max(dot(normal, view_direction), 0.0), base_reflectivity);
+    float3 specular_factor = float3(fresnel_schlick(real(max(dot(normal, view_direction), 0.0)), real3(base_reflectivity)));
     float3 diffuse_factor  = (float3(1.0, 1.0, 1.0) - specular_factor) * (1.0 - metallic);
     // Indirect diffuse: DDGI probes when on (their rays that miss already see the IBL), else IBL
     float3 sky_irradiance  = sample_ibl_irradiance(irradiance_texture, irradiance_sampler, normal) * scene.ibl_intensity.x;
@@ -445,7 +469,7 @@ FragmentOutput fs_main(
     float3 reflection        = reflect(-view_direction, normal);
     float3 prefiltered_color = sample_ibl_specular(prefilter_texture, prefilter_sampler, reflection, roughness * MAX_REFLECTION_LOD);
     float2 environment_brdf  = brdf_lut_texture.Sample(brdf_lut_sampler, float2(max(dot(normal, view_direction), 0.0), roughness)).rg;
-    float3 fresnel           = fresnel_schlick_roughness(max(dot(normal, view_direction), 0.0), base_reflectivity, roughness);
+    float3 fresnel           = float3(fresnel_schlick_roughness(real(max(dot(normal, view_direction), 0.0)), real3(base_reflectivity), real(roughness)));
     float3 specular_weight   = lighting_only
         ? float3(0.0, 0.0, 0.0)
         : (fresnel * environment_brdf.x + environment_brdf.y) * specular_occlusion;
