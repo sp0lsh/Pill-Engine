@@ -137,45 +137,22 @@ pub const SSR_SURFACE_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::
 pub const SSR_NORMAL_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
 
 // WGSL is generated from res/shaders/*.hlsl by pill_assets (build.rs)
-// The post_fx variants also write motion vectors and the ambient term
-#[cfg(not(feature = "post_fx"))]
+// The PBR and background shaders always declare the motion-vector and ambient outputs; passes
+// without those targets leave them unattached
 pub const PBR_OPAQUE_VERTEX_SHADER: &str = include_str!("../res/shaders/pbr_opaque_vertex.wgsl");
-#[cfg(feature = "post_fx")]
-pub const PBR_OPAQUE_VERTEX_SHADER: &str =
-    include_str!("../res/shaders/pbr_opaque_post_fx_vertex.wgsl");
-#[cfg(not(feature = "post_fx"))]
 pub const PBR_OPAQUE_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/pbr_opaque_fragment.wgsl");
-#[cfg(feature = "post_fx")]
-pub const PBR_OPAQUE_FRAGMENT_SHADER: &str =
-    include_str!("../res/shaders/pbr_opaque_post_fx_fragment.wgsl");
 /// PBR fragment variants with the alpha test (materials with `alpha_cutoff`)
-#[cfg(not(feature = "post_fx"))]
 pub const PBR_OPAQUE_ALPHA_TEST_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/pbr_opaque_alpha_test_fragment.wgsl");
-#[cfg(feature = "post_fx")]
-pub const PBR_OPAQUE_ALPHA_TEST_FRAGMENT_SHADER: &str =
-    include_str!("../res/shaders/pbr_opaque_post_fx_alpha_test_fragment.wgsl");
 /// 16-bit BRDF variants of the two above, used when `PillRenderer::supports_f16`
-#[cfg(not(feature = "post_fx"))]
 pub const PBR_OPAQUE_F16_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/pbr_opaque_f16_fragment.wgsl");
-#[cfg(feature = "post_fx")]
-pub const PBR_OPAQUE_F16_FRAGMENT_SHADER: &str =
-    include_str!("../res/shaders/pbr_opaque_post_fx_f16_fragment.wgsl");
-#[cfg(not(feature = "post_fx"))]
 pub const PBR_OPAQUE_ALPHA_TEST_F16_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/pbr_opaque_alpha_test_f16_fragment.wgsl");
-#[cfg(feature = "post_fx")]
-pub const PBR_OPAQUE_ALPHA_TEST_F16_FRAGMENT_SHADER: &str =
-    include_str!("../res/shaders/pbr_opaque_post_fx_alpha_test_f16_fragment.wgsl");
 pub const BACKGROUND_VERTEX_SHADER: &str = include_str!("../res/shaders/background_vertex.wgsl");
-#[cfg(not(feature = "post_fx"))]
 pub const BACKGROUND_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/background_fragment.wgsl");
-#[cfg(feature = "post_fx")]
-pub const BACKGROUND_FRAGMENT_SHADER: &str =
-    include_str!("../res/shaders/background_post_fx_fragment.wgsl");
 pub const SHADOW_CASTER_VERTEX_SHADER: &str =
     include_str!("../res/shaders/shadow_caster_vertex.wgsl");
 pub const DDGI_TRACE_COMPUTE_SHADER: &str = include_str!("../res/shaders/ddgi_trace_compute.wgsl");

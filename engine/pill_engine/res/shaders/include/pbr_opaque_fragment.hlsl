@@ -1,5 +1,4 @@
-// PBR fragment shader body, included by pbr_opaque_fragment.hlsl and (with POST_FX, which adds
-// the velocity and ambient outputs) pbr_opaque_post_fx_fragment.hlsl.
+// PBR fragment shader body, included by pbr_opaque_fragment.hlsl and its variants.
 // Full GGX microfacet BRDF with 3 directional lights, clustered point/spot lights and IBL.
 
 struct Camera {
@@ -248,7 +247,7 @@ float3 accumulate_directional_light(
     return float3(diffuse + specular) * light_color.w * light_color.xyz * normal_dot_light;
 }
 
-// POST_FX: targets 1 and 2 exist only when the pass has velocity / ambient targets; otherwise ignored.
+// Targets 1–4 exist only when the pass has velocity / ambient / SSR targets; otherwise ignored.
 // Froxel of a fragment: its screen tile and the exponential depth slice of its view depth
 // (FroxelLayout::slice in froxelizer.rs).
 uint froxel_index(float2 pixel, float3 world_position) {
@@ -348,13 +347,11 @@ float3 froxel_heatmap(uint count) {
 
 struct FragmentOutput {
     [[vk::location(0)]] float4 color    : SV_TARGET0;
-#ifdef POST_FX
     [[vk::location(1)]] float2 velocity : SV_TARGET1; // UV offset to last frame's position
     [[vk::location(2)]] float4 ambient  : SV_TARGET2; // fogged IBL term alone, darkened by SSAO
     // PassSsr inputs: rgb = fogged specular weight F·A + B of the IBL term, a = roughness
     [[vk::location(3)]] float4 ssr_surface : SV_TARGET3;
     [[vk::location(4)]] float2 ssr_normal  : SV_TARGET4; // octahedral-encoded shading normal
-#endif
 };
 
 [shader("fragment")]
@@ -364,10 +361,8 @@ FragmentOutput fs_main(
     [[vk::location(2)]] float3 input_normal        : TEXCOORD2,
     [[vk::location(3)]] float3 input_tangent       : TEXCOORD3,
     [[vk::location(4)]] float3 input_bitangent     : TEXCOORD4,
-#ifdef POST_FX
     [[vk::location(5)]] float4 clip_position          : TEXCOORD5,
     [[vk::location(6)]] float4 previous_clip_position : TEXCOORD6,
-#endif
     [[vk::location(7)]] nointerpolation uint material_index : TEXCOORD7,
                         float4 frag_coord             : SV_Position
 ) {
@@ -494,7 +489,6 @@ FragmentOutput fs_main(
     if (scene.froxel_depth.w > 0.5) {
         output.color.rgb = froxel_heatmap(punctual_count);
     }
-#ifdef POST_FX
     // Motion vector in UV units (NDC y points up, UV v points down); w clamped for points that were
     // at or behind the camera last frame
     float2 ndc          = clip_position.xy / max(clip_position.w, 1e-4);
@@ -505,6 +499,5 @@ FragmentOutput fs_main(
     bool no_reflections = ddgi.enabled >= 2 || scene.froxel_depth.w > 0.5 || lighting_only;
     output.ssr_surface = float4(ssr && !no_reflections ? specular_weight * (1.0 - fog) : float3(0.0, 0.0, 0.0), roughness);
     output.ssr_normal  = oct_encode(normal);
-#endif
     return output;
 }
