@@ -1656,9 +1656,10 @@ impl Pass for PassPBROpaque {
                 aspect: active_camera_component.aspect.get_value(),
                 fwd: fwd.to_array(),
                 _pad: 0.0,
-                // Environment images are drawn as-is; the white fallback is tinted to the solid color
+                // Environment images are drawn scaled by `background_intensity`; the white fallback
+                // is tinted to the solid color
                 bg_color: match render_state.background {
-                    Some(_) => [1.0, 1.0, 1.0],
+                    Some(_) => [render_state.background_intensity; 3],
                     None => render_state.background_color,
                 },
                 _pad2: 0.0,

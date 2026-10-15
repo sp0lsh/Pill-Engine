@@ -11,6 +11,10 @@ use pill_engine::game::Vector3f;
 const SUN_INTENSITY: f32 = 4.0;
 
 const LOW_SUN: [f32; 3] = [1.0, 0.38, 0.07]; // 2500 K
+/// Night key light: a cool silver-blue moon at a fifth of the sun, opposite the sun (high at
+/// midnight, low at dusk and dawn), fading in with the night lighting.
+const MOON: [f32; 3] = [0.62, 0.72, 1.0];
+const MOON_INTENSITY: f32 = 0.2 * SUN_INTENSITY;
 const MIDDAY_SUN: [f32; 3] = [1.0, 0.85, 0.76]; // 5500 K
 
 struct Keyframe {
@@ -36,8 +40,9 @@ const KEYFRAMES: [Keyframe; 7] = [
 ];
 
 pub struct Daylight {
-    /// Unit vector toward the sun.
+    /// Unit vector toward the key light: the sun, or the moon at night.
     pub to_sun: Vector3f,
+    /// The sun's elevation (degrees).
     pub elevation: f32,
     pub color: [f32; 3],
     /// Direct sunlight; 0 with the sun below the horizon.
@@ -47,6 +52,24 @@ pub struct Daylight {
 
 /// Light at `hour` (0–24, wrapping).
 pub fn at(hour: f32) -> Daylight {
+    let sun = sun_at(hour);
+    // One shadowed key light: the brighter of the sun and the moon (they cross at dusk and dawn,
+    // where both are dim)
+    let moon_intensity = MOON_INTENSITY * night_amount(hour);
+    if moon_intensity > sun.intensity {
+        Daylight {
+            to_sun: -sun.to_sun,
+            color: MOON,
+            intensity: moon_intensity,
+            ..sun
+        }
+    } else {
+        sun
+    }
+}
+
+/// The sun alone at `hour`.
+fn sun_at(hour: f32) -> Daylight {
     let hour = hour.rem_euclid(24.0);
     let next = KEYFRAMES
         .iter()
@@ -71,6 +94,30 @@ pub fn at(hour: f32) -> Daylight {
         intensity: SUN_INTENSITY * direct_sunlight(elevation) / direct_sunlight(45.0),
         sky: lerp(a.sky, b.sky),
     }
+}
+
+/// Hours over which the night lighting blends in and out around 6:00 and 18:00, so a sliding hour
+/// doesn't pop.
+const NIGHT_BLEND: f32 = 0.5;
+/// Emission scale of the lamps, signs and string lights by day and by night.
+const DAY_EMISSION: f32 = 0.5;
+const NIGHT_EMISSION: f32 = 50.0;
+
+/// How much of the night lighting is on at `hour` (0–24, wrapping): 1 from 18:00 to 6:00, 0 from
+/// 6:00 to 18:00.
+pub fn night_amount(hour: f32) -> f32 {
+    let hour = hour.rem_euclid(24.0);
+    // 0 before `switch`, 1 after it, smooth over NIGHT_BLEND
+    let after = |switch: f32| {
+        let x = ((hour - switch) / NIGHT_BLEND + 0.5).clamp(0.0, 1.0);
+        x * x * (3.0 - 2.0 * x)
+    };
+    1.0 - after(6.0) * (1.0 - after(18.0))
+}
+
+/// Scale of the glTF emission at `hour`.
+pub fn emission_scale(hour: f32) -> f32 {
+    DAY_EMISSION + (NIGHT_EMISSION - DAY_EMISSION) * night_amount(hour)
 }
 
 /// Direct normal irradiance (kW/m²) of the sun at `elevation` degrees: Kasten–Young air mass,
@@ -108,8 +155,21 @@ mod tests {
     }
 
     #[test]
-    fn hour_3_sun_below_horizon_gives_no_sunlight() {
-        assert_eq!(at(3.0).intensity, 0.0);
+    fn emission_scale_50_at_night_half_by_day_same_at_0_and_24() {
+        assert_eq!(emission_scale(3.0), NIGHT_EMISSION);
+        assert_eq!(emission_scale(22.0), NIGHT_EMISSION);
+        assert_eq!(emission_scale(12.0), DAY_EMISSION);
+        assert_eq!(emission_scale(0.0), emission_scale(24.0));
+        let dusk = emission_scale(18.0);
+        assert!(dusk > DAY_EMISSION && dusk < NIGHT_EMISSION, "{dusk}");
+    }
+
+    #[test]
+    fn hour_3_moon_lights_from_above_at_a_fifth_of_the_sun() {
+        let night = at(3.0);
+        assert_eq!(night.color, MOON);
+        assert_eq!(night.intensity, MOON_INTENSITY);
+        assert!(night.to_sun.y > 0.0);
     }
 
     #[test]
@@ -123,7 +183,7 @@ mod tests {
     #[test]
     fn azimuth_takes_the_short_way_from_hour_20_to_24() {
         // 287.8° → 353.5°: halfway is about 320.7°, not across south
-        let late = at(22.0);
+        let late = sun_at(22.0);
         let azimuth = late
             .to_sun
             .x

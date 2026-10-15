@@ -210,6 +210,8 @@ pub fn apply_settings_system(engine: &mut Engine) -> Result<()> {
         (true, true) => DebugView::DetailLighting,
     };
     render_state.ibl_intensity = light.sky;
+    // The visible sky dims with its light
+    render_state.background_intensity = light.sky;
     render_state.shadow.enabled = settings.shadows;
     render_state.gi.enabled = settings.gi;
     render_state.gi.debug_indirect_only = settings.gi_indirect_only;

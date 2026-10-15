@@ -342,6 +342,8 @@ pub struct RenderStateComponent {
     pub background: Option<PassTextureHandle>,
     /// Solid background color used when `background` is `None` (linear RGB).
     pub background_color: [f32; 3],
+    /// Scales the `background` environment image (e.g. a daytime sky dimmed at night).
+    pub background_intensity: f32,
     pub ibl_diffuse: PassTextureHandle,
     pub ibl_specular: PassTextureHandle,
     pub ibl_brdf_lut: PassTextureHandle,
@@ -389,6 +391,7 @@ impl RenderStateComponent {
             default_ibl: [PassTextureHandle::default(); 3],
             background: None,
             background_color: [0.15, 0.15, 0.15],
+            background_intensity: 1.0,
             ibl_diffuse: PassTextureHandle::default(),
             ibl_specular: PassTextureHandle::default(),
             ibl_brdf_lut: PassTextureHandle::default(),

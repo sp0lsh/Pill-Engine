@@ -1,6 +1,7 @@
 use pill_engine::{define_component, game::*};
 use std::sync::Mutex;
 
+use crate::daylight;
 use crate::loader::{self, BistroCpu};
 use crate::ui;
 
@@ -10,7 +11,79 @@ define_component!(FlyCamera {
     pitch: f32,
 });
 
+// Point light of an emissive mesh: night intensity and its two-rate flicker (Hz, radians)
+define_component!(FlickerLight {
+    base_intensity: f32,
+    frequency: f32,
+    phase: f32,
+    flutter_frequency: f32,
+    flutter_phase: f32,
+});
+
 pub struct Game {}
+
+/// Night point lights of the emissive meshes: intensity and range of lamps (street lights,
+/// spotlight glass) and of small sources (string lights, shop signs). All cast shadows; the
+/// shadow maps go to the `SHADOWED_LIGHTS` nearest the camera. Inverse-square: a lamp gives
+/// 24 / 2² = 6 at 2 m, 1.5× the noon sun.
+const LAMP_INTENSITY: f32 = 24.0;
+const LAMP_RANGE: f32 = 12.0;
+const SMALL_LIGHT_INTENSITY: f32 = 6.0;
+const SMALL_LIGHT_RANGE: f32 = 6.0;
+const SHADOWED_LIGHTS: u32 = 10;
+/// Flicker: a slow ambient swell and a small fast flutter, as fractions of the intensity.
+const FLICKER_DEPTH: f32 = 0.12;
+const FLUTTER_DEPTH: f32 = 0.04;
+
+/// Emissive materials with their glTF emission factor, and the scale applied.
+struct Emission {
+    materials: Vec<(MaterialHandle, Color)>,
+    scale: Option<f32>,
+}
+
+static EMISSION: Mutex<Emission> = Mutex::new(Emission {
+    materials: Vec::new(),
+    scale: None,
+});
+
+fn hash(value: usize) -> f32 {
+    ((value as f32 * 12.9898).sin() * 43_758.547).fract().abs()
+}
+
+/// Night lighting from the panel's hour: emission scale of the emissive materials, and the
+/// emissive meshes' point lights on at night with their flicker.
+fn night_lighting_system(engine: &mut Engine) -> Result<()> {
+    let hour = ui::settings().hour;
+    let scale = daylight::emission_scale(hour);
+    {
+        let mut emission = EMISSION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if emission.scale != Some(scale) && !emission.materials.is_empty() {
+            for &(handle, factor) in &emission.materials {
+                engine
+                    .get_resource_mut::<Material>(&handle)?
+                    .set_emissive(factor * scale);
+            }
+            emission.scale = Some(scale);
+        }
+    }
+    let night = daylight::night_amount(hour);
+    let time = engine.get_global_component::<TimeComponent>()?.time;
+    let wave = |frequency: f32, phase: f32| {
+        0.5 + 0.5 * (std::f32::consts::TAU * frequency * time + phase).sin()
+    };
+    for (_, light, flicker) in
+        engine.iterate_two_components_mut::<LightComponent, FlickerLight>()?
+    {
+        light.intensity = flicker.base_intensity
+            * night
+            * (1.0
+                - FLICKER_DEPTH * wave(flicker.frequency, flicker.phase)
+                - FLUTTER_DEPTH * wave(flicker.flutter_frequency, flicker.flutter_phase));
+    }
+    Ok(())
+}
 
 // Meters per second; Shift multiplies
 const FLY_SPEED: f32 = 5.0;
@@ -151,6 +224,11 @@ fn spawn_assets(engine: &mut Engine, scene: SceneHandle, cpu: BistroCpu) -> Resu
         meshes,
     } = cpu.scene;
     let texture_count = textures.len();
+    // Average colour of each texture (cooked BC7 RTEX v5 stores it), for the emissive lights
+    let texture_averages: Vec<Option<[f32; 3]>> = textures
+        .iter()
+        .map(|texture| rtex_average(&texture.rtex))
+        .collect();
 
     // --- Textures (moved, so each is freed once uploaded) ---
     let mut texture_handles: Vec<TextureHandle> = Vec::with_capacity(textures.len());
@@ -168,11 +246,43 @@ fn spawn_assets(engine: &mut Engine, scene: SceneHandle, cpu: BistroCpu) -> Resu
         material_handles.push(engine.add_resource(bistro_material(material, &texture_handles))?);
     }
 
+    // Emissive materials: scaled by the night lighting; their light colour is the emission's hue
+    let mut light_colors: Vec<Option<[f32; 3]>> = vec![None; materials.len()];
+    {
+        let mut emission = EMISSION
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        emission.materials.clear();
+        emission.scale = None;
+        for (index, material) in materials.iter().enumerate() {
+            let factor = material.emissive_color;
+            if material.emissive.is_none() && factor.iter().all(|&channel| channel <= 0.0) {
+                continue;
+            }
+            let [red, green, blue] = factor;
+            emission
+                .materials
+                .push((material_handles[index], Color::new(red, green, blue)));
+            let average = material
+                .emissive
+                .and_then(|texture| texture_averages[texture])
+                .unwrap_or([1.0; 3]);
+            let color = [0, 1, 2].map(|channel| average[channel] * factor[channel]);
+            let brightest = color.iter().cloned().fold(0.0, f32::max);
+            light_colors[index] = Some(if brightest > 0.0 {
+                color.map(|channel| channel / brightest)
+            } else {
+                [1.0; 3]
+            });
+        }
+    }
+
     // --- Meshes + entities (world transform already baked into the vertices) ---
     let mut triangles = 0;
+    let mut light_count = 0;
     let (mut min, mut max) = (Vector3f::splat(f32::MAX), Vector3f::splat(f32::MIN));
     for mesh in &meshes {
-        let (mesh_min, mesh_max, mesh_triangles) = rmsh_bounds(&mesh.rmsh);
+        let (mesh_min, mesh_max, mesh_triangles, centroid) = rmsh_bounds(&mesh.rmsh);
         (min, max) = (min.min(mesh_min), max.max(mesh_max));
         triangles += mesh_triangles;
         let mesh_handle =
@@ -187,10 +297,40 @@ fn spawn_assets(engine: &mut Engine, scene: SceneHandle, cpu: BistroCpu) -> Resu
                     .build(),
             )
             .build();
+        // A point light in each emissive mesh, on at night (`night_lighting_system`)
+        if let Some(color) = light_colors[mesh.material] {
+            let name = &materials[mesh.material].name;
+            let small = name.contains("StringLights") || name.contains("Shopsign");
+            let (intensity, range) = if small {
+                (SMALL_LIGHT_INTENSITY, SMALL_LIGHT_RANGE)
+            } else {
+                (LAMP_INTENSITY, LAMP_RANGE)
+            };
+            engine
+                .build_entity(scene)
+                .with_component(TransformComponent::builder().position(centroid).build())
+                .with_component(
+                    LightComponent::builder()
+                        .color(color)
+                        .intensity(0.0)
+                        .range(range)
+                        .cast_shadows(true)
+                        .build(),
+                )
+                .with_component(FlickerLight {
+                    base_intensity: intensity,
+                    frequency: 0.2 + 0.6 * hash(light_count),
+                    phase: hash(light_count + 1000) * std::f32::consts::TAU,
+                    flutter_frequency: 4.0 + 5.0 * hash(light_count + 2000),
+                    flutter_phase: hash(light_count + 3000) * std::f32::consts::TAU,
+                })
+                .build();
+            light_count += 1;
+        }
     }
 
     Ok(format!(
-        "{} meshes, {:.2}M triangles, {} textures; bounds {min:.1} .. {max:.1} m",
+        "{} meshes, {:.2}M triangles, {} textures, {light_count} night lights; bounds {min:.1} .. {max:.1} m",
         meshes.len(),
         triangles as f32 / 1e6,
         texture_count
@@ -249,19 +389,31 @@ fn bistro_material(material: &GltfMaterialData, textures: &[TextureHandle]) -> M
     pbr
 }
 
-/// Bounds and triangle count of a cooked mesh (RMSH: b"RMSH" | version | vertex count | index
-/// count | 14-float vertices (position first) | u32 indices).
-fn rmsh_bounds(rmsh: &[u8]) -> (Vector3f, Vector3f, usize) {
+/// Bounds, triangle count and vertex centroid of a cooked mesh (RMSH: b"RMSH" | version | vertex
+/// count | index count | 14-float vertices (position first) | u32 indices).
+fn rmsh_bounds(rmsh: &[u8]) -> (Vector3f, Vector3f, usize, Vector3f) {
     let read_u32 = |offset: usize| u32::from_le_bytes(rmsh[offset..offset + 4].try_into().unwrap());
     let (vertex_count, index_count) = (read_u32(8) as usize, read_u32(12) as usize);
     let (mut min, mut max) = (Vector3f::splat(f32::MAX), Vector3f::splat(f32::MIN));
+    let mut sum = Vector3f::ZERO;
     for vertex in rmsh[16..16 + vertex_count * 56].chunks_exact(56) {
         let coordinate =
             |offset: usize| f32::from_le_bytes(vertex[offset..offset + 4].try_into().unwrap());
         let position = Vector3f::new(coordinate(0), coordinate(4), coordinate(8));
         (min, max) = (min.min(position), max.max(position));
+        sum += position;
     }
-    (min, max, index_count / 3)
+    (min, max, index_count / 3, sum / vertex_count.max(1) as f32)
+}
+
+/// Average colour stored in a cooked BC7 texture (RTEX v5: b"RTEX" | 5 | width | height | flags
+/// | average rgb f32×3 | …); `None` for other versions.
+fn rtex_average(rtex: &[u8]) -> Option<[f32; 3]> {
+    if rtex.len() < 32 || &rtex[0..4] != b"RTEX" || rtex[4..8] != 5u32.to_le_bytes() {
+        return None;
+    }
+    let read = |offset: usize| f32::from_le_bytes(rtex[offset..offset + 4].try_into().unwrap());
+    Some([read(20), read(24), read(28)])
 }
 
 impl PillGame for Game {
@@ -286,6 +438,8 @@ impl PillGame for Game {
             render_state.gi.cascades = 2;
             render_state.gi.cascade_spacings[1] = 6.0;
             render_state.gi.rays_per_probe = 4;
+            // Shadows for the night lights nearest the camera: 6 cube faces each
+            render_state.punctual_lights.max_shadow_maps = 6 * SHADOWED_LIGHTS;
             // Averages ~1000 frames (~4000 rays per texel): 1/128 left visible jitter at 4 rays
             // (temporal std 0.84 vs 0.29 of 255); lighting changes blend fast
             render_state.gi.blend_speed = 1.0 / 512.0;
@@ -298,6 +452,8 @@ impl PillGame for Game {
         engine.register_component::<CameraComponent>(scene)?;
         engine.register_component::<MeshRenderingComponent>(scene)?;
         engine.register_component::<FlyCamera>(scene)?;
+        engine.register_component::<LightComponent>(scene)?;
+        engine.register_component::<FlickerLight>(scene)?;
         let (position, yaw, pitch) = VIEWPOINTS[0];
         engine
             .build_entity(scene)
@@ -316,6 +472,7 @@ impl PillGame for Game {
         engine.add_system("bistro_shortcuts", ui::shortcuts_system)?;
         engine.add_system("bistro_settings", ui::apply_settings_system)?;
         engine.add_system("bistro_drain", drain_system)?;
+        engine.add_system("bistro_night_lighting", night_lighting_system)?;
         Ok(())
     }
 }

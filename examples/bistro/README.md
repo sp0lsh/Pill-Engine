@@ -24,6 +24,10 @@ Not a web example: the assets are too large and the BC7 cooker (Intel ISPC kerne
 - O / B / F / M: SSAO / bloom / depth of field / motion blur
 - L: lighting only (every surface white and diffuse, to audit the light; "with normal maps" in the panel)
 
+At night (18:00–6:00, blended over half an hour) the lamps, shop signs and string lights glow at
+50× their emission (0.5× by day), each with a flickering point light of its colour, and a
+silver-blue moon at a fifth of the sun's intensity replaces the sun as the shadowed key light.
+
 The "Bistro" panel (folded, top left) has an Hour slider (two days, so it slides across midnight:
 sun path of Rome on the spring equinox, golden hour by default), a Sun rotation slider (turns the
 sun path about the vertical axis), Sun intensity (0–5) and Wet (0–1, rain: every surface darker and glossier,
