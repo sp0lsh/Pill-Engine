@@ -58,7 +58,8 @@ struct PunctualShadow {
 [[vk::binding(13, 0)]] StructuredBuffer<PunctualShadow> punctual_shadows;
 [[vk::binding(14, 0)]] DepthTexture2DArray              punctual_shadow_maps;
 
-// Diffuse GI probes (ddgi/pass_ddgi.rs); `ddgi.enabled` 0 = off (use the IBL), 2 = debug view
+// Diffuse GI probes (ddgi/pass_ddgi.rs); `ddgi.enabled` 0 = off (use the IBL), 2 = indirect-only
+// view, 3 = probe-cell colours
 #define DDGI_SAMPLER brdf_lut_sampler
 #include "ddgi_common.hlsl"
 [[vk::binding(15, 0)]] StructuredBuffer<DdgiProbe>  ddgi_probes;
@@ -431,6 +432,9 @@ FragmentOutput fs_main(
     if (ddgi.enabled == 2) {
         output.color.rgb = ambient_diffuse;
     }
+    if (ddgi.enabled == 3) {
+        output.color.rgb = ddgi_cell_debug_color(world_position);
+    }
     if (scene.froxel_depth.w > 0.5) {
         output.color.rgb = froxel_heatmap(punctual_count);
     }
@@ -442,7 +446,7 @@ FragmentOutput fs_main(
     output.velocity = (ndc - previous_ndc) * float2(0.5, -0.5);
     // What SSAO takes back must be in `color`; with SSR, PassSsr adds the specular term instead
     output.ambient  = float4((ambient_diffuse + (ssr ? float3(0.0, 0.0, 0.0) : specular_ibl)) * (1.0 - fog), 0.0);
-    bool debug_view = ddgi.enabled == 2 || scene.froxel_depth.w > 0.5;
+    bool debug_view = ddgi.enabled >= 2 || scene.froxel_depth.w > 0.5;
     output.ssr_surface = float4(ssr && !debug_view ? specular_weight * (1.0 - fog) : float3(0.0, 0.0, 0.0), roughness);
     output.ssr_normal  = oct_encode(normal);
 #endif

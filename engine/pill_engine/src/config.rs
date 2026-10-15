@@ -6,7 +6,7 @@ use crate::{
     },
     engine::Engine,
     graphics::{
-        ddgi::{DdgiFrame, PassDdgi},
+        ddgi::{DdgiFrame, PassDdgi, PassDdgiProbes},
         pass_lights::LightsFrame,
         shadow::ShadowFrame,
         Pass, PassLights, PassPBROpaque, PassPunctualShadows, PassShadow, PassTextureHandle,
@@ -161,6 +161,12 @@ pub const DDGI_TRACE_COMPUTE_SHADER: &str = include_str!("../res/shaders/ddgi_tr
 pub const DDGI_COLOR_COMPUTE_SHADER: &str = include_str!("../res/shaders/ddgi_color_compute.wgsl");
 pub const DDGI_DEPTH_COMPUTE_SHADER: &str = include_str!("../res/shaders/ddgi_depth_compute.wgsl");
 pub const DDGI_RESET_COMPUTE_SHADER: &str = include_str!("../res/shaders/ddgi_reset_compute.wgsl");
+pub const DDGI_PROBES_DEBUG_VERTEX_SHADER: &str =
+    include_str!("../res/shaders/ddgi_probes_debug_vertex.wgsl");
+pub const DDGI_PROBES_DEBUG_FRAGMENT_SHADER: &str =
+    include_str!("../res/shaders/ddgi_probes_debug_fragment.wgsl");
+pub const DDGI_RELOCATE_COMPUTE_SHADER: &str =
+    include_str!("../res/shaders/ddgi_relocate_compute.wgsl");
 pub const SHADOW_CASTER_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/shadow_caster_fragment.wgsl");
 pub const SHADOW_CASTER_CUTOUT_VERTEX_SHADER: &str =
@@ -220,6 +226,7 @@ pub fn default_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
     let (lights, punctual_shadows, lights_frame) = lights_pass(engine)?;
     let (shadow, shadow_frame) = shadow_pass(engine)?;
     let (ddgi, ddgi_frame) = ddgi_pass(engine, lights_frame.clone())?;
+    let probes = PassDdgiProbes::new(ddgi_frame.clone(), hdr_target, depth_target);
     let opaque = opaque_pass(engine, hdr_target, depth_target)?
         .with_shadow(shadow_frame)
         .with_lights(lights_frame)
@@ -230,6 +237,7 @@ pub fn default_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
         Box::new(shadow),
         Box::new(ddgi),
         Box::new(opaque),
+        Box::new(probes),
     ];
     passes.append(&mut engine.custom_render_passes);
     passes.push(Box::new(PassTonemap::new(hdr_target)));
@@ -271,6 +279,7 @@ pub fn post_fx_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
     let (lights, punctual_shadows, lights_frame) = lights_pass(engine)?;
     let (shadow, shadow_frame) = shadow_pass(engine)?;
     let (ddgi, ddgi_frame) = ddgi_pass(engine, lights_frame.clone())?;
+    let probes = PassDdgiProbes::new(ddgi_frame.clone(), hdr_target, depth_target);
     let opaque = opaque_pass(engine, opaque_target, depth_target)?
         .with_shadow(shadow_frame.clone())
         .with_lights(lights_frame.clone())
@@ -312,6 +321,7 @@ pub fn post_fx_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
                 .with_color_when_inactive(opaque_target, ssr_active),
         ),
         Box::new(translucent),
+        Box::new(probes),
     ];
     passes.append(&mut engine.custom_render_passes);
     passes.push(Box::new(PassDepthOfField::new(

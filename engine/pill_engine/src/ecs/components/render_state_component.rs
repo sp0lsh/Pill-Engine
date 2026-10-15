@@ -170,16 +170,24 @@ impl Default for Shadow {
 #[derive(Clone, Copy, Debug)]
 pub struct Gi {
     pub enabled: bool,
-    /// Distance (m) between probes; the grid is capped at 32 × 16 × 32 probes.
+    /// Distance (m) between probes of the grid fitted over the scene (`cascade_spacings` with
+    /// `follow_camera`); the grid is capped at 32 × 16 × 32 probes.
     pub probe_spacing: f32,
     /// Rays traced from every probe each frame (at most 256); the pattern rotates per frame.
     pub rays_per_probe: u32,
-    /// How fast probes follow lighting changes (short-window blend of the probe estimator).
+    /// How fast probes follow lighting changes: the fraction of each update blended into a probe
+    /// once it has more updates than 1 / `blend_speed` (before that, a running mean). Lower
+    /// averages more frames: less noise with few rays, slower response (a change of the sun, sky
+    /// or lights blends faster for a few frames).
     pub blend_speed: f32,
     /// Scales the indirect diffuse light.
     pub intensity: f32,
     /// Shows only the indirect diffuse light.
     pub debug_indirect_only: bool,
+    /// Draws every probe as a small sphere shaded with its irradiance (magenta: no weight yet).
+    pub debug_probes: bool,
+    /// Colours surfaces by the probe cell that lights them (darker outside the probe grid).
+    pub debug_probe_cells: bool,
     /// World-space box (min, max) the probe grid covers; `None` = the whole scene. A box around
     /// the playable area gives denser probes in large scenes (the grid is capped per axis).
     /// Ignored with `follow_camera`.
@@ -188,6 +196,13 @@ pub struct Gi {
     /// apart, centred on the camera and moving in whole cells; probes it keeps keep their
     /// history, newly covered ones are updated first and lit by the IBL until they are.
     pub follow_camera: bool,
+    /// With `follow_camera`: grids around the camera, 1–4, each with the same probe counts and
+    /// its `cascade_spacings` spacing. Coarser ones light what lies past
+    /// the finer ones, which blend into them toward their edges.
+    pub cascades: u32,
+    /// With `follow_camera`: probe spacing (m) of each cascade, finest first (`probe_spacing` is
+    /// the fitted grid's). Default 1.5, 4.5, 9, 15.
+    pub cascade_spacings: [f32; 4],
 }
 
 impl Default for Gi {
@@ -199,8 +214,12 @@ impl Default for Gi {
             blend_speed: 0.08,
             intensity: 1.0,
             debug_indirect_only: false,
+            debug_probes: false,
+            debug_probe_cells: false,
             bounds: None,
             follow_camera: false,
+            cascades: 1,
+            cascade_spacings: crate::graphics::ddgi::CASCADE_SPACINGS,
         }
     }
 }

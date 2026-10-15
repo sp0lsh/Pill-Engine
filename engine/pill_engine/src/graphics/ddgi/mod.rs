@@ -1,13 +1,15 @@
-//! Dynamic diffuse global illumination (DDGI, Majercik et al. 2019), ported from WickedEngine's
-//! compute path (`ddgi_raytraceCS`, `ddgi_updateCS`, `ShaderInterop_DDGI.h`): a grid of probes
-//! traces rays against a triangle BVH every frame; each probe keeps L1 spherical-harmonics
-//! radiance (from 8×8 octahedral texels blended with Wicked's multiscale mean estimator) and
-//! 16×16 octahedral depth moments for visibility. The PBR passes read 8 probes per pixel.
+//! Dynamic diffuse global illumination (DDGI, Majercik et al. 2019; method: WickedEngine's compute
+//! path `ddgi_raytraceCS`, `ddgi_updateCS`, `ShaderInterop_DDGI.h`; cascades: Flax Engine's DDGI):
+//! grids of probes trace rays against a triangle BVH every frame; each probe keeps L1
+//! spherical-harmonics radiance (from 8×8 octahedral texels averaged over frames) and 16×16
+//! octahedral depth moments for visibility. The PBR passes read 8 probes per pixel per cascade.
 
 pub(crate) mod bvh;
 mod pass_ddgi;
+mod pass_ddgi_probes;
 
 pub(crate) use pass_ddgi::{DdgiFrame, PassDdgi};
+pub(crate) use pass_ddgi_probes::PassDdgiProbes;
 
 use pill_core::Vector3f;
 
@@ -55,7 +57,7 @@ impl ProbeGrid {
         let mut dims = [0, 1, 2].map(|axis| {
             ((extent[axis] / spacing).ceil() as u32).clamp(2, MAX_PROBES_PER_AXIS[axis])
         });
-        // The atlas lays probes out x-then-y along its width (Wicked's layout)
+        // The atlas lays probes out x-then-y along its width
         while dims[0] * dims[1] * DEPTH_TEXELS > MAX_ATLAS_SIZE {
             let wider = if dims[0] >= dims[1] { 0 } else { 1 };
             dims[wider] -= 1;
@@ -116,8 +118,7 @@ impl ProbeGrid {
     /// The probes this grid has and a grid at `previous_origin` (same storage) did not — the slabs
     /// a move exposes, every probe after a jump of a grid size or more — as `[storage index,
     /// source]`. The source is the storage index of the nearest probe both grids have, which the
-    /// exposed probe starts from (as Godot's SDFGI fills scrolled probes from the coarser cascade);
-    /// `NO_SOURCE` when there is none.
+    /// exposed probe starts from; `NO_SOURCE` when there is none.
     pub(crate) fn exposed(&self, previous_origin: [i32; 3]) -> Vec<[u32; 2]> {
         (0..self.probe_count())
             .filter_map(|index| {
@@ -176,9 +177,38 @@ impl ProbeGrid {
         )
     }
 
-    /// Ray length: the depth range of a probe (Wicked: a cell diagonal and a half).
+    /// Ray length: the depth range of a probe, a cell diagonal and a half.
     pub(crate) fn max_distance(&self) -> f32 {
         self.cell.length() * 1.5
+    }
+}
+
+/// Most cascades (`Gi::cascades`), as `DDGI_MAX_CASCADES` in include/ddgi_common.hlsl.
+pub(crate) const MAX_CASCADES: usize = 4;
+/// Default `Gi::cascade_spacings`: 1.5 m × 1, 3, 6, 10.
+pub(crate) const CASCADE_SPACINGS: [f32; MAX_CASCADES] = [1.5, 4.5, 9.0, 15.0];
+/// Cascade c updates every `CASCADE_UPDATE_EVERY[c]` frames.
+pub(crate) const CASCADE_UPDATE_EVERY: [u32; MAX_CASCADES] = [1, 3, 5, 7];
+
+/// One cascade's grid — mirrors `DdgiCascade` in include/ddgi_common.hlsl.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct GpuDdgiCascade {
+    /// World position of logical probe (0, 0, 0); w unused.
+    pub(crate) min: [f32; 4],
+    /// Probe spacing per axis; w unused.
+    pub(crate) cell: [f32; 4],
+    /// World cell of logical probe (0, 0, 0) (`ProbeGrid::origin`); w unused.
+    pub(crate) origin: [i32; 4],
+}
+
+impl GpuDdgiCascade {
+    pub(crate) fn new(grid: &ProbeGrid) -> Self {
+        Self {
+            min: grid.min.extend(0.0).to_array(),
+            cell: grid.cell.extend(0.0).to_array(),
+            origin: [grid.origin[0], grid.origin[1], grid.origin[2], 0],
+        }
     }
 }
 
@@ -187,32 +217,35 @@ impl ProbeGrid {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct GpuDdgiParams {
-    pub(crate) grid_min: [f32; 3],
-    pub(crate) max_distance: f32,
-    pub(crate) cell_size: [f32; 3],
-    pub(crate) intensity: f32,
+    /// Probes per axis, the same for every cascade.
     pub(crate) grid_dims: [u32; 3],
+    /// Probes per cascade.
     pub(crate) probe_count: u32,
     /// 1 / depth atlas size.
     pub(crate) depth_texel_size: [f32; 2],
-    /// 1 when the PBR passes use the probes, 2 = indirect-only view.
+    /// 1 when the PBR passes use the probes, 2 = indirect-only view, 3 = probe-cell colours.
     pub(crate) enabled: u32,
     pub(crate) frame: u32,
-    pub(crate) _padding: u32,
-    pub(crate) _padding_rays: u32,
+    /// 1: re-evaluate every probe's relocation (the BVH changed).
+    pub(crate) relocate_all: u32,
+    pub(crate) cascade_count: u32,
     pub(crate) rays_per_probe: u32,
     pub(crate) light_count: u32,
     /// Direction from the key light toward the scene.
     pub(crate) sun_direction: [f32; 3],
-    /// Multiscale mean estimator short-window blend (Wicked `blendSpeed`).
+    /// Probe radiance blend per update (`Gi::blend_speed`).
     pub(crate) blend_speed: f32,
     /// Key light color × intensity.
     pub(crate) sun_radiance: [f32; 3],
     /// IBL scale for rays that miss (sky).
     pub(crate) sky_intensity: f32,
-    /// World cell of logical probe (0, 0, 0) (`ProbeGrid::origin`).
-    pub(crate) grid_origin: [i32; 3],
-    pub(crate) _padding_origin: i32,
+    /// Camera position: the cascade blend weights are centred on it.
+    pub(crate) blend_origin: [f32; 3],
+    pub(crate) intensity: f32,
+    /// Bit c: cascade c updates this frame.
+    pub(crate) update_mask: u32,
+    pub(crate) _padding: [u32; 3],
+    pub(crate) cascades: [GpuDdgiCascade; MAX_CASCADES],
 }
 
 #[cfg(test)]
@@ -341,6 +374,21 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn cascades_share_dims_take_their_spacing_and_contain_the_camera() {
+        let camera = Vector3f::new(-20.3, 2.5, 7.9);
+        let grids: Vec<ProbeGrid> = CASCADE_SPACINGS
+            .iter()
+            .map(|&spacing| ProbeGrid::around(camera, spacing))
+            .collect();
+        for (grid, spacing) in grids.iter().zip(CASCADE_SPACINGS) {
+            assert_eq!(grid.dims, grids[0].dims);
+            assert_eq!(grid.cell, Vector3f::splat(spacing));
+            let last = grid.position([grid.dims[0] - 1, grid.dims[1] - 1, grid.dims[2] - 1]);
+            assert!(grid.min.cmple(camera).all() && last.cmpge(camera).all());
         }
     }
 

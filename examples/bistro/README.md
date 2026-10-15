@@ -24,8 +24,11 @@ Not a web example: the assets are too large and the BC7 cooker (Intel ISPC kerne
 - P: wet street
 - O / B / F / M: SSAO / bloom / depth of field / motion blur
 
-The "Bistro" panel (folded, top left) has an Hour slider (0–24: sun path of Rome on the spring
-equinox, golden hour by default) and the same toggles.
+The "Bistro" panel (folded, top left) has an Hour slider (two days, so it slides across midnight:
+sun path of Rome on the spring equinox, golden hour by default), a Sun rotation slider (turns the
+sun path about the vertical axis), the same toggles, and GI debug: probes drawn as spheres, surfaces
+coloured by the probe cell that lights them, and the fine probe spacing (0.5–3 m; a 6 m grid covers
+the rest of the scene).
 
 ## Attribution
 

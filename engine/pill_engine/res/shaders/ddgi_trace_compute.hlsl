@@ -1,9 +1,10 @@
-// DDGI probe rays (port of WickedEngine ddgi_raytraceCS, compute BVH path): one thread per ray of
-// every probe. As Godot's SDFGI, each frame traces one slice of a larger fixed pattern: a spherical
-// Fibonacci set of RAY_CYCLE × rays_per_probe directions, slice (frame + per-probe offset) mod
-// RAY_CYCLE, in a fixed random rotation per probe. Every probe covers the whole set every
-// RAY_CYCLE frames, and probes don't sample the same directions in the same frame (a shared
-// per-frame pattern makes all probes catch more or less sky together: regions pulse in unison). A hit is shaded with
+// DDGI probe rays (method: WickedEngine ddgi_raytraceCS, compute BVH path): one thread per ray of
+// every probe. Each frame traces one slice of a larger pattern: a spherical Fibonacci set of
+// RAY_CYCLE × rays_per_probe directions, slice (frame + per-probe offset) mod RAY_CYCLE, in a
+// random rotation per probe and cycle. Every probe covers the whole set every RAY_CYCLE frames,
+// probes don't sample the same directions in the same frame (a shared pattern makes all probes
+// catch more or less sky together), and the rotation changing every cycle reaches every depth
+// texel's lobe over time. A hit is shaded with
 // its triangle's albedo × (key light + one random point/spot light, both with BVH shadow rays) and
 // last frame's probe irradiance for further bounces; a miss returns the IBL irradiance.
 
@@ -33,7 +34,7 @@ static const uint THREADS = 128;
 
 static const uint RAY_CYCLE = 16;
 
-// Spherical Fibonacci point i of n (hybrid-rendering, via Wicked)
+// Spherical Fibonacci point i of n
 float3 spherical_fibonacci(float i, float n) {
     const float golden = 1.61803398875;
     float phi       = 2.0 * DDGI_PI * frac(i * (golden - 1.0));
@@ -48,12 +49,13 @@ uint pcg_hash(uint value) {
     return (word >> 22u) ^ word;
 }
 
-// Fixed random rotation of a probe's ray pattern: unit quaternion from three hashed uniforms
-// (Shoemake's method)
-float4 probe_rotation(uint probe_index) {
-    uint   a  = pcg_hash(probe_index * 3u);
-    uint   b  = pcg_hash(probe_index * 3u + 1u);
-    uint   c  = pcg_hash(probe_index * 3u + 2u);
+// Random rotation of a probe's ray pattern for one cycle: unit quaternion from three hashed
+// uniforms (Shoemake's method)
+float4 probe_rotation(uint probe_index, uint cycle) {
+    uint   seed = pcg_hash(probe_index ^ pcg_hash(cycle));
+    uint   a  = pcg_hash(seed * 3u);
+    uint   b  = pcg_hash(seed * 3u + 1u);
+    uint   c  = pcg_hash(seed * 3u + 2u);
     float3 u  = float3(a, b, c) / 4294967295.0;
     float  r1 = sqrt(1.0 - u.x);
     float  r2 = sqrt(u.x);
@@ -94,16 +96,24 @@ float3 direct_irradiance(float3 P, float3 N, uint seed) {
 [numthreads(THREADS, 1, 1)]
 void cs_main(uint3 id : SV_DispatchThreadID) {
     uint ray_count = ddgi.rays_per_probe;
-    if (id.x >= ddgi.probe_count * ray_count) {
+    if (id.x >= ddgi.probe_count * ddgi.cascade_count * ray_count) {
         return;
     }
     uint   probe_index = id.x / ray_count;
     uint   ray         = id.x % ray_count;
-    float3 probe_pos   = ddgi_probe_position(ddgi_probe_coord(probe_index));
-    uint   slice       = (ddgi.frame + pcg_hash(probe_index)) % RAY_CYCLE;
+    // Relocated position (ddgi_relocate_compute.hlsl)
+    uint   cascade     = probe_index / ddgi.probe_count;
+    if (!ddgi_cascade_updates(cascade)) {
+        return;
+    }
+    float3 probe_pos   = ddgi_probe_position(ddgi_probe_coord(probe_index % ddgi.probe_count), cascade)
+                       + ddgi_probes[probe_index].offset.xyz;
+    uint   step        = ddgi.frame + pcg_hash(probe_index) % RAY_CYCLE;
+    uint   slice       = step % RAY_CYCLE;
+    uint   cycle       = step / RAY_CYCLE;
     {
         float3 fibonacci = spherical_fibonacci(float(ray * RAY_CYCLE + slice), float(ray_count * RAY_CYCLE));
-        float3 direction = normalize(rotate(probe_rotation(probe_index), fibonacci));
+        float3 direction = normalize(rotate(probe_rotation(probe_index, cycle), fibonacci));
         BvhHit hit = bvh_trace_closest(probe_pos, direction, 1.0e30);
         DdgiRay result;
         if (!hit.found) {
@@ -117,16 +127,17 @@ void cs_main(uint3 id : SV_DispatchThreadID) {
             N = dot(N, direction) > 0.0 ? -N : N;
             float3 albedo   = bvh_triangle_albedo(hit.triangle);
             float3 radiance = albedo * direct_irradiance(P, N, probe_index * 1031u + ray * 7919u + ddgi.frame * 104729u) / DDGI_PI;
-            // Further bounces from last frame's probes (Wicked's energy conservation 0.95)
+            // Further bounces from last frame's probes (energy conservation 0.95)
             if (ddgi.frame > 0) {
                 float4 bounce = ddgi_irradiance(P, N);
                 radiance += albedo * bounce.rgb * bounce.a * 0.95;
             }
             // A back face means the probe sees the inside of geometry: shorten the depth so the
-            // visibility test treats the probe as occluded there (Wicked)
+            // visibility test treats the probe as occluded there
             float depth = hit.backface ? hit.distance * 0.9 : hit.distance;
             result.direction_depth = float4(direction, depth);
-            result.radiance = float4(min(radiance, 65000.0), 0.0);
+            // w: backface hit (the color pass ignores those)
+            result.radiance = float4(min(radiance, 65000.0), hit.backface ? 1.0 : 0.0);
         }
         ddgi_rays[id.x] = result;
     }

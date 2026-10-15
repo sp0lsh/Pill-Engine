@@ -1,7 +1,7 @@
 // DDGI probe reset: one workgroup per probe a moving grid exposes (ProbeGrid::exposed). The probe
-// copies its nearest surviving neighbour — SH with weight and warm-up count, radiance estimator
+// copies its nearest surviving neighbour — SH with weight and warm-up count, radiance
 // history, depth moments — so it starts from the neighbour's lighting instead of an unweighted
-// sky fallback (Godot's SDFGI fills scrolled probes from the coarser cascade). Without a
+// sky fallback. Without a
 // neighbour (a jump of a grid size or more) it is zeroed: weight 0, warm-up restarts, and the
 // histories start from its next frame's rays.
 
@@ -10,22 +10,17 @@ static const uint DDGI_COLOR_RESOLUTION = 8;
 static const uint DDGI_DEPTH_RESOLUTION = 16;
 struct DdgiProbe {
     float4 sh[4];
-};
-
-// Mirrors DdgiTexelHistory in ddgi_color_compute.hlsl
-struct DdgiTexelHistory {
-    float4 mean_vbbr;
-    float4 short_mean_inconsistency;
-    float4 variance;
+    float4 offset;
 };
 
 [[vk::binding(0, 0)]] StructuredBuffer<uint2>                 ddgi_reset_list; // target, source
 [[vk::binding(1, 0)]] RWStructuredBuffer<DdgiProbe>           ddgi_probes_out;
-[[vk::binding(2, 0)]] RWStructuredBuffer<DdgiTexelHistory>    ddgi_history;
+[[vk::binding(2, 0)]] RWStructuredBuffer<float4>              ddgi_history; // texel mean
 [[vk::binding(3, 0)]] RWStructuredBuffer<float2>              ddgi_depth_history;
 
 static const uint THREADS       = 64;
 static const uint NO_SOURCE     = 0xFFFFFFFFu; // mod.rs NO_SOURCE
+static const float COPY_UPDATES = 8.0;
 static const uint COLOR_TEXELS  = DDGI_COLOR_RESOLUTION * DDGI_COLOR_RESOLUTION;
 static const uint DEPTH_TEXELS  = DDGI_DEPTH_RESOLUTION * DDGI_DEPTH_RESOLUTION;
 
@@ -38,11 +33,21 @@ void cs_main(uint3 group : SV_GroupID, uint thread : SV_GroupIndex) {
     // Sources are never exposed probes, so reading them here doesn't race with the writes
     bool  copy        = source != NO_SOURCE;
     if (thread == 0) {
-        ddgi_probes_out[probe_index] = copy ? ddgi_probes_out[source] : (DdgiProbe)0;
+        DdgiProbe probe = copy ? ddgi_probes_out[source] : (DdgiProbe)0;
+        if (copy) {
+            // The neighbour's lighting is only a starting point: it counts as COPY_UPDATES of
+            // the running mean, so this probe's own rays replace it within a few dozen frames,
+            // at full weight meanwhile (sh[2].w)
+            probe.sh[1].w = COPY_UPDATES;
+            probe.sh[2].w = 1.0;
+        }
+        // The relocation belongs to the source's cell: re-evaluate for this one
+        probe.offset = float4(0.0, 0.0, 0.0, 0.0);
+        ddgi_probes_out[probe_index] = probe;
     }
     for (uint color_texel = thread; color_texel < COLOR_TEXELS; color_texel += THREADS) {
         ddgi_history[probe_index * COLOR_TEXELS + color_texel] =
-            copy ? ddgi_history[source * COLOR_TEXELS + color_texel] : (DdgiTexelHistory)0;
+            copy ? ddgi_history[source * COLOR_TEXELS + color_texel] : float4(0.0, 0.0, 0.0, 0.0);
     }
     for (uint depth_texel = thread; depth_texel < DEPTH_TEXELS; depth_texel += THREADS) {
         ddgi_depth_history[probe_index * DEPTH_TEXELS + depth_texel] =

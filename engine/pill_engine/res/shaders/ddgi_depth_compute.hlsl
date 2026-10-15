@@ -1,4 +1,4 @@
-// DDGI depth update (port of WickedEngine ddgi_updateCS with DDGI_UPDATE_DEPTH): one workgroup per
+// DDGI depth update (method: WickedEngine ddgi_updateCS with DDGI_UPDATE_DEPTH): one workgroup per
 // probe; each of the 16×16 octahedral texels averages the ray distances (and their squares)
 // around its direction with a sharp cos⁶⁴ lobe, blends with history and writes the atlas tile plus
 // its 1-texel border, so bilinear filtering in the PBR passes stays inside the tile.
@@ -23,10 +23,14 @@ groupshared float2 tile[TEXELS];
 [shader("compute")]
 [numthreads(DDGI_DEPTH_RESOLUTION, DDGI_DEPTH_RESOLUTION, 1)]
 void cs_main(uint3 group : SV_GroupID, uint2 thread : SV_GroupThreadID, uint thread_index : SV_GroupIndex) {
-    uint  probe_index  = group.x;
-    uint3 probe_coord  = ddgi_probe_coord(probe_index);
+    uint  probe_index  = group.x; // over all cascades
+    uint  cascade      = probe_index / ddgi.probe_count;
+    if (!ddgi_cascade_updates(cascade)) {
+        return;
+    }
+    uint3 probe_coord  = ddgi_probe_coord(probe_index % ddgi.probe_count);
     uint  ray_count    = ddgi.rays_per_probe;
-    float max_distance = ddgi.max_distance;
+    float max_distance = ddgi_max_distance(cascade);
     float3 texel_direction = oct_decode(((float2(thread) + 0.5) / DDGI_DEPTH_RESOLUTION) * 2.0 - 1.0);
 
     float2 sum = float2(0.0, 0.0);
@@ -54,7 +58,7 @@ void cs_main(uint3 group : SV_GroupID, uint2 thread : SV_GroupThreadID, uint thr
     // No ray in this texel's narrow lobe this frame (few rays per probe): keep its history
     if (total_weight > 0.0001) {
         result = sum / total_weight;
-        // Zeroed history: start from this frame's value; else Wicked's 2 % blend
+        // Zeroed history: start from this frame's value; else a 2 % blend
         if (previous.y > 0.0) {
             result = lerp(previous, result, 0.02);
         }
@@ -65,12 +69,12 @@ void cs_main(uint3 group : SV_GroupID, uint2 thread : SV_GroupThreadID, uint thr
     }
     tile[thread_index] = result;
 
-    uint2 inner = ddgi_depth_pixel(probe_coord);
+    uint2 inner = ddgi_depth_pixel(probe_coord, cascade);
     ddgi_depth_out.Store(inner + thread, float4(result, 0.0, 0.0));
     GroupMemoryBarrierWithGroupSync();
 
     // Border: each edge texel mirrors the opposite-flipped edge of the octahedral tile, corners
-    // the diagonal corner (Wicked's DDGI_DEPTH_BORDER_OFFSETS, generated instead of tabulated)
+    // the diagonal corner
     uint2 origin = inner - 1;
     const uint last = DDGI_DEPTH_RESOLUTION - 1;
     if (thread.y == 0) {

@@ -332,8 +332,15 @@ impl PillGame for Game {
             // GI probes around the camera, every probe each frame with few rays: 64 rays from all
             // of them against the Exterior's 2.8M triangles cost ~150 ms
             render_state.gi.follow_camera = true;
-            render_state.gi.probe_spacing = 2.0;
+            // A second grid at 6 m (±84–96 m: the whole Exterior) lights what lies past the fine
+            // grid around the camera (spacing from the panel), which blends into it toward its
+            // edge
+            render_state.gi.cascades = 2;
+            render_state.gi.cascade_spacings[1] = 6.0;
             render_state.gi.rays_per_probe = 4;
+            // Averages ~1000 frames (~4000 rays per texel): 1/128 left visible jitter at 4 rays
+            // (temporal std 0.84 vs 0.29 of 255); lighting changes blend fast
+            render_state.gi.blend_speed = 1.0 / 512.0;
             render_state.lens.vignette = 0.15;
         }
         ui::register(engine)?;
