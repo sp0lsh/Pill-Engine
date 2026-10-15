@@ -73,7 +73,6 @@ pub use pass_ssao::PassSsao;
 #[cfg(feature = "post_fx")]
 pub use pass_ssr::PassSsr;
 pub use pass_tonemap::PassTonemap;
-pub(crate) use scene_uniform::SceneUniform;
 
 pub use render_queue::{
     compose_render_queue_key, decompose_render_queue_key, RenderQueueKey, RenderQueueKeyFields,

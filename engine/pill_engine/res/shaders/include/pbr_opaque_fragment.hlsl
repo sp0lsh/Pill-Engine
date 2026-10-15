@@ -1,6 +1,8 @@
 // PBR fragment shader body, included by pbr_opaque_fragment.hlsl and its variants.
 // Full GGX microfacet BRDF with 3 directional lights, clustered point/spot lights and IBL.
 
+#include "bindings.hlsl"
+
 struct Camera {
     float4                position;
     column_major float4x4 view_projection;
@@ -17,7 +19,7 @@ struct Camera {
 [[vk::binding(5, 0)]] Texture2D    brdf_lut_texture;
 [[vk::binding(6, 0)]] SamplerState brdf_lut_sampler;
 
-// Scene globals (set 0, binding 7) — mirrors SceneUniform in scene_uniform.rs; all float4 rows.
+// Scene globals (set 0, binding 7, filled in scene_uniform.rs); all float4 rows.
 struct Scene {
     float4 fog_color_density; // xyz = fog color, w = fog density
     float4 ibl_intensity;     // x = IBL scale, y = 1 when PassSsr adds the specular IBL term, z = wetness,
@@ -42,7 +44,7 @@ static const float WET_DARKENING = 0.5;
 static const float WET_WALL_FILM = 0.35;
 static const float WET_ROUGHNESS = 0.08;
 
-// Point/spot lights and their froxel lists (froxelizer.rs) — mirrors GpuLight in pass_lights.rs
+// Point/spot lights (pass_lights.rs) and their froxel lists (froxelizer.rs)
 struct PunctualLight {
     float4 position_falloff;  // xyz = world position, w = 1 / range²
     float4 direction;         // xyz = direction the spot shines in
@@ -56,13 +58,13 @@ struct PunctualLight {
 [[vk::binding(12, 0)]] StructuredBuffer<uint>          froxel_records; // u16 light indices, 2 per uint
 
 // Point/spot shadow maps (punctual_shadows.rs): one per spot light, six cube faces per point
-// light, all layers of one depth array; sampled with shadow_sampler — mirrors GpuShadowMap
+// light, all layers of one depth array; sampled with shadow_sampler
 struct PunctualShadow {
     column_major float4x4 view_projection; // world → light clip space (depth 0..1)
     float4 params; // x = normal offset per meter of light distance, y = map size, z = 1 / map size
 };
 [[vk::binding(13, 0)]] StructuredBuffer<PunctualShadow> punctual_shadows;
-[[vk::binding(14, 0)]] DepthTexture2DArray              punctual_shadow_maps;
+[[vk::binding(14, 0)]] [Depth] DepthTexture2DArray      punctual_shadow_maps;
 
 // Diffuse GI probes (ddgi/pass_ddgi.rs); `ddgi.enabled` 0 = off (use the IBL), 2 = indirect-only
 // view, 3 = probe-cell colours
@@ -95,8 +97,8 @@ TentTaps tent_taps(float2 uv, float size, float texel) {
 }
 
 // Key light shadow map; the comparison sampler (LessEqual, linear) makes every tap a 2×2 PCF
-[[vk::binding(8, 0)]] DepthTexture2D         shadow_map;
-[[vk::binding(9, 0)]] SamplerComparisonState shadow_sampler;
+[[vk::binding(8, 0)]] [Depth] DepthTexture2D              shadow_map;
+[[vk::binding(9, 0)]] [Comparison] SamplerComparisonState shadow_sampler;
 
 // Fraction of the key light reaching `world_position` (1 = lit). The receiver is pushed along its
 // geometric normal by a texel-sized offset against acne. 3×3 tent filter from 4 bilinear compare

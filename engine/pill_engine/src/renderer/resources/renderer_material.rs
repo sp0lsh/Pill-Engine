@@ -3,7 +3,9 @@ use crate::{
         DEFAULT_COLOR_TEXTURE_NAME, DEFAULT_EMISSIVE_TEXTURE_NAME,
         DEFAULT_METALLIC_ROUGHNESS_TEXTURE_NAME, DEFAULT_NORMAL_TEXTURE_NAME,
     },
-    graphics::{RendererMaterialHandle, RendererTextureHandle},
+    graphics::{
+        shader_bindings::pbr_opaque_fragment, RendererMaterialHandle, RendererTextureHandle,
+    },
     renderer::resources::RendererTexture,
     resources::{Resource, ResourceManager, ResourceStorage},
 };
@@ -79,49 +81,18 @@ pub(crate) struct MaterialTextures {
     pub(crate) emissive: Option<RendererTextureHandle>,
 }
 
-fn texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Texture {
-            multisampled: false,
-            view_dimension: wgpu::TextureViewDimension::D2,
-            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-        },
-        count: None,
-    }
-}
-
-fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-        count: None,
-    }
-}
-
-/// Bind group 1 layout: (texture, sampler) pairs at bindings 0-7 for
-/// base_color, normal, metallic_roughness, emissive. Shared by RendererMaterial and PassPBROpaque.
+/// Bind group layout of the material textures: (texture, sampler) pairs for base_color, normal,
+/// metallic_roughness, emissive. Shared by RendererMaterial, PassPBROpaque and the shadow casters.
 pub(crate) fn material_textures_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
-    (0..4)
-        .flat_map(|slot| [texture_entry(slot * 2), sampler_entry(slot * 2 + 1)])
-        .collect()
+    let group = pbr_opaque_fragment::BASE_COLOR_TEXTURE.group as usize;
+    pbr_opaque_fragment::layout().swap_remove(group)
 }
 
 /// Layout of the material array bind group: the renderer's uniform array of `PackedMaterial`,
 /// indexed by material slot (`PillRenderer::get_material_buffer`).
 pub(crate) fn material_array_layout_entries() -> Vec<wgpu::BindGroupLayoutEntry> {
-    vec![wgpu::BindGroupLayoutEntry {
-        binding: 0,
-        visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }]
+    let group = pbr_opaque_fragment::MATERIAL_ARRAY.group as usize;
+    pbr_opaque_fragment::layout().swap_remove(group)
 }
 
 pub struct RendererMaterial {

@@ -15,7 +15,6 @@ pub(crate) struct Binding {
 
 /// Pipeline layout entries of shaders used together (vertex + fragment): the union of their
 /// groups, with the stage visibility of a binding both declare combined.
-#[allow(dead_code)]
 pub(crate) fn merge_layouts(
     layouts: &[Vec<Vec<wgpu::BindGroupLayoutEntry>>],
 ) -> Vec<Vec<wgpu::BindGroupLayoutEntry>> {

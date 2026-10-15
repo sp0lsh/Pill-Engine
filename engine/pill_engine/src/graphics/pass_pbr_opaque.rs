@@ -8,20 +8,22 @@ use crate::graphics::shadow_casters::{box_corners, frustum_planes, outside_frust
 use crate::{
     ecs::{CameraComponent, MeshRenderingComponent, RenderStateComponent, TransformComponent},
     graphics::ddgi::DdgiFrame,
-    graphics::fullscreen::{linear_clamp_sampler, uniform_entry_for},
+    graphics::fullscreen::linear_clamp_sampler,
     graphics::ibl::IblFrame,
     graphics::pass_lights::{LightBuffers, LightsFrame},
+    graphics::shader_bindings::{
+        background_fragment, background_vertex, merge_layouts, pbr_opaque_fragment,
+        pbr_opaque_vertex,
+        structs::{BackgroundCamera, Camera, Scene},
+    },
     graphics::shadow::ShadowFrame,
     graphics::{
         camera_forward, camera_view_projection, decompose_render_queue_key, BufferDesc,
         FrameTarget, Pass, PassTextureHandle, PillRenderer, Pipeline, PipelineDesc, RenderQueueKey,
-        RendererMaterialHandle, RendererMeshHandle, RendererTargetDesc, SceneUniform, ShaderDesc,
-        TargetSize, TextureData, WorldQuery,
+        RendererMaterialHandle, RendererMeshHandle, RendererTargetDesc, ShaderDesc, TargetSize,
+        TextureData, WorldQuery,
     },
-    renderer::resources::{
-        material_array_layout_entries, material_textures_layout_entries, RendererMaterial,
-        RendererMesh, Vertex,
-    },
+    renderer::resources::{RendererMaterial, RendererMesh, Vertex},
 };
 use pill_core::{error, LogContext, Matrix4f, Result, Vector3f};
 use std::cell::RefCell;
@@ -32,23 +34,14 @@ use std::rc::Rc;
 #[cfg(feature = "post_fx")]
 use {crate::ecs::EntityHandle, pill_core::PillSlotMapKey};
 
-/// Camera uniform layout: position (vec4) + view-projection matrices (mat4x4) of this and the
-/// previous frame + flags (x = 1 when the pass writes motion vectors).
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct CameraUniform {
-    position: [f32; 4],
-    view_projection_matrix: [[f32; 4]; 4],
-    previous_view_projection_matrix: [[f32; 4]; 4],
-    flags: [f32; 4],
-}
+pub(crate) use crate::graphics::shader_bindings::structs::DrawTransform;
 
-impl CameraUniform {
+impl Camera {
     fn new() -> Self {
         Self {
             position: [0.0; 4],
-            view_projection_matrix: Matrix4f::IDENTITY.to_cols_array_2d(),
-            previous_view_projection_matrix: Matrix4f::IDENTITY.to_cols_array_2d(),
+            view_projection: Matrix4f::IDENTITY.to_cols_array_2d(),
+            previous_view_projection: Matrix4f::IDENTITY.to_cols_array_2d(),
             flags: [0.0; 4],
         }
     }
@@ -66,18 +59,9 @@ impl CameraUniform {
             0.0,
         ];
 
-        self.view_projection_matrix =
+        self.view_projection =
             camera_view_projection(camera_component, transform_component).to_cols_array_2d();
     }
-}
-
-/// Raw transform of one draw: position, rotation (radians), scale; xyz of each row.
-#[repr(C)]
-#[derive(Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
-pub(crate) struct DrawTransform {
-    position: [f32; 4],
-    rotation: [f32; 4],
-    scale: [f32; 4],
 }
 
 impl DrawTransform {
@@ -147,10 +131,11 @@ pub(crate) fn per_draw_storage_entry(binding: u32) -> wgpu::BindGroupLayoutEntry
     }
 }
 
-pub const MATERIAL_BIND_GROUP_GLOBALS: usize = 0;
-pub const MATERIAL_BIND_GROUP_TEXTURES: usize = 1;
-pub const MATERIAL_BIND_GROUP_ARRAY: usize = 2;
-pub const MATERIAL_BIND_GROUP_PERDRAW: usize = 3;
+pub const MATERIAL_BIND_GROUP_GLOBALS: usize = pbr_opaque_fragment::SCENE.group as usize;
+pub const MATERIAL_BIND_GROUP_TEXTURES: usize =
+    pbr_opaque_fragment::BASE_COLOR_TEXTURE.group as usize;
+pub const MATERIAL_BIND_GROUP_ARRAY: usize = pbr_opaque_fragment::MATERIAL_ARRAY.group as usize;
+pub const MATERIAL_BIND_GROUP_PERDRAW: usize = pbr_opaque_vertex::PER_DRAW_ARRAY.group as usize;
 
 /// One entity's draw before batching.
 struct Draw {
@@ -188,22 +173,6 @@ struct DrawBatch {
     count: u32,
 }
 
-/// Camera uniform for the background sub-draw (view direction basis + fov, and last frame's
-/// view-projection for the sky's motion vectors).
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct BgCameraUbo {
-    right: [f32; 3],
-    tan_half_fov: f32,
-    up: [f32; 3],
-    aspect: f32,
-    fwd: [f32; 3],
-    _pad: f32,
-    bg_color: [f32; 3],
-    _pad2: f32,
-    previous_view_projection: [[f32; 4]; 4],
-}
-
 /// GPU-side state for the background sub-draw within the PBR render pass.
 struct BgSubState {
     pipeline: Pipeline,
@@ -220,7 +189,7 @@ struct BgSubState {
 
 /// GPU-side pass state initialized in `Pass::init`, read every `Pass::draw`.
 struct PassPBROpaqueState {
-    camera_uniform: CameraUniform,
+    camera_uniform: Camera,
     camera_buffer: wgpu::Buffer,
     scene_buffer: wgpu::Buffer,
     globals_bind_group: wgpu::BindGroup,
@@ -372,19 +341,6 @@ fn build_globals_bind_group(
 }
 
 /// Fragment-stage read-only storage buffer (point/spot lights and their froxel lists).
-fn fragment_storage_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::FRAGMENT,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Storage { read_only: true },
-            has_dynamic_offset: false,
-            min_binding_size: None,
-        },
-        count: None,
-    }
-}
-
 /// Builds the background bind group (camera UBO + equirect view + sampler).
 fn build_bg_bind_group(
     device: &wgpu::Device,
@@ -640,132 +596,10 @@ impl PassPBROpaque {
         renderer: &mut dyn PillRenderer,
         variant: SceneVariant,
     ) -> Result<Pipeline> {
-        let bind_groups: Vec<Vec<wgpu::BindGroupLayoutEntry>> = vec![
-            // 0: globals (camera + IBL irradiance + prefilter + BRDF LUT + scene)
-            vec![
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 5,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 6,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 7,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                // Key light shadow map + comparison sampler (hardware PCF)
-                wgpu::BindGroupLayoutEntry {
-                    binding: 8,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Depth,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 9,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-                    count: None,
-                },
-                // Point/spot lights, froxel entries, froxel light indices
-                fragment_storage_entry(10),
-                fragment_storage_entry(11),
-                fragment_storage_entry(12),
-                // Point/spot shadow maps: light matrices, depth texture array
-                fragment_storage_entry(13),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 14,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2Array,
-                        sample_type: wgpu::TextureSampleType::Depth,
-                    },
-                    count: None,
-                },
-                // Diffuse GI probes: SH radiance, depth-moment atlas, grid uniform
-                fragment_storage_entry(15),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 16,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    },
-                    count: None,
-                },
-                uniform_entry_for(17, wgpu::ShaderStages::FRAGMENT),
-            ],
-            // 1: material textures (base_color, normal, metallic_roughness, emissive)
-            material_textures_layout_entries(),
-            // 2: material array (packed params of every material, indexed per draw)
-            material_array_layout_entries(),
-            // 3: per-draw storage arrays (this and last frame's transforms) — no dynamic offset,
-            // no 256-B Metal alignment (Apple Metal Spec §4.1.1).
-            (0..2).map(per_draw_storage_entry).collect(),
-        ];
+        // 0: globals, 1: material textures, 2: material array, 3: this and last frame's per-draw
+        // transforms (storage arrays: no dynamic offset, no 256-B Metal alignment)
+        let bind_groups =
+            merge_layouts(&[pbr_opaque_vertex::layout(), pbr_opaque_fragment::layout()]);
 
         let color_targets = self.color_targets(renderer.get_hdr_format(), variant.ssr);
         let desc = PipelineDesc {
@@ -816,34 +650,8 @@ impl PassPBROpaque {
 
     /// Background sub-draw pipeline over the same attachments as the scene pipeline.
     fn create_bg_pipeline(&self, renderer: &mut dyn PillRenderer, ssr: bool) -> Result<Pipeline> {
-        let bg_bind_groups = vec![vec![
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    multisampled: false,
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 2,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
-        ]];
+        let bg_bind_groups =
+            merge_layouts(&[background_vertex::layout(), background_fragment::layout()]);
         // Same attachments as the scene draw; the sky writes color and velocity, ambient and
         // the SSR inputs stay 0
         let mut bg_targets = self.color_targets(renderer.get_hdr_format(), ssr);
@@ -993,7 +801,7 @@ impl Pass for PassPBROpaque {
             let device = renderer.get_device();
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("pass_pbr_opaque_camera_buffer"),
-                size: std::mem::size_of::<CameraUniform>() as u64,
+                size: std::mem::size_of::<Camera>() as u64,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             })
@@ -1001,7 +809,7 @@ impl Pass for PassPBROpaque {
 
         let scene_buffer = renderer.create_buffer(BufferDesc {
             label: Some("pass_pbr_opaque_scene_buffer"),
-            byte_size: std::mem::size_of::<SceneUniform>() as u64,
+            byte_size: std::mem::size_of::<Scene>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         })?;
 
@@ -1177,7 +985,7 @@ impl Pass for PassPBROpaque {
                 .get_device()
                 .create_buffer(&wgpu::BufferDescriptor {
                     label: Some("pass_pbr_opaque_bg_camera"),
-                    size: std::mem::size_of::<BgCameraUbo>() as u64,
+                    size: std::mem::size_of::<BackgroundCamera>() as u64,
                     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
@@ -1200,7 +1008,7 @@ impl Pass for PassPBROpaque {
         };
 
         self.state = Some(PassPBROpaqueState {
-            camera_uniform: CameraUniform::new(),
+            camera_uniform: Camera::new(),
             camera_buffer,
             scene_buffer,
             globals_bind_group,
@@ -1365,7 +1173,7 @@ impl Pass for PassPBROpaque {
             state
                 .camera_uniform
                 .update_data(active_camera_component, active_camera_transform);
-            state.camera_uniform.previous_view_projection_matrix =
+            state.camera_uniform.previous_view_projection =
                 previous_view_projection.to_cols_array_2d();
             state.camera_uniform.flags = [motion_vectors as u32 as f32, 0.0, 0.0, 0.0];
             renderer.get_queue().write_buffer(
@@ -1376,7 +1184,7 @@ impl Pass for PassPBROpaque {
             renderer.get_queue().write_buffer(
                 &state.scene_buffer,
                 0,
-                bytemuck::bytes_of(&SceneUniform::from_render_state(
+                bytemuck::bytes_of(&Scene::from_render_state(
                     render_state,
                     &shadow_frame,
                     &lights_params,
@@ -1662,20 +1470,20 @@ impl Pass for PassPBROpaque {
             let fwd = camera_forward(active_camera_transform);
             let right = fwd.cross(Vector3f::Y).normalize();
             let up = right.cross(fwd);
-            let ubo = BgCameraUbo {
+            let ubo = BackgroundCamera {
                 right: right.to_array(),
-                tan_half_fov: (active_camera_component.fov.to_radians() / 2.0).tan(),
+                tangent_half_fov: (active_camera_component.fov.to_radians() / 2.0).tan(),
                 up: up.to_array(),
                 aspect: active_camera_component.aspect.get_value(),
-                fwd: fwd.to_array(),
-                _pad: 0.0,
+                forward: fwd.to_array(),
+                _padding: 0.0,
                 // Environment images are drawn scaled by `background_intensity`; the white fallback
                 // is tinted to the solid color
-                bg_color: match render_state.background {
+                background_color: match render_state.background {
                     Some(_) => [render_state.background_intensity; 3],
                     None => render_state.background_color,
                 },
-                _pad2: 0.0,
+                _padding_2: 0.0,
                 previous_view_projection: previous_view_projection.to_cols_array_2d(),
             };
             renderer

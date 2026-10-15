@@ -1,28 +1,12 @@
 use crate::ecs::{DebugView, RenderStateComponent};
 use crate::graphics::pass_lights::LightsParams;
+use crate::graphics::shader_bindings::structs::Scene;
 use crate::graphics::shadow::ShadowFrame;
 
 /// Scene globals of the PBR passes (group 0, binding 7): fog, IBL intensity, the three
 /// directional lights from `RenderStateComponent`, the key light's shadow and the froxel grid of
-/// the point/spot lights. All float4 rows so the std140 layout is
-/// unambiguous; mirrors `Scene` in pbr_opaque_fragment.hlsl.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub(crate) struct SceneUniform {
-    fog_color_density: [f32; 4], // xyz = fog color, w = fog density
-    ibl_intensity: [f32; 4], // x, y = 1 when PassSsr adds the specular IBL term, z = wetness, w = debug view
-    // Per light: direction (xyz) row, then color (rgb) + intensity (w) row
-    lights: [[f32; 4]; 6],
-    shadow_view_projection: [[f32; 4]; 4], // world → light clip space (column-major)
-    // x = normal offset (world units), y = shadow distance (0 = no shadow), z = 1 / map size,
-    // w = map size
-    shadow_params: [f32; 4],
-    froxel_grid: [f32; 4],    // columns, rows, tile size (px), light count
-    froxel_depth: [f32; 4],   // 1 / slice linearizer, light far, slice count, 1 = heatmap
-    camera_forward: [f32; 4], // xyz
-}
-
-impl SceneUniform {
+/// the point/spot lights.
+impl Scene {
     pub(crate) fn from_render_state(
         render_state: &RenderStateComponent,
         shadow: &ShadowFrame,
@@ -30,13 +14,12 @@ impl SceneUniform {
         ssr: bool,
     ) -> Self {
         let [r, g, b] = render_state.fog_color;
-        let mut lights = [[0.0; 4]; 6];
-        for (index, light) in render_state.lights.iter().enumerate() {
+        // Per light: direction (xyz) row, then color (rgb) + intensity (w) row
+        let [light0, light1, light2] = render_state.lights.map(|light| {
             let [x, y, z] = light.direction;
             let [red, green, blue] = light.color;
-            lights[index * 2] = [x, y, z, 0.0];
-            lights[index * 2 + 1] = [red, green, blue, light.intensity];
-        }
+            ([x, y, z, 0.0], [red, green, blue, light.intensity])
+        });
         let size = shadow.map_size.max(1) as f32;
         let (shadow_view_projection, shadow_params) = match shadow.map {
             Some(_) => (
@@ -62,7 +45,12 @@ impl SceneUniform {
                     DebugView::DetailLighting => 2.0,
                 },
             ],
-            lights,
+            light_direction0: light0.0,
+            light_color0: light0.1,
+            light_direction1: light1.0,
+            light_color1: light1.1,
+            light_direction2: light2.0,
+            light_color2: light2.1,
             shadow_view_projection,
             shadow_params,
             froxel_grid: punctual.grid,

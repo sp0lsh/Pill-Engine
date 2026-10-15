@@ -1,6 +1,6 @@
 #ifndef PUNCTUAL_LIGHT_HLSL
 #define PUNCTUAL_LIGHT_HLSL
-// Point/spot light record — mirrors GpuLight in pass_lights.rs
+// Point/spot light record (pass_lights.rs)
 struct PunctualLight {
     float4 position_falloff;  // xyz = world position, w = 1 / range²
     float4 direction;         // xyz = direction the spot shines in

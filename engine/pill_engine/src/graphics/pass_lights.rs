@@ -7,34 +7,13 @@ use crate::graphics::punctual_shadows::{
     assign_shadow_layers, cube_face_fov, point_face_view_projection, spot_fov,
     spot_view_projection, texel_scale, ShadowCandidate, MAX_PUNCTUAL_SHADOW_MAPS,
 };
+use crate::graphics::shader_bindings::structs::{PunctualLight, PunctualShadow};
 use crate::graphics::shadow_casters::keep_nearest;
 use crate::graphics::{camera_forward, BufferDesc, FrameTarget, Pass, PillRenderer, WorldQuery};
 
 use pill_core::{debug, LogContext, Matrix4f, Result, Vector3f};
 use std::cell::RefCell;
 use std::rc::Rc;
-
-/// One light in the lights storage buffer — mirrors `PunctualLight` in pbr_opaque_fragment.hlsl.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct GpuLight {
-    position_falloff: [f32; 4], // xyz = world position, w = 1 / range²
-    direction: [f32; 4],        // xyz = direction the spot shines in
-    color_intensity: [f32; 4],  // rgb, intensity
-    // x, y: angle term saturate(cos · x + y), point light (0, 1); z: first shadow layer (−1 = no
-    // shadow); w: 1 = point light (6 cube-face layers)
-    spot_scale_offset: [f32; 4],
-}
-
-/// One point/spot shadow map in the shadow storage buffer — mirrors `PunctualShadow` in
-/// pbr_opaque_fragment.hlsl.
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct GpuShadowMap {
-    view_projection: [[f32; 4]; 4], // world → light clip space (depth 0..1)
-    // x = normal offset per meter of light distance (world), y = map size, z = 1 / map size
-    params: [f32; 4],
-}
 
 /// A point/spot shadow map to render this frame.
 #[derive(Clone, Copy)]
@@ -48,7 +27,7 @@ pub(crate) struct PunctualShadowMap {
 /// A light of the scene before the `MAX_LIGHTS` cut (nearest to the camera are kept).
 struct GatheredLight {
     camera_distance_squared: f32,
-    gpu: GpuLight,
+    gpu: PunctualLight,
     froxel: FroxelLight,
     shadow: Option<ShadowSource>,
 }
@@ -93,7 +72,7 @@ impl LightBuffers {
         Ok(Self {
             lights: storage(
                 "punctual_lights",
-                light_capacity.max(1) * std::mem::size_of::<GpuLight>(),
+                light_capacity.max(1) * std::mem::size_of::<PunctualLight>(),
             )?,
             entries: storage("froxel_entries", entry_capacity.max(1) * 8)?,
             records: storage(
@@ -102,7 +81,7 @@ impl LightBuffers {
             )?,
             shadows: storage(
                 "punctual_shadows",
-                shadow_capacity.max(1) * std::mem::size_of::<GpuShadowMap>(),
+                shadow_capacity.max(1) * std::mem::size_of::<PunctualShadow>(),
             )?,
         })
     }
@@ -153,14 +132,14 @@ pub(crate) struct PassLights {
     layout: Option<FroxelLayout>,
     froxelizer: Froxelizer,
     // Per-frame scratch, capacity reused across frames
-    gpu_lights: Vec<GpuLight>,
+    gpu_lights: Vec<PunctualLight>,
     froxel_lights: Vec<FroxelLight>,
     gathered: Vec<GatheredLight>,
     // Per light: its shadow inputs and whether it casts
     shadow_sources: Vec<Option<ShadowSource>>,
     shadow_candidates: Vec<ShadowCandidate>,
     shadow_layers: Vec<(usize, usize)>,
-    gpu_shadow_maps: Vec<GpuShadowMap>,
+    gpu_shadow_maps: Vec<PunctualShadow>,
     overflow_logged: bool,
 }
 
@@ -242,7 +221,7 @@ impl PassLights {
                 }
             };
             let position = transform.position;
-            let gpu = GpuLight {
+            let gpu = PunctualLight {
                 position_falloff: position.extend(1.0 / (range * range)).to_array(),
                 direction: direction.extend(0.0).to_array(),
                 color_intensity: [
@@ -342,7 +321,7 @@ impl PassLights {
                     view_projection,
                     light_position: source.position,
                 });
-                self.gpu_shadow_maps.push(GpuShadowMap {
+                self.gpu_shadow_maps.push(PunctualShadow {
                     view_projection: view_projection.to_cols_array_2d(),
                     params: [normal_offset, map_size as f32, 1.0 / map_size as f32, 0.0],
                 });

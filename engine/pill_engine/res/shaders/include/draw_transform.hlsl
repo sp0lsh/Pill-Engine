@@ -1,5 +1,5 @@
-// Per-draw transform of the vertex shaders (PBR, shadow caster) — mirrors DrawTransform in
-// pass_pbr_opaque.rs. The model matrix is built here from position / rotation (radians) / scale,
+// Per-draw transform of the vertex shaders (PBR, shadow caster), filled in pass_pbr_opaque.rs.
+// The model matrix is built here from position / rotation (radians) / scale,
 // so the CPU uploads raw transforms.
 
 struct DrawTransform {
