@@ -349,9 +349,9 @@ pub trait PillRenderer {
     /// Rgba16Float). Game passes drawing into the HDR target must use it.
     fn get_hdr_format(&self) -> wgpu::TextureFormat;
 
-    /// Whether shaders may use 16-bit floats (`SHADER_F16`): the PBR pass then runs its BRDF in
-    /// half precision.
-    fn supports_f16(&self) -> bool;
+    /// Whether the device has `SHADER_F16` and `SUBGROUP`: the PBR pass then uses its fast-tier
+    /// shader (16-bit BRDF, wave-scalarized light loop).
+    fn fast_shader_tier(&self) -> bool;
 
     /// Allocates a GPU buffer with the given descriptor.
     fn create_buffer(&mut self, desc: BufferDesc) -> Result<wgpu::Buffer>;

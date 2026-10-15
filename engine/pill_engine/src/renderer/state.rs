@@ -245,11 +245,11 @@ impl PillRenderer for Renderer {
         self.state.hdr_format
     }
 
-    fn supports_f16(&self) -> bool {
+    fn fast_shader_tier(&self) -> bool {
         self.state
             .device
             .features()
-            .contains(wgpu::Features::SHADER_F16)
+            .contains(wgpu::Features::SHADER_F16 | wgpu::Features::SUBGROUP)
     }
 
     fn create_buffer(&mut self, desc: BufferDesc) -> Result<wgpu::Buffer> {
@@ -623,15 +623,23 @@ impl State {
             if cfg!(debug_assertions) && std::env::var("PILL_FORCE_NO_RG11B10").is_ok() {
                 wanted.remove(wgpu::Features::RG11B10UFLOAT_RENDERABLE);
             }
+            // Subgroup builtins: native only, the WGSL is compiled without `enable subgroups;`,
+            // which browsers require (hlsl_to_wgsl.rs)
+            if cfg!(not(target_arch = "wasm32")) {
+                wanted |= wgpu::Features::SUBGROUP;
+            }
             if cfg!(debug_assertions) && std::env::var("PILL_FORCE_NO_F16").is_ok() {
                 wanted.remove(wgpu::Features::SHADER_F16);
+            }
+            if cfg!(debug_assertions) && std::env::var("PILL_FORCE_NO_SUBGROUP").is_ok() {
+                wanted.remove(wgpu::Features::SUBGROUP);
             }
             let features = wanted & adapter.features();
             if !features.contains(wgpu::Features::FLOAT32_FILTERABLE) {
                 info!(LogContext::Rendering => "FLOAT32_FILTERABLE unavailable: float textures use Rgba16Float");
             }
-            if !features.contains(wgpu::Features::SHADER_F16) {
-                info!(LogContext::Rendering => "SHADER_F16 unavailable: PBR lighting runs in 32-bit floats");
+            if !features.contains(wgpu::Features::SHADER_F16 | wgpu::Features::SUBGROUP) {
+                info!(LogContext::Rendering => "SHADER_F16 or SUBGROUP unavailable: PBR lighting uses the baseline shader tier (32-bit floats)");
             }
             if !features.contains(wgpu::Features::RG11B10UFLOAT_RENDERABLE) {
                 info!(LogContext::Rendering => "RG11B10UFLOAT_RENDERABLE unavailable: scene HDR targets use Rgba16Float");

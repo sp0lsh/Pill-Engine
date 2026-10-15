@@ -1,7 +1,7 @@
 use crate::config::{
     AMBIENT_TARGET_FORMAT, BACKGROUND_FRAGMENT_SHADER, BACKGROUND_VERTEX_SHADER,
     DEFAULT_EQUIRECT_FALLBACK_PIXEL, DEPTH_TARGET_FORMAT, PBR_ALPHA_TEST_CONSTANT,
-    PBR_OPAQUE_F16_FRAGMENT_SHADER, PBR_OPAQUE_FRAGMENT_SHADER, PBR_OPAQUE_VERTEX_SHADER,
+    PBR_OPAQUE_FAST_FRAGMENT_SHADER, PBR_OPAQUE_FRAGMENT_SHADER, PBR_OPAQUE_VERTEX_SHADER,
     SSR_NORMAL_TARGET_FORMAT, SSR_SURFACE_TARGET_FORMAT, VELOCITY_TARGET_FORMAT,
 };
 use crate::graphics::shadow_casters::{box_corners, frustum_planes, outside_frustum};
@@ -775,9 +775,9 @@ impl PassPBROpaque {
                 entry_func: "vs_main",
             },
             ps: ShaderDesc {
-                // 16-bit BRDF math where the device runs half floats
-                source: if renderer.supports_f16() {
-                    PBR_OPAQUE_F16_FRAGMENT_SHADER
+                // 16-bit BRDF and wave-scalarized light loop where the device supports both
+                source: if renderer.fast_shader_tier() {
+                    PBR_OPAQUE_FAST_FRAGMENT_SHADER
                 } else {
                     PBR_OPAQUE_FRAGMENT_SHADER
                 },

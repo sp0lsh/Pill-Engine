@@ -81,7 +81,7 @@ impl PillRenderer for DummyRenderer {
         wgpu::TextureFormat::Rgba16Float
     }
 
-    fn supports_f16(&self) -> bool {
+    fn fast_shader_tier(&self) -> bool {
         false
     }
 
