@@ -1,4 +1,4 @@
-use crate::config::DEPTH_TARGET_FORMAT;
+use crate::config::SHADOW_MAP_FORMAT;
 use crate::graphics::pass_lights::{LightsFrame, PunctualShadowMap};
 use crate::graphics::punctual_shadows::MAX_PUNCTUAL_SHADOW_MAPS;
 use crate::graphics::shadow_casters::{
@@ -86,7 +86,7 @@ impl PassPunctualShadows {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: DEPTH_TARGET_FORMAT,
+            format: SHADOW_MAP_FORMAT,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });

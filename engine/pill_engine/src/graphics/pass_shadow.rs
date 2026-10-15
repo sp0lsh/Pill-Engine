@@ -1,4 +1,4 @@
-use crate::config::DEPTH_TARGET_FORMAT;
+use crate::config::SHADOW_MAP_FORMAT;
 use crate::ecs::RenderStateComponent;
 use crate::graphics::shadow::{
     casts_into, fit_light, light_space_bounds, light_view_projection, CameraSlice, ShadowFrame,
@@ -79,7 +79,7 @@ impl PassShadow {
         }
         let map = renderer.create_render_target(RendererTargetDesc {
             name: "shadow_map".to_string(),
-            format: DEPTH_TARGET_FORMAT,
+            format: SHADOW_MAP_FORMAT,
             size: TargetSize::Fixed(size, size),
         })?;
         self.shadow_map = Some((map, size));

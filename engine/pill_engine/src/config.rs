@@ -121,6 +121,9 @@ pub const LDR_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgb10a2U
 pub const DOF_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 pub const DEPTH_TARGET_NAME: &str = "depth_target";
 pub const DEPTH_TARGET_FORMAT: wgpu::TextureFormat = RendererTexture::DEPTH_FORMAT;
+/// Key-light and point/spot shadow maps; 16 bits halve the caster pass bandwidth. The casters'
+/// constant depth bias is in units of this format (1/65536 of the light's depth range).
+pub const SHADOW_MAP_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth16Unorm;
 /// Motion vectors (UV offset to last frame's position) written by the PBR passes.
 pub const VELOCITY_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
 /// Indirect (IBL) lighting alone, written by the PBR opaque pass for SSAO.

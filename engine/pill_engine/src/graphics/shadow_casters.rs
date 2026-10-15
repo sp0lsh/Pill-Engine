@@ -3,8 +3,8 @@
 //! one light matrix per map (dynamic uniform offsets).
 
 use crate::config::{
-    DEPTH_TARGET_FORMAT, SHADOW_CASTER_CUTOUT_FRAGMENT_SHADER, SHADOW_CASTER_CUTOUT_VERTEX_SHADER,
-    SHADOW_CASTER_FRAGMENT_SHADER, SHADOW_CASTER_VERTEX_SHADER,
+    SHADOW_CASTER_CUTOUT_FRAGMENT_SHADER, SHADOW_CASTER_CUTOUT_VERTEX_SHADER,
+    SHADOW_CASTER_FRAGMENT_SHADER, SHADOW_CASTER_VERTEX_SHADER, SHADOW_MAP_FORMAT,
 };
 use crate::ecs::{MeshRenderingComponent, TransformComponent};
 use crate::graphics::pass_pbr_opaque::{
@@ -424,7 +424,7 @@ fn camera_entry() -> wgpu::BindGroupLayoutEntry {
 /// Depth write with polygon offset against self-shadowing (Filament's default approach).
 fn caster_depth_state(constant_bias: i32, slope_bias: f32) -> wgpu::DepthStencilState {
     wgpu::DepthStencilState {
-        format: DEPTH_TARGET_FORMAT,
+        format: SHADOW_MAP_FORMAT,
         depth_write_enabled: true,
         depth_compare: wgpu::CompareFunction::Less,
         stencil: wgpu::StencilState::default(),
