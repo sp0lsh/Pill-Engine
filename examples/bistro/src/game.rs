@@ -33,46 +33,6 @@ const VIEWPOINTS: [Viewpoint; 4] = [
     (Vector3f::new(0.0, 20.0, 0.0), 90.0, -40.0),
 ];
 
-/// Exterior glTF materials of the street surface (`Pavement_*`): darkened and glossy when wet.
-const PAVEMENT_MATERIALS: [usize; 11] = [101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 124];
-/// Wet pavement: roughness scale (the textures say 0.74) and albedo scale.
-const WET_ROUGHNESS: f32 = 0.3;
-const WET_DARKENING: f32 = 0.6;
-
-/// Pavement materials of the loaded Exterior with their dry albedo, and the wetness applied.
-struct Pavement {
-    materials: Vec<(MaterialHandle, Color)>,
-    wet: Option<bool>,
-}
-
-static PAVEMENT: Mutex<Pavement> = Mutex::new(Pavement {
-    materials: Vec::new(),
-    wet: None,
-});
-
-/// Follows `Settings::wet_street`.
-fn wet_street_system(engine: &mut Engine) -> Result<()> {
-    let wet = ui::settings().wet_street;
-    let mut pavement = PAVEMENT
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if pavement.wet == Some(wet) || pavement.materials.is_empty() {
-        return Ok(());
-    }
-    for &(handle, dry_albedo) in &pavement.materials {
-        let material = engine.get_resource_mut::<Material>(&handle)?;
-        let (roughness, albedo) = if wet {
-            (WET_ROUGHNESS, dry_albedo * WET_DARKENING)
-        } else {
-            (1.0, dry_albedo)
-        };
-        material.set_roughness(roughness);
-        material.set_albedo(albedo);
-    }
-    pavement.wet = Some(wet);
-    Ok(())
-}
-
 // The background load can't hold &mut Engine; it leaves its result here for `drain_system`
 static LOADED: Mutex<Option<std::result::Result<BistroCpu, String>>> = Mutex::new(None);
 
@@ -206,18 +166,6 @@ fn spawn_assets(engine: &mut Engine, scene: SceneHandle, cpu: BistroCpu) -> Resu
     let mut material_handles: Vec<MaterialHandle> = Vec::with_capacity(materials.len());
     for material in &materials {
         material_handles.push(engine.add_resource(bistro_material(material, &texture_handles))?);
-    }
-    {
-        PAVEMENT
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .materials = PAVEMENT_MATERIALS
-            .iter()
-            .map(|&index| {
-                let [red, green, blue, _] = materials[index].base_color;
-                (material_handles[index], Color::new(red, green, blue))
-            })
-            .collect();
     }
 
     // --- Meshes + entities (world transform already baked into the vertices) ---
@@ -368,7 +316,6 @@ impl PillGame for Game {
         engine.add_system("bistro_shortcuts", ui::shortcuts_system)?;
         engine.add_system("bistro_settings", ui::apply_settings_system)?;
         engine.add_system("bistro_drain", drain_system)?;
-        engine.add_system("bistro_wet_street", wet_street_system)?;
         Ok(())
     }
 }

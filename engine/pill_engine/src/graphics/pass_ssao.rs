@@ -1,5 +1,6 @@
 use crate::config::{
-    HDR_TARGET_FORMAT, SSAO_APPLY_FRAGMENT_SHADER, SSAO_BLUR_FRAGMENT_SHADER, SSAO_FRAGMENT_SHADER,
+    HDR_TARGET_FORMAT, SSAO_APPLY_FRAGMENT_SHADER, SSAO_BLUR_FRAGMENT_SHADER,
+    SSAO_DEPTH_DOWNSAMPLE_FRAGMENT_SHADER, SSAO_FRAGMENT_SHADER,
 };
 use crate::ecs::RenderStateComponent;
 use crate::graphics::fullscreen::{
@@ -18,6 +19,10 @@ use std::rc::Rc;
 
 /// (ao, view depth) at half resolution; read with Load only.
 const SSAO_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Float;
+/// View-space depth chain; half floats quantise too coarsely at range for the AO radius.
+const DEPTH_CHAIN_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
+/// Depth chain levels at ½, ¼, ⅛, 1/16 of the surface (`MAX_MIP` + 1 in ssao_fragment.hlsl).
+const DEPTH_CHAIN_DIVISORS: [u32; 4] = [2, 4, 8, 16];
 /// Blur spatial sigma in half-res pixels: the 9-tap kernel's edge at 2σ covers the AO pass's 4×4
 /// rotation cell.
 const BLUR_SIGMA_PX: f32 = 2.0;
@@ -29,13 +34,22 @@ const UPSAMPLE_SIGMA_DEPTH_RELATIVE: f32 = 0.01;
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct SsaoParams {
-    depth_mul: f32,
-    depth_add: f32,
     tan_half_x: f32,
     tan_half_y: f32,
     radius: f32,
     intensity: f32,
     power: f32,
+    _padding: [f32; 3],
+}
+
+/// Mirrors `SsaoDownsampleParams` in ssao_depth_downsample_fragment.hlsl.
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct SsaoDownsampleParams {
+    depth_mul: f32,
+    depth_add: f32,
+    /// 1: the source is the scene depth buffer.
+    linearize: f32,
     _padding: f32,
 }
 
@@ -59,6 +73,11 @@ struct SsaoApplyParams {
 }
 
 struct SsaoState {
+    downsample: Pipeline,
+    /// Downsample parameters: from the scene depth (linearizing), between chain levels.
+    downsample_first_params: wgpu::Buffer,
+    downsample_params: wgpu::Buffer,
+    depth_chain: [PassTextureHandle; 4],
     occlusion: Pipeline,
     blur: Pipeline,
     apply: Pipeline,
@@ -69,13 +88,13 @@ struct SsaoState {
     raw: PassTextureHandle,
     blurred_horizontal: PassTextureHandle,
     blurred: PassTextureHandle,
-    bind_groups: [CachedBindGroup; 4], // one per step, in draw order
+    bind_groups: [CachedBindGroup; 8], // one per step, in draw order
     // Apply step reading `color_when_inactive`
     inactive_apply_bind_group: CachedBindGroup,
 }
 
-/// Scalable Ambient Obscurance (McGuire, Mara, Luebke, HPG 2012) at half resolution from the depth
-/// buffer, smoothed by a separable depth-aware blur and upsampled bilaterally. Only the indirect
+/// Horizon-based ambient occlusion (GTAO) at half resolution from a view-space depth chain built
+/// from the depth buffer, smoothed by a separable depth-aware blur and upsampled bilaterally. Only the indirect
 /// (IBL) light is darkened: `output = color − ambient · (1 − ao)`, with `ambient` from
 /// `PassPBROpaque::with_ambient_target`. Parameters: `RenderStateComponent::ssao`.
 pub struct PassSsao {
@@ -133,12 +152,34 @@ impl Pass for PassSsao {
         let raw = half_target("ssao_raw")?;
         let blurred_horizontal = half_target("ssao_blurred_horizontal")?;
         let blurred = half_target("ssao_blurred")?;
+        let mut depth_chain = [PassTextureHandle::default(); 4];
+        for (level, divisor) in DEPTH_CHAIN_DIVISORS.into_iter().enumerate() {
+            depth_chain[level] = renderer.create_render_target(RendererTargetDesc {
+                name: format!("ssao_depth_{level}"),
+                format: DEPTH_CHAIN_FORMAT,
+                size: TargetSize::SurfaceDivisor(divisor),
+            })?;
+        }
 
+        let downsample = create_fullscreen_pipeline(
+            renderer,
+            "pass_ssao_depth_downsample",
+            SSAO_DEPTH_DOWNSAMPLE_FRAGMENT_SHADER,
+            vec![texture_entry(0, false), uniform_entry(1)],
+            DEPTH_CHAIN_FORMAT,
+            None,
+        )?;
         let occlusion = create_fullscreen_pipeline(
             renderer,
             "pass_ssao_occlusion",
             SSAO_FRAGMENT_SHADER,
-            vec![texture_entry(0, false), uniform_entry(1)],
+            vec![
+                texture_entry(0, false),
+                texture_entry(1, false),
+                texture_entry(2, false),
+                texture_entry(3, false),
+                uniform_entry(4),
+            ],
             SSAO_TARGET_FORMAT,
             None,
         )?;
@@ -183,6 +224,16 @@ impl Pass for PassSsao {
         }
 
         self.state = Some(SsaoState {
+            downsample,
+            downsample_first_params: uniform_buffer::<SsaoDownsampleParams>(
+                renderer,
+                "pass_ssao_downsample_first",
+            ),
+            downsample_params: uniform_buffer::<SsaoDownsampleParams>(
+                renderer,
+                "pass_ssao_downsample",
+            ),
+            depth_chain,
             occlusion,
             blur,
             apply,
@@ -220,16 +271,29 @@ impl Pass for PassSsao {
             &state.occlusion_params,
             0,
             bytemuck::bytes_of(&SsaoParams {
-                depth_mul,
-                depth_add,
                 tan_half_x: tan_half_y * camera.aspect.get_value(),
                 tan_half_y,
                 radius: settings.radius.max(1e-3),
                 intensity: settings.intensity,
                 power: settings.power,
-                _padding: 0.0,
+                _padding: [0.0; 3],
             }),
         );
+        for (buffer, linearize) in [
+            (&state.downsample_first_params, 1.0),
+            (&state.downsample_params, 0.0),
+        ] {
+            queue.write_buffer(
+                buffer,
+                0,
+                bytemuck::bytes_of(&SsaoDownsampleParams {
+                    depth_mul,
+                    depth_add,
+                    linearize,
+                    _padding: 0.0,
+                }),
+            );
+        }
         queue.write_buffer(
             &state.apply_params,
             0,
@@ -245,12 +309,52 @@ impl Pass for PassSsao {
             Some((color, active)) if !active.get() => (*color, true),
             _ => (self.color, false),
         };
-        let steps: [(&str, &Pipeline, Vec<Binding>, PassTextureHandle); 4] = [
+        let [depth0, depth1, depth2, depth3] = state.depth_chain;
+        let steps: [(&str, &Pipeline, Vec<Binding>, PassTextureHandle); 8] = [
+            (
+                "pass_ssao_depth_0",
+                &state.downsample,
+                vec![
+                    Binding::Target(self.depth),
+                    Binding::Buffer(&state.downsample_first_params),
+                ],
+                depth0,
+            ),
+            (
+                "pass_ssao_depth_1",
+                &state.downsample,
+                vec![
+                    Binding::Target(depth0),
+                    Binding::Buffer(&state.downsample_params),
+                ],
+                depth1,
+            ),
+            (
+                "pass_ssao_depth_2",
+                &state.downsample,
+                vec![
+                    Binding::Target(depth1),
+                    Binding::Buffer(&state.downsample_params),
+                ],
+                depth2,
+            ),
+            (
+                "pass_ssao_depth_3",
+                &state.downsample,
+                vec![
+                    Binding::Target(depth2),
+                    Binding::Buffer(&state.downsample_params),
+                ],
+                depth3,
+            ),
             (
                 "pass_ssao_occlusion",
                 &state.occlusion,
                 vec![
-                    Binding::Target(self.depth),
+                    Binding::Target(depth0),
+                    Binding::Target(depth1),
+                    Binding::Target(depth2),
+                    Binding::Target(depth3),
                     Binding::Buffer(&state.occlusion_params),
                 ],
                 state.raw,
@@ -287,8 +391,8 @@ impl Pass for PassSsao {
             ),
         ];
         // Off: only the apply step, which then copies the color through
-        let skipped = if settings.strength <= 0.0 { 3 } else { 0 };
-        let [occlusion_group, horizontal_group, vertical_group, apply_group] =
+        let skipped = if settings.strength <= 0.0 { 7 } else { 0 };
+        let [depth0_group, depth1_group, depth2_group, depth3_group, occlusion_group, horizontal_group, vertical_group, apply_group] =
             &mut state.bind_groups;
         let apply_group = if inactive {
             &mut state.inactive_apply_bind_group
@@ -296,6 +400,10 @@ impl Pass for PassSsao {
             apply_group
         };
         let bind_groups = [
+            depth0_group,
+            depth1_group,
+            depth2_group,
+            depth3_group,
             occlusion_group,
             horizontal_group,
             vertical_group,

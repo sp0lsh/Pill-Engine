@@ -205,6 +205,8 @@ pub const DOF_NEAR_COMPOSITE_FRAGMENT_SHADER: &str =
 pub const SSR_FRAGMENT_SHADER: &str = include_str!("../res/shaders/ssr_fragment.wgsl");
 #[cfg(feature = "post_fx")]
 pub const SSAO_FRAGMENT_SHADER: &str = include_str!("../res/shaders/ssao_fragment.wgsl");
+pub const SSAO_DEPTH_DOWNSAMPLE_FRAGMENT_SHADER: &str =
+    include_str!("../res/shaders/ssao_depth_downsample_fragment.wgsl");
 #[cfg(feature = "post_fx")]
 pub const SSAO_BLUR_FRAGMENT_SHADER: &str = include_str!("../res/shaders/ssao_blur_fragment.wgsl");
 #[cfg(feature = "post_fx")]

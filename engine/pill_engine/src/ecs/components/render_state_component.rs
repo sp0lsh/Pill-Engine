@@ -83,8 +83,9 @@ pub struct DepthOfField {
 pub struct Ssao {
     /// Blend of the occlusion (0 = off, 1 = full).
     pub strength: f32,
-    /// World-space sampling radius.
+    /// World-space radius of the horizon search.
     pub radius: f32,
+    /// Scales the occlusion: visibility = 1 − (1 − v) · intensity.
     pub intensity: f32,
     /// Contrast exponent applied to the visibility.
     pub power: f32,
@@ -338,6 +339,9 @@ pub struct RenderStateComponent {
     pub fog_density: f32,
     /// Scales both IBL terms (diffuse irradiance and specular reflection); 0 = direct light only.
     pub ibl_intensity: f32,
+    /// Rain on every surface, 0 = dry, 1 = soaked: porous surfaces darken, a water film lowers
+    /// roughness (fully on upward-facing surfaces, partly on walls).
+    pub wetness: f32,
     /// Key, rim and bounce lights of the PBR passes.
     pub lights: [DirectionalLight; 3],
     /// Shadow map of the key light (`lights[0]`); off by default.
@@ -377,6 +381,7 @@ impl RenderStateComponent {
             fog_color: [0.0, 0.0, 0.0],
             fog_density: 0.0,
             ibl_intensity: 1.0,
+            wetness: 0.0,
             // Key behind the camera upper-left, cool rim front upper-right, neutral bounce from below
             lights: [
                 DirectionalLight {

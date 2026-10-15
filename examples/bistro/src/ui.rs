@@ -29,8 +29,10 @@ pub struct Settings {
     pub bloom: bool,
     pub depth_of_field: bool,
     pub motion_blur: bool,
-    /// Rain-darkened, glossy pavement (Exterior): shows the screen-space reflections.
-    pub wet_street: bool,
+    /// Rain: wetness of every surface, 0–1 (`RenderStateComponent::wetness`).
+    pub wet: f32,
+    /// Scales the sun's intensity from the time of day (0–5).
+    pub sun_intensity: f32,
 }
 
 pub static SETTINGS: Mutex<Settings> = Mutex::new(Settings {
@@ -49,7 +51,8 @@ pub static SETTINGS: Mutex<Settings> = Mutex::new(Settings {
     bloom: true,
     depth_of_field: false,
     motion_blur: false,
-    wet_street: false,
+    wet: 0.0,
+    sun_intensity: 1.0,
 });
 
 /// What the panel shows besides the settings (written by the game systems).
@@ -104,6 +107,11 @@ pub fn register(engine: &mut Engine) -> Result<()> {
                                 .suffix("°")
                                 .text("Sun rotation"),
                         );
+                        ui.add(
+                            egui::Slider::new(&mut settings.sun_intensity, 0.0..=5.0)
+                                .text("Sun intensity"),
+                        );
+                        ui.add(egui::Slider::new(&mut settings.wet, 0.0..=1.0).text("Wet"));
                         ui.label(format!(
                             "Sun elevation {:.1}°",
                             daylight::at(settings.hour).elevation
@@ -125,7 +133,6 @@ pub fn register(engine: &mut Engine) -> Result<()> {
                         ui.checkbox(&mut settings.bloom, "Bloom (B)");
                         ui.checkbox(&mut settings.depth_of_field, "Depth of field (F)");
                         ui.checkbox(&mut settings.motion_blur, "Motion blur (M)");
-                        ui.checkbox(&mut settings.wet_street, "Wet street (P)");
                     });
                     ui.separator();
                     ui.label("1–4: viewpoints");
@@ -137,7 +144,7 @@ pub fn register(engine: &mut Engine) -> Result<()> {
 
 /// Keyboard shortcuts for the toggles.
 type Shortcut = (KeyboardKey, fn(&mut Settings) -> &mut bool);
-const SHORTCUTS: [Shortcut; 10] = [
+const SHORTCUTS: [Shortcut; 9] = [
     (KeyboardKey::KeyK, |settings| &mut settings.shadows),
     (KeyboardKey::KeyG, |settings| &mut settings.gi),
     (KeyboardKey::KeyH, |settings| &mut settings.gi_indirect_only),
@@ -149,7 +156,6 @@ const SHORTCUTS: [Shortcut; 10] = [
     (KeyboardKey::KeyB, |settings| &mut settings.bloom),
     (KeyboardKey::KeyF, |settings| &mut settings.depth_of_field),
     (KeyboardKey::KeyM, |settings| &mut settings.motion_blur),
-    (KeyboardKey::KeyP, |settings| &mut settings.wet_street),
 ];
 
 pub fn shortcuts_system(engine: &mut Engine) -> Result<()> {
@@ -180,7 +186,8 @@ pub fn apply_settings_system(engine: &mut Engine) -> Result<()> {
     // Direction from the sun toward the scene
     render_state.lights[0].direction = (-to_sun).to_array();
     render_state.lights[0].color = light.color;
-    render_state.lights[0].intensity = light.intensity;
+    render_state.lights[0].intensity = light.intensity * settings.sun_intensity;
+    render_state.wetness = settings.wet;
     render_state.ibl_intensity = light.sky;
     render_state.shadow.enabled = settings.shadows;
     render_state.gi.enabled = settings.gi;

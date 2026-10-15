@@ -21,12 +21,12 @@ Not a web example: the assets are too large and the BC7 cooker (Intel ISPC kerne
 - Hold left mouse: look; WASD, E/Q, Shift: move, up/down, faster
 - K / G / H: sun shadows / diffuse GI / indirect light only
 - R / T: screen-space reflections / reflections only
-- P: wet street
 - O / B / F / M: SSAO / bloom / depth of field / motion blur
 
 The "Bistro" panel (folded, top left) has an Hour slider (two days, so it slides across midnight:
 sun path of Rome on the spring equinox, golden hour by default), a Sun rotation slider (turns the
-sun path about the vertical axis), the same toggles, and GI debug: probes drawn as spheres, surfaces
+sun path about the vertical axis), Sun intensity (0–5) and Wet (0–1, rain: every surface darker and glossier,
+the ground most) sliders, the same toggles, and GI debug: probes drawn as spheres, surfaces
 coloured by the probe cell that lights them, and the fine probe spacing (0.5–3 m; a 6 m grid covers
 the rest of the scene).
 

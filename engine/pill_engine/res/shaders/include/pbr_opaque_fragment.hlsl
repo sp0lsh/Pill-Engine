@@ -21,7 +21,7 @@ struct Camera {
 // Scene globals (set 0, binding 7) — mirrors SceneUniform in scene_uniform.rs; all float4 rows.
 struct Scene {
     float4 fog_color_density; // xyz = fog color, w = fog density
-    float4 ibl_intensity;     // x = IBL scale, y = 1 when PassSsr adds the specular IBL term
+    float4 ibl_intensity;     // x = IBL scale, y = 1 when PassSsr adds the specular IBL term, z = wetness
     float4 light_direction0;  // xyz = direction from the light toward the scene
     float4 light_color0;      // rgb = color, w = intensity
     float4 light_direction1;
@@ -35,6 +35,12 @@ struct Scene {
     float4 camera_forward; // xyz
 };
 [[vk::binding(7, 0)]] ConstantBuffer<Scene> scene;
+
+// Wet surfaces: albedo darkening of a fully porous surface, film on walls relative to upward
+// surfaces, roughness of a full water film
+static const float WET_DARKENING = 0.5;
+static const float WET_WALL_FILM = 0.35;
+static const float WET_ROUGHNESS = 0.08;
 
 // Point/spot lights and their froxel lists (froxelizer.rs) — mirrors GpuLight in pass_lights.rs
 struct PunctualLight {
@@ -378,6 +384,16 @@ FragmentOutput fs_main(
     float  normal_dot_view   = dot(normal, view_direction);
     if (normal_dot_view < MIN_NORMAL_DOT_VIEW) {
         normal = normalize(normal + view_direction * (MIN_NORMAL_DOT_VIEW - normal_dot_view));
+    }
+    // Rain (`RenderStateComponent::wetness`): water fills the pores of rough dielectrics (darker
+    // albedo) and covers surfaces with a film (lower roughness), fully on upward-facing ones
+    // (ground, ledges, roofs), partly on walls where it runs off
+    float wetness = scene.ibl_intensity.z;
+    if (wetness > 0.0) {
+        float porosity = (1.0 - metallic) * roughness;
+        albedo   *= 1.0 - WET_DARKENING * wetness * porosity;
+        float film = wetness * lerp(WET_WALL_FILM, 1.0, saturate(vertex_normal.y));
+        roughness = lerp(roughness, WET_ROUGHNESS, film);
     }
     float3 base_reflectivity = lerp(float3(0.04, 0.04, 0.04), albedo, float3(metallic, metallic, metallic));
     float3 outgoing_radiance = float3(0.0, 0.0, 0.0);
