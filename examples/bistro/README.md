@@ -22,6 +22,7 @@ Not a web example: the assets are too large and the BC7 cooker (Intel ISPC kerne
 - K / G / H: sun shadows / diffuse GI / indirect light only
 - R / T: screen-space reflections / reflections only
 - O / B / F / M: SSAO / bloom / depth of field / motion blur
+- L: lighting only (every surface white and diffuse, to audit the light; "with normal maps" in the panel)
 
 The "Bistro" panel (folded, top left) has an Hour slider (two days, so it slides across midnight:
 sun path of Rome on the spring equinox, golden hour by default), a Sun rotation slider (turns the

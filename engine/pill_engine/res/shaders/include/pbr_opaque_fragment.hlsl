@@ -21,7 +21,8 @@ struct Camera {
 // Scene globals (set 0, binding 7) — mirrors SceneUniform in scene_uniform.rs; all float4 rows.
 struct Scene {
     float4 fog_color_density; // xyz = fog color, w = fog density
-    float4 ibl_intensity;     // x = IBL scale, y = 1 when PassSsr adds the specular IBL term, z = wetness
+    float4 ibl_intensity;     // x = IBL scale, y = 1 when PassSsr adds the specular IBL term, z = wetness,
+                              // w = debug view (0 lit, 1 lighting only, 2 lighting only with normal maps)
     float4 light_direction0;  // xyz = direction from the light toward the scene
     float4 light_color0;      // rgb = color, w = intensity
     float4 light_direction1;
@@ -180,12 +181,20 @@ float geometry_smith(float3 normal, float3 view_direction, float3 light_directio
     return geometry_schlick_ggx(normal_dot_light, roughness) * geometry_schlick_ggx(normal_dot_view, roughness);
 }
 
+// Schlick Fresnel; an F0 of exactly zero (the lighting-only views) means no specular at all, so
+// it also drops the grazing term
+float specular_present(float3 base_reflectivity) {
+    return max(base_reflectivity.r, max(base_reflectivity.g, base_reflectivity.b)) > 0.0 ? 1.0 : 0.0;
+}
+
 float3 fresnel_schlick(float cos_theta, float3 base_reflectivity) {
-    return base_reflectivity + (float3(1.0, 1.0, 1.0) - base_reflectivity) * pow(1.0 - cos_theta, 5.0);
+    float grazing = pow(1.0 - cos_theta, 5.0) * specular_present(base_reflectivity);
+    return base_reflectivity + (float3(1.0, 1.0, 1.0) - base_reflectivity) * grazing;
 }
 
 float3 fresnel_schlick_roughness(float cos_theta, float3 base_reflectivity, float roughness) {
-    return base_reflectivity + (max(float3(1.0 - roughness, 1.0 - roughness, 1.0 - roughness), base_reflectivity) - base_reflectivity) * pow(1.0 - cos_theta, 5.0);
+    float grazing = pow(1.0 - cos_theta, 5.0) * specular_present(base_reflectivity);
+    return base_reflectivity + (max(float3(1.0 - roughness, 1.0 - roughness, 1.0 - roughness), base_reflectivity) - base_reflectivity) * grazing;
 }
 
 
@@ -395,7 +404,21 @@ FragmentOutput fs_main(
         float film = wetness * lerp(WET_WALL_FILM, 1.0, saturate(vertex_normal.y));
         roughness = lerp(roughness, WET_ROUGHNESS, film);
     }
-    float3 base_reflectivity = lerp(float3(0.04, 0.04, 0.04), albedo, float3(metallic, metallic, metallic));
+    // Lighting-only views (light audits): every surface white, diffuse only, unlit by itself; the
+    // light reaching it is all that shows (method: Unreal's Lighting Only / Detail Lighting views)
+    float debug_view    = scene.ibl_intensity.w;
+    bool  lighting_only = debug_view > 0.5;
+    if (lighting_only) {
+        albedo   = float3(1.0, 1.0, 1.0);
+        metallic = 0.0;
+        if (debug_view < 1.5) {
+            normal = vertex_normal;
+        }
+    }
+    float  clearcoat         = lighting_only ? 0.0 : material.clearcoat;
+    float3 base_reflectivity = lighting_only
+        ? float3(0.0, 0.0, 0.0)
+        : lerp(float3(0.04, 0.04, 0.04), albedo, float3(metallic, metallic, metallic));
     float3 outgoing_radiance = float3(0.0, 0.0, 0.0);
     // Key light (0) shadow; point/spot shadows are in accumulate_punctual_lights
     float  key_visibility    = shadow_visibility(world_position, vertex_normal);
@@ -405,11 +428,11 @@ FragmentOutput fs_main(
     outgoing_radiance += accumulate_directional_light(normal, view_direction, base_reflectivity, albedo, roughness, metallic, scene.light_direction2.xyz, scene.light_color2);
     float coat_roughness = clamp(material.clearcoat_roughness, 0.045, 0.99);
     uint  punctual_count;
-    outgoing_radiance += accumulate_punctual_lights(frag_coord.xy, world_position, normal, vertex_normal, view_direction, base_reflectivity, albedo, roughness, metallic, material.clearcoat, coat_roughness, punctual_count);
-    if (material.clearcoat > 0.0) {
-        outgoing_radiance += clearcoat_directional_light(normal, view_direction, material.clearcoat, coat_roughness, scene.light_direction0.xyz, key_light_color);
-        outgoing_radiance += clearcoat_directional_light(normal, view_direction, material.clearcoat, coat_roughness, scene.light_direction1.xyz, scene.light_color1);
-        outgoing_radiance += clearcoat_directional_light(normal, view_direction, material.clearcoat, coat_roughness, scene.light_direction2.xyz, scene.light_color2);
+    outgoing_radiance += accumulate_punctual_lights(frag_coord.xy, world_position, normal, vertex_normal, view_direction, base_reflectivity, albedo, roughness, metallic, clearcoat, coat_roughness, punctual_count);
+    if (clearcoat > 0.0) {
+        outgoing_radiance += clearcoat_directional_light(normal, view_direction, clearcoat, coat_roughness, scene.light_direction0.xyz, key_light_color);
+        outgoing_radiance += clearcoat_directional_light(normal, view_direction, clearcoat, coat_roughness, scene.light_direction1.xyz, scene.light_color1);
+        outgoing_radiance += clearcoat_directional_light(normal, view_direction, clearcoat, coat_roughness, scene.light_direction2.xyz, scene.light_color2);
     }
     // Diffuse IBL ambient.
     float3 specular_factor = fresnel_schlick(max(dot(normal, view_direction), 0.0), base_reflectivity);
@@ -434,9 +457,13 @@ FragmentOutput fs_main(
     float3 prefiltered_color = prefilter_texture.SampleLevel(prefilter_sampler, dir_to_equirect_uv(reflection), roughness * MAX_REFLECTION_LOD).rgb;
     float2 environment_brdf  = brdf_lut_texture.Sample(brdf_lut_sampler, float2(max(dot(normal, view_direction), 0.0), roughness)).rg;
     float3 fresnel           = fresnel_schlick_roughness(max(dot(normal, view_direction), 0.0), base_reflectivity, roughness);
-    float3 specular_weight   = (fresnel * environment_brdf.x + environment_brdf.y) * specular_occlusion;
+    float3 specular_weight   = lighting_only
+        ? float3(0.0, 0.0, 0.0)
+        : (fresnel * environment_brdf.x + environment_brdf.y) * specular_occlusion;
     float3 specular_ibl      = prefiltered_color * specular_weight * scene.ibl_intensity.x;
-    float3 emissive = emissive_texture.Sample(emissive_sampler, texture_coordinates).rgb * material.emissive_factor;
+    float3 emissive = lighting_only
+        ? float3(0.0, 0.0, 0.0)
+        : emissive_texture.Sample(emissive_sampler, texture_coordinates).rgb * material.emissive_factor;
     // With SSR (ibl_intensity.y) PassSsr adds the specular term: reflection where its ray hits, IBL elsewhere
     bool   ssr   = scene.ibl_intensity.y > 0.5;
     float3 color = outgoing_radiance + ambient_diffuse + (ssr ? float3(0.0, 0.0, 0.0) : specular_ibl) + emissive;
@@ -462,8 +489,8 @@ FragmentOutput fs_main(
     output.velocity = (ndc - previous_ndc) * float2(0.5, -0.5);
     // What SSAO takes back must be in `color`; with SSR, PassSsr adds the specular term instead
     output.ambient  = float4((ambient_diffuse + (ssr ? float3(0.0, 0.0, 0.0) : specular_ibl)) * (1.0 - fog), 0.0);
-    bool debug_view = ddgi.enabled >= 2 || scene.froxel_depth.w > 0.5;
-    output.ssr_surface = float4(ssr && !debug_view ? specular_weight * (1.0 - fog) : float3(0.0, 0.0, 0.0), roughness);
+    bool no_reflections = ddgi.enabled >= 2 || scene.froxel_depth.w > 0.5 || lighting_only;
+    output.ssr_surface = float4(ssr && !no_reflections ? specular_weight * (1.0 - fog) : float3(0.0, 0.0, 0.0), roughness);
     output.ssr_normal  = oct_encode(normal);
 #endif
     return output;

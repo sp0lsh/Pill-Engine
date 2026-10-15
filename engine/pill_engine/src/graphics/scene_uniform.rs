@@ -1,4 +1,4 @@
-use crate::ecs::RenderStateComponent;
+use crate::ecs::{DebugView, RenderStateComponent};
 use crate::graphics::pass_lights::LightsParams;
 use crate::graphics::shadow::ShadowFrame;
 
@@ -10,7 +10,7 @@ use crate::graphics::shadow::ShadowFrame;
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct SceneUniform {
     fog_color_density: [f32; 4], // xyz = fog color, w = fog density
-    ibl_intensity: [f32; 4],     // x, y = 1 when PassSsr adds the specular IBL term, z = wetness
+    ibl_intensity: [f32; 4], // x, y = 1 when PassSsr adds the specular IBL term, z = wetness, w = debug view
     // Per light: direction (xyz) row, then color (rgb) + intensity (w) row
     lights: [[f32; 4]; 6],
     shadow_view_projection: [[f32; 4]; 4], // world → light clip space (column-major)
@@ -56,7 +56,11 @@ impl SceneUniform {
                 render_state.ibl_intensity,
                 ssr as u32 as f32,
                 render_state.wetness.clamp(0.0, 1.0),
-                0.0,
+                match render_state.debug_view {
+                    DebugView::Lit => 0.0,
+                    DebugView::LightingOnly => 1.0,
+                    DebugView::DetailLighting => 2.0,
+                },
             ],
             lights,
             shadow_view_projection,

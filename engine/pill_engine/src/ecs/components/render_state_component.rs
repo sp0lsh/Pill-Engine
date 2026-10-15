@@ -79,6 +79,18 @@ pub struct DepthOfField {
 }
 
 /// PostFx chain screen-space ambient occlusion; darkens only the indirect (IBL) light.
+/// What the PBR passes show: the lit image, or only the light reaching the surfaces (every
+/// surface a white diffuse material without specular or emission, for auditing light levels).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum DebugView {
+    #[default]
+    Lit,
+    /// Geometric normals.
+    LightingOnly,
+    /// As `LightingOnly`, with the materials' normal maps.
+    DetailLighting,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Ssao {
     /// Blend of the occlusion (0 = off, 1 = full).
@@ -342,6 +354,8 @@ pub struct RenderStateComponent {
     /// Rain on every surface, 0 = dry, 1 = soaked: porous surfaces darken, a water film lowers
     /// roughness (fully on upward-facing surfaces, partly on walls).
     pub wetness: f32,
+    /// Lit image or lighting-only debug views.
+    pub debug_view: DebugView,
     /// Key, rim and bounce lights of the PBR passes.
     pub lights: [DirectionalLight; 3],
     /// Shadow map of the key light (`lights[0]`); off by default.
@@ -382,6 +396,7 @@ impl RenderStateComponent {
             fog_density: 0.0,
             ibl_intensity: 1.0,
             wetness: 0.0,
+            debug_view: DebugView::Lit,
             // Key behind the camera upper-left, cool rim front upper-right, neutral bounce from below
             lights: [
                 DirectionalLight {

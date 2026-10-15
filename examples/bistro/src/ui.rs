@@ -21,6 +21,9 @@ pub struct Settings {
     /// GI debug: probes as spheres, surfaces coloured by their probe cell.
     pub gi_probes: bool,
     pub gi_probe_cells: bool,
+    /// Lighting-only view (every surface white, diffuse only), with or without normal maps.
+    pub lighting_only: bool,
+    pub lighting_normal_maps: bool,
     /// Probe spacing (m) of the fine GI cascade around the camera (the coarse one is 6 m).
     pub gi_fine_spacing: f32,
     pub ssr: bool,
@@ -44,6 +47,8 @@ pub static SETTINGS: Mutex<Settings> = Mutex::new(Settings {
     gi_indirect_only: false,
     gi_probes: false,
     gi_probe_cells: false,
+    lighting_only: false,
+    lighting_normal_maps: false,
     gi_fine_spacing: 2.0,
     ssr: true,
     ssr_reflections_only: false,
@@ -122,6 +127,16 @@ pub fn register(engine: &mut Engine) -> Result<()> {
                         ui.checkbox(&mut settings.gi_indirect_only, "Indirect light only (H)");
                         ui.checkbox(&mut settings.gi_probes, "GI probes");
                         ui.checkbox(&mut settings.gi_probe_cells, "GI probe cells");
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut settings.lighting_only, "Lighting only (L)");
+                            ui.add_enabled(
+                                settings.lighting_only,
+                                egui::Checkbox::new(
+                                    &mut settings.lighting_normal_maps,
+                                    "with normal maps",
+                                ),
+                            );
+                        });
                         ui.add(
                             egui::Slider::new(&mut settings.gi_fine_spacing, 0.5..=3.0)
                                 .suffix(" m")
@@ -144,7 +159,7 @@ pub fn register(engine: &mut Engine) -> Result<()> {
 
 /// Keyboard shortcuts for the toggles.
 type Shortcut = (KeyboardKey, fn(&mut Settings) -> &mut bool);
-const SHORTCUTS: [Shortcut; 9] = [
+const SHORTCUTS: [Shortcut; 10] = [
     (KeyboardKey::KeyK, |settings| &mut settings.shadows),
     (KeyboardKey::KeyG, |settings| &mut settings.gi),
     (KeyboardKey::KeyH, |settings| &mut settings.gi_indirect_only),
@@ -156,6 +171,7 @@ const SHORTCUTS: [Shortcut; 9] = [
     (KeyboardKey::KeyB, |settings| &mut settings.bloom),
     (KeyboardKey::KeyF, |settings| &mut settings.depth_of_field),
     (KeyboardKey::KeyM, |settings| &mut settings.motion_blur),
+    (KeyboardKey::KeyL, |settings| &mut settings.lighting_only),
 ];
 
 pub fn shortcuts_system(engine: &mut Engine) -> Result<()> {
@@ -188,6 +204,11 @@ pub fn apply_settings_system(engine: &mut Engine) -> Result<()> {
     render_state.lights[0].color = light.color;
     render_state.lights[0].intensity = light.intensity * settings.sun_intensity;
     render_state.wetness = settings.wet;
+    render_state.debug_view = match (settings.lighting_only, settings.lighting_normal_maps) {
+        (false, _) => DebugView::Lit,
+        (true, false) => DebugView::LightingOnly,
+        (true, true) => DebugView::DetailLighting,
+    };
     render_state.ibl_intensity = light.sky;
     render_state.shadow.enabled = settings.shadows;
     render_state.gi.enabled = settings.gi;
