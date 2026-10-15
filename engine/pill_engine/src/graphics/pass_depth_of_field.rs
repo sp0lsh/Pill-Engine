@@ -1,6 +1,6 @@
 use crate::config::{
     DOF_BOKEH_FRAGMENT_SHADER, DOF_DOWNSAMPLE_FRAGMENT_SHADER, DOF_NEAR_BLUR_FRAGMENT_SHADER,
-    DOF_NEAR_COMPOSITE_FRAGMENT_SHADER, DOF_NEAR_PREFILTER_FRAGMENT_SHADER, HDR_TARGET_FORMAT,
+    DOF_NEAR_COMPOSITE_FRAGMENT_SHADER, DOF_NEAR_PREFILTER_FRAGMENT_SHADER, DOF_TARGET_FORMAT,
     LINEARIZE_DEPTH_FRAGMENT_SHADER,
 };
 use crate::ecs::RenderStateComponent;
@@ -89,7 +89,7 @@ pub struct PassDepthOfField {
 }
 
 impl PassDepthOfField {
-    /// `output`: an HDR_TARGET_FORMAT target at a quarter of the surface (`SurfaceDivisor(4)`).
+    /// `output`: an DOF_TARGET_FORMAT target at a quarter of the surface (`SurfaceDivisor(4)`).
     pub fn new(
         color: PassTextureHandle,
         depth: PassTextureHandle,
@@ -137,10 +137,10 @@ impl Pass for PassDepthOfField {
 
     fn init(&mut self, renderer: &mut dyn PillRenderer) -> Result<()> {
         let linear_depth = target(renderer, "dof_linear_depth", LINEAR_DEPTH_FORMAT, 1)?;
-        let quarter = target(renderer, "dof_quarter", HDR_TARGET_FORMAT, 4)?;
-        let far = target(renderer, "dof_far", HDR_TARGET_FORMAT, 4)?;
-        let near = target(renderer, "dof_near", HDR_TARGET_FORMAT, 8)?;
-        let near_blurred = target(renderer, "dof_near_blurred", HDR_TARGET_FORMAT, 8)?;
+        let quarter = target(renderer, "dof_quarter", DOF_TARGET_FORMAT, 4)?;
+        let far = target(renderer, "dof_far", DOF_TARGET_FORMAT, 4)?;
+        let near = target(renderer, "dof_near", DOF_TARGET_FORMAT, 8)?;
+        let near_blurred = target(renderer, "dof_near_blurred", DOF_TARGET_FORMAT, 8)?;
 
         let linearize = stage::<DepthUnpack>(
             renderer,
@@ -154,7 +154,7 @@ impl Pass for PassDepthOfField {
             "pass_dof_downsample",
             DOF_DOWNSAMPLE_FRAGMENT_SHADER,
             vec![texture_entry(0, true)],
-            HDR_TARGET_FORMAT,
+            DOF_TARGET_FORMAT,
             None,
         )?;
         let bokeh = stage::<DofParams>(
@@ -167,7 +167,7 @@ impl Pass for PassDepthOfField {
                 uniform_entry(2),
                 sampler_entry(3),
             ],
-            HDR_TARGET_FORMAT,
+            DOF_TARGET_FORMAT,
         )?;
         let near_prefilter = stage::<DofNearParams>(
             renderer,
@@ -178,14 +178,14 @@ impl Pass for PassDepthOfField {
                 texture_entry(1, true),
                 uniform_entry(2),
             ],
-            HDR_TARGET_FORMAT,
+            DOF_TARGET_FORMAT,
         )?;
         let near_blur = stage::<DofNearParams>(
             renderer,
             "pass_dof_near_blur",
             DOF_NEAR_BLUR_FRAGMENT_SHADER,
             vec![texture_entry(0, true), uniform_entry(1), sampler_entry(2)],
-            HDR_TARGET_FORMAT,
+            DOF_TARGET_FORMAT,
         )?;
         let near_composite = stage::<DofNearParams>(
             renderer,
@@ -197,7 +197,7 @@ impl Pass for PassDepthOfField {
                 uniform_entry(2),
                 sampler_entry(3),
             ],
-            HDR_TARGET_FORMAT,
+            DOF_TARGET_FORMAT,
         )?;
 
         self.state = Some(DepthOfFieldState {

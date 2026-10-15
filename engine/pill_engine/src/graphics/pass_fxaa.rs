@@ -1,4 +1,4 @@
-use crate::config::{FXAA_FRAGMENT_SHADER, HDR_TARGET_FORMAT};
+use crate::config::{FXAA_FRAGMENT_SHADER, LDR_TARGET_FORMAT};
 use crate::graphics::fullscreen::{
     create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, sampler_entry, target_view,
     texture_entry, uniform_buffer, uniform_entry, Binding, CachedBindGroup,
@@ -64,7 +64,7 @@ impl Pass for PassFxaa {
             "pass_fxaa",
             FXAA_FRAGMENT_SHADER,
             vec![texture_entry(0, true), sampler_entry(1), uniform_entry(2)],
-            HDR_TARGET_FORMAT,
+            LDR_TARGET_FORMAT,
             None,
         )?;
         self.state = Some(FxaaState {

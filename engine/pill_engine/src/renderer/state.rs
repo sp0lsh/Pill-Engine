@@ -236,6 +236,10 @@ impl PillRenderer for Renderer {
         self.state.color_format
     }
 
+    fn get_hdr_format(&self) -> wgpu::TextureFormat {
+        self.state.hdr_format
+    }
+
     fn create_buffer(&mut self, desc: BufferDesc) -> Result<wgpu::Buffer> {
         let buffer = self.state.device.create_buffer(&wgpu::BufferDescriptor {
             label: desc.label,
@@ -528,6 +532,8 @@ pub struct State {
     queue: wgpu::Queue,
     surface_configuration: wgpu::SurfaceConfiguration,
     color_format: wgpu::TextureFormat,
+    /// Scene HDR color format: Rg11b10Ufloat, Rgba16Float without the feature
+    hdr_format: wgpu::TextureFormat,
     passes: Vec<Box<dyn Pass>>,
     window: Arc<winit::window::Window>,
     // Optional frame capture: (target_frame, output_path). Set via PILL_SCREENSHOT env var.
@@ -590,14 +596,21 @@ impl State {
             // BC block compression: cooked BC7 material textures (RTEX v5)
             let mut wanted = wgpu::Features::DEPTH_CLIP_CONTROL
                 | wgpu::Features::FLOAT32_FILTERABLE
-                | wgpu::Features::TEXTURE_COMPRESSION_BC;
-            // Debug switch to exercise the Rgba16Float fallback on hardware that has the feature
+                | wgpu::Features::TEXTURE_COMPRESSION_BC
+                | wgpu::Features::RG11B10UFLOAT_RENDERABLE;
+            // Debug switches to exercise the Rgba16Float fallbacks on hardware that has the features
             if cfg!(debug_assertions) && std::env::var("PILL_FORCE_NO_F32_FILTER").is_ok() {
                 wanted.remove(wgpu::Features::FLOAT32_FILTERABLE);
+            }
+            if cfg!(debug_assertions) && std::env::var("PILL_FORCE_NO_RG11B10").is_ok() {
+                wanted.remove(wgpu::Features::RG11B10UFLOAT_RENDERABLE);
             }
             let features = wanted & adapter.features();
             if !features.contains(wgpu::Features::FLOAT32_FILTERABLE) {
                 info!(LogContext::Rendering => "FLOAT32_FILTERABLE unavailable: float textures use Rgba16Float");
+            }
+            if !features.contains(wgpu::Features::RG11B10UFLOAT_RENDERABLE) {
+                info!(LogContext::Rendering => "RG11B10UFLOAT_RENDERABLE unavailable: scene HDR targets use Rgba16Float");
             }
 
             // Buffer sizes up to what the adapter allows: large scenes' vertex buffers and the
@@ -632,6 +645,15 @@ impl State {
         });
 
         // Configure swap chain format and present mode
+        let hdr_format = if device
+            .features()
+            .contains(wgpu::Features::RG11B10UFLOAT_RENDERABLE)
+        {
+            wgpu::TextureFormat::Rg11b10Ufloat
+        } else {
+            wgpu::TextureFormat::Rgba16Float
+        };
+
         let (surface_configuration, color_format) = {
             let preferred_format = wgpu::TextureFormat::Rgba8UnormSrgb;
             let surface_capabilities = surface.get_capabilities(&adapter);
@@ -717,6 +739,7 @@ impl State {
             queue,
             surface_configuration,
             color_format,
+            hdr_format,
             passes: Vec::new(),
             window,
             screenshot,

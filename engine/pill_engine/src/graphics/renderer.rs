@@ -339,6 +339,10 @@ pub trait PillRenderer {
     /// Returns the surface texture format; used when creating pass render pipelines.
     fn get_surface_format(&self) -> wgpu::TextureFormat;
 
+    /// Returns the scene HDR color format (Rg11b10Ufloat when the device can render it, else
+    /// Rgba16Float). Game passes drawing into the HDR target must use it.
+    fn get_hdr_format(&self) -> wgpu::TextureFormat;
+
     /// Allocates a GPU buffer with the given descriptor.
     fn create_buffer(&mut self, desc: BufferDesc) -> Result<wgpu::Buffer>;
 

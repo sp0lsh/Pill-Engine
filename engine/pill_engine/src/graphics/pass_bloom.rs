@@ -1,6 +1,6 @@
 use crate::config::{
     BLOOM_COMPOSITE_FRAGMENT_SHADER, BLOOM_DOWNSAMPLE_FRAGMENT_SHADER,
-    BLOOM_UPSAMPLE_FRAGMENT_SHADER, HDR_TARGET_FORMAT,
+    BLOOM_UPSAMPLE_FRAGMENT_SHADER,
 };
 use crate::ecs::RenderStateComponent;
 use crate::graphics::fullscreen::{
@@ -85,11 +85,12 @@ impl Pass for PassBloom {
     }
 
     fn init(&mut self, renderer: &mut dyn PillRenderer) -> Result<()> {
+        let hdr_format = renderer.get_hdr_format();
         let mut mips = Vec::with_capacity(self.mip_count as usize);
         for level in 0..self.mip_count {
             mips.push(renderer.create_render_target(RendererTargetDesc {
                 name: format!("bloom_mip_{level}"),
-                format: HDR_TARGET_FORMAT,
+                format: hdr_format,
                 size: TargetSize::SurfaceDivisor(2 << level),
             })?);
         }
@@ -99,7 +100,7 @@ impl Pass for PassBloom {
             "pass_bloom_downsample",
             BLOOM_DOWNSAMPLE_FRAGMENT_SHADER,
             single_input(),
-            HDR_TARGET_FORMAT,
+            hdr_format,
             None,
         )?;
         let upsample = create_fullscreen_pipeline(
@@ -107,7 +108,7 @@ impl Pass for PassBloom {
             "pass_bloom_upsample",
             BLOOM_UPSAMPLE_FRAGMENT_SHADER,
             single_input(),
-            HDR_TARGET_FORMAT,
+            hdr_format,
             Some(wgpu::BlendState {
                 color: wgpu::BlendComponent {
                     src_factor: wgpu::BlendFactor::One,
@@ -127,7 +128,7 @@ impl Pass for PassBloom {
                 sampler_entry(2),
                 uniform_entry(3),
             ],
-            HDR_TARGET_FORMAT,
+            hdr_format,
             None,
         )?;
 

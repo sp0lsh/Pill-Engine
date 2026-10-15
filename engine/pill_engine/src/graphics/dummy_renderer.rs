@@ -73,6 +73,10 @@ impl PillRenderer for DummyRenderer {
         wgpu::TextureFormat::Rgba8UnormSrgb
     }
 
+    fn get_hdr_format(&self) -> wgpu::TextureFormat {
+        wgpu::TextureFormat::Rgba16Float
+    }
+
     fn create_buffer(&mut self, _desc: BufferDesc) -> Result<wgpu::Buffer> {
         unimplemented!("DummyRenderer has no wgpu Device")
     }

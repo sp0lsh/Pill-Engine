@@ -1,6 +1,5 @@
 use crate::config::{
     DDGI_PROBES_DEBUG_FRAGMENT_SHADER, DDGI_PROBES_DEBUG_VERTEX_SHADER, DEPTH_TARGET_FORMAT,
-    HDR_TARGET_FORMAT,
 };
 use crate::ecs::RenderStateComponent;
 use crate::graphics::ddgi::DdgiFrame;
@@ -52,6 +51,7 @@ impl Pass for PassDdgiProbes {
     }
 
     fn init(&mut self, renderer: &mut dyn PillRenderer) -> Result<()> {
+        let hdr_format = renderer.get_hdr_format();
         let stages = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT;
         let pipeline = renderer.create_pipeline(PipelineDesc {
             label: Some("pass_ddgi_probes_pipeline"),
@@ -79,7 +79,7 @@ impl Pass for PassDdgiProbes {
                 },
             ]],
             targets: &[Some(wgpu::ColorTargetState {
-                format: HDR_TARGET_FORMAT,
+                format: hdr_format,
                 blend: Some(wgpu::BlendState::REPLACE),
                 write_mask: wgpu::ColorWrites::ALL,
             })],

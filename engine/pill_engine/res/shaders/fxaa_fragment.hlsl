@@ -4,7 +4,7 @@
 //
 // Quality preset 39 (FXAA_QUALITY__PS 12, "extreme quality, no dither").
 //
-// Deviation from the original: the source is the tonemapped image, still linear Rgba16Float
+// Deviation from the original: the source is the tonemapped image, still linear Rgb10a2Unorm
 // (the sRGB encode happens when PassLens writes the swapchain). FXAA needs a perceptual luma, so luma is computed as sqrt() of the
 // linear luminance — the header's own "gamma 2.0 luma in alpha" recipe, inlined.
 // RGB blending therefore happens in linear space rather than on encoded values.

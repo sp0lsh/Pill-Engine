@@ -1,4 +1,4 @@
-use crate::config::{HDR_TARGET_FORMAT, TONEMAP_FRAGMENT_SHADER};
+use crate::config::{LDR_TARGET_FORMAT, TONEMAP_FRAGMENT_SHADER};
 use crate::ecs::{RenderStateComponent, Tonemap};
 use crate::graphics::fullscreen::{
     create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, sampler_entry, target_view,
@@ -10,7 +10,7 @@ use pill_core::Result;
 
 pub struct PassTonemap {
     hdr_source: PassTextureHandle,
-    // None: the swapchain (sRGB view); Some: an HDR_TARGET_FORMAT target for later post passes
+    // None: the swapchain (sRGB view); Some: an LDR_TARGET_FORMAT target for later post passes
     output: Option<PassTextureHandle>,
     state: Option<TonemapState>,
 }
@@ -121,7 +121,7 @@ impl Pass for PassTonemap {
         // To the swapchain: FrameTarget::srgb_view, so the GPU applies the OETF on write even when
         // the surface format is linear (e.g. WebGPU/wasm32)
         let output_format = match self.output {
-            Some(_) => HDR_TARGET_FORMAT,
+            Some(_) => LDR_TARGET_FORMAT,
             None => renderer.get_surface_format().add_srgb_suffix(),
         };
         let pipeline = create_fullscreen_pipeline(

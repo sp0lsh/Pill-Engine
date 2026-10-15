@@ -1,4 +1,4 @@
-use crate::config::{HDR_TARGET_FORMAT, SSR_FRAGMENT_SHADER};
+use crate::config::SSR_FRAGMENT_SHADER;
 use crate::ecs::RenderStateComponent;
 use crate::graphics::fullscreen::{
     create_fullscreen_pipeline, draw_fullscreen, sampler_entry, target_view, texture_entry,
@@ -79,6 +79,7 @@ impl Pass for PassSsr {
     }
 
     fn init(&mut self, renderer: &mut dyn PillRenderer) -> Result<()> {
+        let hdr_format = renderer.get_hdr_format();
         let pipeline = create_fullscreen_pipeline(
             renderer,
             "pass_ssr",
@@ -92,7 +93,7 @@ impl Pass for PassSsr {
                 sampler_entry(5),
                 uniform_entry(6),
             ],
-            HDR_TARGET_FORMAT,
+            hdr_format,
             None,
         )?;
         // As the PBR pass's prefilter sampler: equirect u wraps, trilinear across roughness mips

@@ -115,7 +115,10 @@ pub const EGUI_SYSTEM: SystemConfig = SystemConfig {
 // --- Rendering ---
 
 pub const HDR_TARGET_NAME: &str = "hdr_target";
-pub const HDR_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// Tonemapped post targets (tonemap and FXAA outputs): linear [0, 1], sRGB-encoded by the lens pass
+pub const LDR_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgb10a2Unorm;
+/// Depth of field targets keep coverage in alpha, so they stay off the alpha-less scene HDR format
+pub const DOF_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 pub const DEPTH_TARGET_NAME: &str = "depth_target";
 pub const DEPTH_TARGET_FORMAT: wgpu::TextureFormat = RendererTexture::DEPTH_FORMAT;
 /// Motion vectors (UV offset to last frame's position) written by the PBR passes.
@@ -258,25 +261,26 @@ pub fn post_fx_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
     // The opaque pass renders into `opaque_target`, SSR into `ssr_target`; SSAO writes the shared
     // HDR target that the translucent and game passes then draw onto
     let (hdr_target, depth_target) = create_scene_targets(engine)?;
-    let opaque_target = create_target(engine, "opaque_target", HDR_TARGET_FORMAT)?;
+    let hdr_format = engine.renderer.get_hdr_format();
+    let opaque_target = create_target(engine, "opaque_target", hdr_format)?;
     let ambient_target = create_target(engine, "ambient_target", AMBIENT_TARGET_FORMAT)?;
     let velocity_target = create_target(engine, "velocity_target", VELOCITY_TARGET_FORMAT)?;
     let ssr_surface_target =
         create_target(engine, "ssr_surface_target", SSR_SURFACE_TARGET_FORMAT)?;
     let ssr_normal_target = create_target(engine, "ssr_normal_target", SSR_NORMAL_TARGET_FORMAT)?;
-    let ssr_target = create_target(engine, "ssr_target", HDR_TARGET_FORMAT)?;
+    let ssr_target = create_target(engine, "ssr_target", hdr_format)?;
     let depth_of_field_target = engine.renderer.create_render_target(RendererTargetDesc {
         name: "depth_of_field_target".to_string(),
-        format: HDR_TARGET_FORMAT,
+        format: DOF_TARGET_FORMAT,
         size: TargetSize::SurfaceDivisor(4),
     })?;
-    let motion_blur_target = create_target(engine, "motion_blur_target", HDR_TARGET_FORMAT)?;
-    let bloom_target = create_target(engine, "bloom_target", HDR_TARGET_FORMAT)?;
+    let motion_blur_target = create_target(engine, "motion_blur_target", hdr_format)?;
+    let bloom_target = create_target(engine, "bloom_target", hdr_format)?;
     // Tonemapped, still linear; the lens pass encodes sRGB into the swapchain
-    let ldr_target = create_target(engine, "ldr_target", HDR_TARGET_FORMAT)?;
+    let ldr_target = create_target(engine, "ldr_target", LDR_TARGET_FORMAT)?;
     // FXAA at the render size, before the upscale: its blend reaches less than a pixel, so it
     // smooths 1-texel stair steps but not the 2-pixel steps of an upscaled image
-    let fxaa_target = create_target(engine, "fxaa_target", HDR_TARGET_FORMAT)?;
+    let fxaa_target = create_target(engine, "fxaa_target", LDR_TARGET_FORMAT)?;
 
     let (lights, punctual_shadows, lights_frame) = lights_pass(engine)?;
     let (shadow, shadow_frame) = shadow_pass(engine)?;
@@ -365,7 +369,8 @@ fn create_target(
 
 /// Shared HDR color and depth targets, recorded in `RenderStateComponent` for game passes.
 fn create_scene_targets(engine: &mut Engine) -> Result<(PassTextureHandle, PassTextureHandle)> {
-    let hdr_target = create_target(engine, HDR_TARGET_NAME, HDR_TARGET_FORMAT)?;
+    let hdr_format = engine.renderer.get_hdr_format();
+    let hdr_target = create_target(engine, HDR_TARGET_NAME, hdr_format)?;
     let depth_target = engine.renderer.create_depth_texture(DEPTH_TARGET_NAME)?;
     let render_state = engine.get_global_component_mut::<RenderStateComponent>()?;
     render_state.hdr_target = hdr_target;

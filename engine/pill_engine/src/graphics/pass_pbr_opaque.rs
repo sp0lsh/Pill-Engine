@@ -1,8 +1,8 @@
 use crate::config::{
     AMBIENT_TARGET_FORMAT, BACKGROUND_FRAGMENT_SHADER, BACKGROUND_VERTEX_SHADER,
-    DEFAULT_EQUIRECT_FALLBACK_PIXEL, DEPTH_TARGET_FORMAT, HDR_TARGET_FORMAT,
-    PBR_OPAQUE_ALPHA_TEST_FRAGMENT_SHADER, PBR_OPAQUE_FRAGMENT_SHADER, PBR_OPAQUE_VERTEX_SHADER,
-    SSR_NORMAL_TARGET_FORMAT, SSR_SURFACE_TARGET_FORMAT, VELOCITY_TARGET_FORMAT,
+    DEFAULT_EQUIRECT_FALLBACK_PIXEL, DEPTH_TARGET_FORMAT, PBR_OPAQUE_ALPHA_TEST_FRAGMENT_SHADER,
+    PBR_OPAQUE_FRAGMENT_SHADER, PBR_OPAQUE_VERTEX_SHADER, SSR_NORMAL_TARGET_FORMAT,
+    SSR_SURFACE_TARGET_FORMAT, VELOCITY_TARGET_FORMAT,
 };
 use crate::graphics::shadow_casters::{box_corners, frustum_planes, outside_frustum};
 use crate::{
@@ -578,7 +578,11 @@ impl PassPBROpaque {
 
     /// Color targets in shader output order (color, velocity, ambient, SSR surface, SSR normal);
     /// absent outputs are `None`, the SSR ones also while `ssr` is false.
-    fn color_targets(&self, ssr: bool) -> [Option<wgpu::ColorTargetState>; 5] {
+    fn color_targets(
+        &self,
+        color_format: wgpu::TextureFormat,
+        ssr: bool,
+    ) -> [Option<wgpu::ColorTargetState>; 5] {
         let blend = if self.translucent {
             wgpu::BlendState::ALPHA_BLENDING
         } else {
@@ -587,7 +591,7 @@ impl PassPBROpaque {
         let ssr_targets = self.ssr_targets.filter(|_| ssr);
         [
             Some(wgpu::ColorTargetState {
-                format: HDR_TARGET_FORMAT,
+                format: color_format,
                 blend: Some(blend),
                 write_mask: wgpu::ColorWrites::ALL,
             }),
@@ -748,7 +752,7 @@ impl PassPBROpaque {
             (0..2).map(per_draw_storage_entry).collect(),
         ];
 
-        let color_targets = self.color_targets(variant.ssr);
+        let color_targets = self.color_targets(renderer.get_hdr_format(), variant.ssr);
         let desc = PipelineDesc {
             label: Some("pass_pbr_opaque_pipeline"),
             vs: ShaderDesc {
@@ -822,7 +826,7 @@ impl PassPBROpaque {
         ]];
         // Same attachments as the scene draw; the sky writes color and velocity, ambient and
         // the SSR inputs stay 0
-        let mut bg_targets = self.color_targets(ssr);
+        let mut bg_targets = self.color_targets(renderer.get_hdr_format(), ssr);
         for target in bg_targets[2..].iter_mut().flatten() {
             target.write_mask = wgpu::ColorWrites::empty();
         }

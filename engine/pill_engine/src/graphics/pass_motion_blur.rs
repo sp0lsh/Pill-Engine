@@ -1,4 +1,4 @@
-use crate::config::{HDR_TARGET_FORMAT, MOTION_BLUR_FRAGMENT_SHADER};
+use crate::config::MOTION_BLUR_FRAGMENT_SHADER;
 use crate::ecs::RenderStateComponent;
 use crate::graphics::fullscreen::{
     create_fullscreen_pipeline, draw_fullscreen, linear_clamp_sampler, sampler_entry, target_view,
@@ -84,6 +84,7 @@ impl Pass for PassMotionBlur {
     }
 
     fn init(&mut self, renderer: &mut dyn PillRenderer) -> Result<()> {
+        let hdr_format = renderer.get_hdr_format();
         let pipeline = create_fullscreen_pipeline(
             renderer,
             "pass_motion_blur",
@@ -96,7 +97,7 @@ impl Pass for PassMotionBlur {
                 sampler_entry(4),
                 texture_entry(5, true),
             ],
-            HDR_TARGET_FORMAT,
+            hdr_format,
             None,
         )?;
         self.state = Some(MotionBlurState {

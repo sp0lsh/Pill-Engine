@@ -79,7 +79,7 @@ pub mod game {
 
     // Game-defined render passes (Engine::add_render_pass)
     pub use crate::{
-        config::{DEPTH_TARGET_FORMAT, HDR_TARGET_FORMAT},
+        config::DEPTH_TARGET_FORMAT,
         graphics::{
             camera_forward, camera_view_projection, BufferDesc, FrameTarget, Pass, PillRenderer,
             Pipeline, PipelineDesc, RendererTargetDesc, ShaderDesc, TargetSize, WorldQuery,

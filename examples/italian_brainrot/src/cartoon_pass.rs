@@ -110,7 +110,7 @@ impl Pass for CartoonPass {
             vertex_buffers: &[RendererMesh::data_layout_descriptor()],
             bind_groups,
             targets: &[Some(wgpu::ColorTargetState {
-                format: HDR_TARGET_FORMAT,
+                format: renderer.get_hdr_format(),
                 blend: Some(wgpu::BlendState::REPLACE),
                 write_mask: wgpu::ColorWrites::ALL,
             })],

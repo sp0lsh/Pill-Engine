@@ -332,7 +332,7 @@ pub struct RenderStateComponent {
     pub(crate) boot_done: bool,
     /// Chain built on the first frame; set it from `start()`, later changes have no effect.
     pub pass_chain: PassChain,
-    /// Scene color target (HDR_TARGET_FORMAT) shared by scene passes; resolved by the tonemap pass.
+    /// Scene color target (`PillRenderer::get_hdr_format`) shared by scene passes; resolved by the tonemap pass.
     pub(crate) hdr_target: PassTextureHandle,
     /// Scene depth target (DEPTH_TARGET_FORMAT) shared by scene passes.
     pub(crate) depth_target: PassTextureHandle,
@@ -450,7 +450,7 @@ impl RenderStateComponent {
 }
 
 impl RenderStateComponent {
-    /// Scene color target (HDR_TARGET_FORMAT) for game-defined passes.
+    /// Scene color target (`PillRenderer::get_hdr_format`) for game-defined passes.
     pub fn hdr_target(&self) -> PassTextureHandle {
         self.hdr_target
     }

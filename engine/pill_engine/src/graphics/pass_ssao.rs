@@ -1,6 +1,6 @@
 use crate::config::{
-    HDR_TARGET_FORMAT, SSAO_APPLY_FRAGMENT_SHADER, SSAO_BLUR_FRAGMENT_SHADER,
-    SSAO_DEPTH_DOWNSAMPLE_FRAGMENT_SHADER, SSAO_FRAGMENT_SHADER,
+    SSAO_APPLY_FRAGMENT_SHADER, SSAO_BLUR_FRAGMENT_SHADER, SSAO_DEPTH_DOWNSAMPLE_FRAGMENT_SHADER,
+    SSAO_FRAGMENT_SHADER,
 };
 use crate::ecs::RenderStateComponent;
 use crate::graphics::fullscreen::{
@@ -142,6 +142,7 @@ impl Pass for PassSsao {
     }
 
     fn init(&mut self, renderer: &mut dyn PillRenderer) -> Result<()> {
+        let hdr_format = renderer.get_hdr_format();
         let mut half_target = |name: &str| {
             renderer.create_render_target(RendererTargetDesc {
                 name: name.to_string(),
@@ -202,7 +203,7 @@ impl Pass for PassSsao {
                 texture_entry(3, false),
                 uniform_entry(4),
             ],
-            HDR_TARGET_FORMAT,
+            hdr_format,
             None,
         )?;
 
