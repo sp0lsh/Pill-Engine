@@ -107,13 +107,16 @@ impl<'a> Ppak<'a> {
     }
 }
 
-/// Shaders reach the binary via `include_str!`, so they are not packed.
+/// Shaders reach the binary via `include_str!` (their reflection via generated Rust), so they
+/// are not packed.
 #[cfg(feature = "build")]
 fn is_shader_source(output: &Path) -> bool {
     matches!(
         output.extension().and_then(|ext| ext.to_str()),
         Some("wgsl") | Some("hlsl")
-    )
+    ) || output
+        .to_str()
+        .is_some_and(|path| path.ends_with(crate::rules::hlsl_to_wgsl::REFLECTION_SUFFIX))
 }
 
 /// The `(name, path)` entries a PPAK built from `stats` contains: every pipeline output (rebuilt

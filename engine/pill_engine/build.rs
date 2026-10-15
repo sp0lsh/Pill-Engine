@@ -16,6 +16,7 @@ fn main() {
     // HlslToWgsl dates its outputs to their newest source, so writing them doesn't re-trigger
     // this script through the watched shaders directory
     let stats = pipeline.run().expect("asset pipeline failed");
+    write_shader_bindings(&root.join("shaders"));
 
     println!("cargo:rerun-if-changed=build.rs");
     // Header-include directory: tracked recursively so changes to shared
@@ -30,4 +31,23 @@ fn main() {
     for input in &stats.discovered {
         println!("cargo:rerun-if-changed={}", input.display());
     }
+}
+
+/// `OUT_DIR/shader_bindings.rs` from every shader's reflection JSON (graphics/shader_bindings.rs)
+fn write_shader_bindings(shaders: &std::path::Path) {
+    let mut reflections: Vec<(String, String)> = std::fs::read_dir(shaders)
+        .expect("read shaders directory")
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let stem = name.strip_suffix(pill_assets::rules::hlsl_to_wgsl::REFLECTION_SUFFIX)?;
+            let json = std::fs::read_to_string(entry.path()).ok()?;
+            Some((stem.to_owned(), json))
+        })
+        .collect();
+    reflections.sort();
+    let source =
+        pill_assets::shader_bindings::generate(&reflections).expect("shader binding generation");
+    let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("shader_bindings.rs");
+    std::fs::write(out, source).expect("write shader_bindings.rs");
 }

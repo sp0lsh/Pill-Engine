@@ -12,6 +12,7 @@ engine/target_*
 *.log
 *.wgsl
 *.wgsl.d
+*.reflect.json
 
 *.cooked_mesh
 *.cooked_tex

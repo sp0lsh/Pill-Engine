@@ -361,6 +361,8 @@ pub mod dag;
 #[cfg(feature = "build")]
 pub mod rules;
 #[cfg(feature = "build")]
+pub mod shader_bindings;
+#[cfg(feature = "build")]
 pub mod usage;
 mod util;
 

@@ -5,11 +5,11 @@
 
 #include "include/ddgi_common.hlsl"
 
-struct Camera {
+struct ProbeDebugCamera {
     column_major float4x4 view_projection;
 };
 
-[[vk::binding(0, 0)]] ConstantBuffer<Camera>        camera;
+[[vk::binding(0, 0)]] ConstantBuffer<ProbeDebugCamera> camera;
 [[vk::binding(1, 0)]] ConstantBuffer<DdgiParams>    ddgi;
 [[vk::binding(2, 0)]] StructuredBuffer<DdgiProbe>   ddgi_probes;
 

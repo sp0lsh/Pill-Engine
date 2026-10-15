@@ -34,6 +34,7 @@ mod punctual_shadows;
 mod render_queue;
 mod renderer;
 mod scene_uniform;
+pub(crate) mod shader_bindings;
 pub(crate) mod shadow;
 mod shadow_casters;
 

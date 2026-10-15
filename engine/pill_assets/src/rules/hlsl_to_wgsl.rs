@@ -18,7 +18,13 @@ use crate::Rule;
 /// Variants: each leading `// @variant <suffix> <DEFINE>[=value]...` line of a source compiles it
 /// once more with those `-D` defines into `<name>_<suffix>_<stage>.wgsl`. The base output's
 /// `.wgsl.d` depfile lists the `#include`s, so editing one rebuilds every output.
+///
+/// Reflection: the base compile also writes `<name>.reflect.json` (slangc `-reflection-json`), the
+/// input of the Rust binding generator (`shader_bindings`). Variants share the base's bindings.
 pub struct HlslToWgsl;
+
+/// Suffix of the reflection JSON next to each base `.wgsl`.
+pub const REFLECTION_SUFFIX: &str = ".reflect.json";
 
 /// Marker of a variant line in a source's leading comment block.
 const VARIANT_PREFIX: &str = "// @variant ";
@@ -38,14 +44,10 @@ impl Rule for HlslToWgsl {
     }
 
     fn extra_outputs(&self, input: &Path) -> Vec<PathBuf> {
-        read_variants(input)
-            .map(|variants| {
-                variants
-                    .iter()
-                    .map(|variant| variant.output.clone())
-                    .collect()
-            })
-            .unwrap_or_default()
+        let variants = read_variants(input).unwrap_or_default();
+        std::iter::once(reflection_of(input))
+            .chain(variants.into_iter().map(|variant| variant.output))
+            .collect()
     }
 
     fn dependencies(&self, _input: &Path, output: &Path) -> Vec<PathBuf> {
@@ -61,10 +63,27 @@ impl Rule for HlslToWgsl {
         let (entry, stage) = infer_stage(input)?;
         let depfile = depfile_of(output);
 
-        compile(input, output, entry, stage, &[], Some(&depfile))?;
+        let reflection = reflection_of(input);
+        compile(
+            input,
+            output,
+            entry,
+            stage,
+            &[],
+            Some(&depfile),
+            Some(&reflection),
+        )?;
         let variants = read_variants(input)?;
         for variant in &variants {
-            compile(input, &variant.output, entry, stage, &variant.defines, None)?;
+            compile(
+                input,
+                &variant.output,
+                entry,
+                stage,
+                &variant.defines,
+                None,
+                None,
+            )?;
         }
 
         // Every output gets the newest source's mtime: the engine build script watches the
@@ -78,7 +97,7 @@ impl Rule for HlslToWgsl {
             .filter_map(|source| source.metadata().and_then(|m| m.modified()).ok())
             .max()
             .unwrap_or_else(SystemTime::now);
-        let outputs = [output.to_path_buf(), depfile]
+        let outputs = [output.to_path_buf(), depfile, reflection]
             .into_iter()
             .chain(variants.into_iter().map(|variant| variant.output));
         for path in outputs {
@@ -95,6 +114,11 @@ impl Rule for HlslToWgsl {
 struct Variant {
     output: PathBuf,
     defines: Vec<String>,
+}
+
+/// `<name>.reflect.json` next to the shader source.
+pub fn reflection_of(input: &Path) -> PathBuf {
+    input.with_extension(REFLECTION_SUFFIX.trim_start_matches('.'))
 }
 
 /// `<output>.d`, the depfile slangc writes for the base output.
@@ -165,6 +189,7 @@ fn compile(
     stage: &str,
     defines: &[String],
     depfile: Option<&Path>,
+    reflection: Option<&Path>,
 ) -> Result<()> {
     let mut command = Command::new("slangc");
     command.args([
@@ -188,6 +213,10 @@ fn compile(
     if let Some(depfile) = depfile {
         command.arg("-depfile");
         command.arg(depfile);
+    }
+    if let Some(reflection) = reflection {
+        command.arg("-reflection-json");
+        command.arg(reflection);
     }
 
     let out = match command.output() {

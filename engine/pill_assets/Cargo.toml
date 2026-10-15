@@ -22,6 +22,8 @@ webp = { version = "0.3", optional = true }
 
 # Build-time-only (filesystem Rules); not compiled into wasm runtime builds.
 glob = { version = "0.3", optional = true }
+# Shader reflection JSON (slangc -reflection-json) → generated Rust bindings
+serde_json = { version = "1", optional = true }
 png = { version = "0.17", optional = true }
 tobj = { version = "3.0", optional = true }
 gltf = { version = "1", default-features = false, features = ["utils", "names"], optional = true }
@@ -34,7 +36,7 @@ intel_tex_2 = { version = "0.5", optional = true }
 [features]
 default = ["build"]
 # Filesystem asset pipeline (HLSL→WGSL, glb/obj/png/hdr/equirect cooking). Used by build.rs / launcher.
-build = ["dep:glob", "dep:png", "dep:tobj", "dep:gltf", "gltf/import"]
+build = ["dep:glob", "dep:png", "dep:tobj", "dep:gltf", "gltf/import", "dep:serde_json"]
 # Asset pack writer (`pack_sources`, `write_pack_for_build`) for game build scripts.
 encode = ["build", "dep:brotli", "dep:webp"]
 # KTX2 → RTEX v5 (BC7 + mips) cooker, `ktx2::ktx2_to_rtex_bc7` (native only).
