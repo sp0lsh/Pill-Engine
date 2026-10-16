@@ -1,0 +1,17 @@
+[package]
+name = "pill_game"
+version = "0.1.0"
+edition = "2021"
+workspace = "NO_PATH"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pill_engine = { path = "../../engine/pill_engine", features = ["game", "ui"] }
+# pill_core's glam, for the instance matrices and projections
+glam = "0.30.8"
+bytemuck = { version = "1.4", features = ["derive"] }
+
+[dev-dependencies]
+pollster = "0.2"
