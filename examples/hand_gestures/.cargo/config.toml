@@ -1,0 +1,5 @@
+# The launcher builds the web app from build/wasm/.build/pill_web_app, below this directory, so
+# cargo picks this file up. Its release profile is size-optimized (opt-level "z"); the per-frame
+# crops and palm decoding in this crate run at opt-level 3.
+[profile.release.package.pill_game]
+opt-level = 3
