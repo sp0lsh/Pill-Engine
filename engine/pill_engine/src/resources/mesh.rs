@@ -50,7 +50,7 @@ impl Mesh {
     }
 
     /// CPU-side vertices and indices, kept after GPU upload.
-    pub(crate) fn data(&self) -> Option<&MeshData> {
+    pub fn data(&self) -> Option<&MeshData> {
         self.mesh_data.as_ref()
     }
 

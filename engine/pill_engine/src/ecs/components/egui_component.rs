@@ -1,6 +1,9 @@
 #![cfg(feature = "ui")]
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+};
 
 use crate::{
     ecs::{
@@ -68,6 +71,9 @@ pub struct EguiComponent {
     pub show_engine_windows: bool,
     game_overlay: Option<DebugUiCallback>,
     registered_ui: Vec<RegisteredUi>,
+    // Frame delta times (ms) of the last second, for the averaged FPS / frame time readout
+    frame_times: VecDeque<f32>,
+    frame_times_sum: f32,
 }
 
 impl Default for EguiComponent {
@@ -83,6 +89,8 @@ impl EguiComponent {
             show_engine_windows: true,
             game_overlay: None,
             registered_ui: Vec::new(),
+            frame_times: VecDeque::new(),
+            frame_times_sum: 0.0,
         }
     }
 
@@ -162,7 +170,20 @@ impl EguiComponent {
                     .sum::<f32>()
             })
             .sum::<f32>();
+        // 1 s moving average, so the readout changes slowly enough to read
         let frame_delta_time = engine.frame_delta_time;
+        let frame_delta_time = {
+            let egui_component = engine.get_global_component_mut::<EguiComponent>()?;
+            egui_component.frame_times.push_back(frame_delta_time);
+            egui_component.frame_times_sum += frame_delta_time;
+            while egui_component.frame_times.len() > 1
+                && egui_component.frame_times_sum - egui_component.frame_times[0] >= 1000.0
+            {
+                egui_component.frame_times_sum -=
+                    egui_component.frame_times.pop_front().unwrap_or_default();
+            }
+            egui_component.frame_times_sum / egui_component.frame_times.len() as f32
+        };
 
         let build_mode = engine.process.mode.as_str();
         let build_target = engine.process.target.as_str();

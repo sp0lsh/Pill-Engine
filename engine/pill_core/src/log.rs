@@ -114,20 +114,55 @@ pub fn set_log_levels(log_levels_config_setting: &str, show_date: bool) {
     let mut builder = env_logger::Builder::new();
 
     builder.format(move |buf, record| {
-        writeln!(
-            buf,
-            "[{}][{}] {} {}:{}: {}",
-            styled_level(record.level()),
-            record.target(),
-            chrono::Local::now().format(if show_date {
+        use colored::Colorize;
+        let time = chrono::Local::now()
+            .format(if show_date {
                 "%Y-%m-%dT%H:%M:%S"
             } else {
                 "%H:%M:%S"
-            }),
-            record.file().unwrap_or("unknown"),
-            record.line().unwrap_or(0),
-            record.args()
-        )
+            })
+            .to_string()
+            .bright_black()
+            .to_string();
+        let symbol = match record.level() {
+            log::Level::Error => "✗".red().bold().to_string(),
+            log::Level::Warn => "⚠".yellow().bold().to_string(),
+            log::Level::Info => "◆".white().to_string(),
+            _ => "·".bright_black().to_string(),
+        };
+        let ctx = record.target();
+        let ctx_col = format!("{:<10}", ctx);
+        let ctx_colored = match ctx {
+            "hot_reload" => ctx_col.cyan().bold().to_string(),
+            "rendering" => ctx_col.magenta().to_string(),
+            "engine" => ctx_col.green().to_string(),
+            "ecs" => ctx_col.blue().to_string(),
+            "resources" => ctx_col.bright_yellow().to_string(),
+            "input" => ctx_col.white().to_string(),
+            _ => ctx_col.bright_black().to_string(),
+        };
+        // Show source location only for errors — routine INFO/WARN is too noisy with file:line.
+        if record.level() == log::Level::Error {
+            writeln!(
+                buf,
+                "{}  {}  {}  {}  ({}:{})",
+                time,
+                symbol,
+                ctx_colored,
+                record.args(),
+                record.file().unwrap_or("?"),
+                record.line().unwrap_or(0),
+            )
+        } else {
+            writeln!(
+                buf,
+                "{}  {}  {}  {}",
+                time,
+                symbol,
+                ctx_colored,
+                record.args()
+            )
+        }
     });
 
     // Allow non-contextual logging

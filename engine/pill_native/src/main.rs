@@ -769,15 +769,24 @@ fn check_and_reload(
     let mut game_source_changed = Vec::<PathBuf>::new();
     let mut game_resources_changed = Vec::<PathBuf>::new();
 
+    // Collect file names only (not full paths) for readable log output.
+    fn names(paths: &[PathBuf]) -> String {
+        paths
+            .iter()
+            .filter_map(|p| p.file_name()?.to_str())
+            .collect::<Vec<_>>()
+            .join("  ")
+    }
+
     if let Some(paths) = file_watchers.engine_core_source_files_watcher.get_changes() {
-        info!(LogContext::HotReload => "Engine pill_core source file change detected: {:?}", paths);
+        info!(LogContext::HotReload => "changed  {}  (engine core)", names(&paths));
         engine_source_changed.extend(paths);
     }
     if let Some(paths) = file_watchers
         .engine_engine_source_files_watcher
         .get_changes()
     {
-        info!(LogContext::HotReload => "Engine pill_engine source file change detected: {:?}", paths);
+        info!(LogContext::HotReload => "changed  {}  (engine)", names(&paths));
         engine_source_changed.extend(paths);
     }
 
@@ -785,14 +794,14 @@ fn check_and_reload(
         .game_project_resources_files_watcher
         .get_changes()
     {
-        info!(LogContext::HotReload => "Game project resources file change detected: {:?}", paths);
+        info!(LogContext::HotReload => "changed  {}", names(&paths));
         game_resources_changed.extend(paths);
     }
     if let Some(paths) = file_watchers
         .game_project_source_files_watcher
         .get_changes()
     {
-        info!(LogContext::HotReload => "Game project source file change detected: {:?}", paths);
+        info!(LogContext::HotReload => "changed  {}  (game src)", names(&paths));
         game_source_changed.extend(paths);
     }
 
@@ -800,12 +809,13 @@ fn check_and_reload(
         && game_source_changed.is_empty()
         && engine_source_changed.is_empty()
     {
-        info!(LogContext::HotReload => "Game project resources changed; no code rebuild needed: {:?}", game_resources_changed);
+        info!(LogContext::HotReload => "asset reload  ·  no rebuild");
         return Ok(());
     }
 
     let build_start = Instant::now();
     if !game_source_changed.is_empty() || !engine_source_changed.is_empty() {
+        info!(LogContext::HotReload => "rebuilding...");
         if let Err(error) = build_hot_reload_via_launcher(project_paths) {
             warn!(
                 LogContext::HotReload =>
@@ -818,7 +828,7 @@ fn check_and_reload(
 
             return Ok(());
         }
-        warn!("Build took: {:?} time", build_start.elapsed());
+        info!(LogContext::HotReload => "built  {:.1}s", build_start.elapsed().as_secs_f32());
     }
 
     let mut runtime_hot_reload = false;
@@ -873,11 +883,9 @@ fn check_and_reload(
         new_runtime.create(&args)?;
         *runtime_host = Some(new_runtime);
 
-        warn!(
-            "Runtime reload took: {:?} time",
-            runtime_reload_start.elapsed()
-        );
-        warn!("Total reload took: {:?} time", build_start.elapsed());
+        info!(LogContext::HotReload => "✓  runtime reloaded  {:.1}s  (total {:.1}s)",
+            runtime_reload_start.elapsed().as_secs_f32(),
+            build_start.elapsed().as_secs_f32());
     } else if game_hot_reload {
         info!(LogContext::HotReload => "Reloading game project...");
         let game_reload_start = Instant::now();
@@ -895,11 +903,9 @@ fn check_and_reload(
             bail!("Engine not initialized");
         }
 
-        warn!(
-            "Game hot-reload took: {:?} time",
-            game_reload_start.elapsed()
-        );
-        warn!("Total reload took: {:?} time", build_start.elapsed());
+        info!(LogContext::HotReload => "✓  game reloaded  {:.1}s  (total {:.1}s)",
+            game_reload_start.elapsed().as_secs_f32(),
+            build_start.elapsed().as_secs_f32());
     }
 
     Ok(())
@@ -1321,12 +1327,34 @@ fn run_app() -> Result<()> {
 
     configure_logging(&config);
 
-    info!(
-        LogContext::HotReload => "Hot reload {} (watching src: {}, res: {})",
-        if hot_reload_enabled { "enabled" } else { "disabled" },
-        project_paths.game_source_directory_path.display(),
-        project_paths.game_resources_directory_path.display()
-    );
+    {
+        let src = project_paths
+            .game_source_directory_path
+            .components()
+            .rev()
+            .take(2)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        let res = project_paths
+            .game_resources_directory_path
+            .components()
+            .rev()
+            .take(2)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        info!(
+            LogContext::HotReload => "watching  {}  {}",
+            src, res
+        );
+    }
     info!(
         "Initializing {} ({:?} layout, {:?} runtime)",
         "Standalone".module_object_style(),

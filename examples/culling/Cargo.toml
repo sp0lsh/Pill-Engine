@@ -1,0 +1,16 @@
+[package]
+name = "pill_game"
+version = "0.1.0"
+edition = "2021"
+workspace = "/Users/mk/dev/demo/Pill-Engine/engine"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# `internal` for Mesh::data / ResourceManager (wireframe pass); `ui` for EguiComponent (engine windows)
+pill_engine = { path = "../../engine/pill_engine", features = ["game", "internal", "ui"] }
+# pill_core's glam, for the axis-angle → Euler XYZ rotations
+glam = "0.30.8"
+# Pod derives of the wireframe pass GPU structs (the engine's version)
+bytemuck = { version = "1.4", features = ["derive"] }

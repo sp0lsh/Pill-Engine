@@ -561,6 +561,11 @@ impl Engine {
         }
     }
 
+    /// Swapchain size in physical pixels (the space of `InputComponent::get_mouse_position`).
+    pub fn get_surface_size(&self) -> (u32, u32) {
+        self.renderer.get_surface_size()
+    }
+
     /// Creates a single-mip Rgba32Float texture from f32 pixels for `RenderStateComponent`.
     /// Call before the first frame (from `start()`).
     pub fn create_gpu_texture_f32(
