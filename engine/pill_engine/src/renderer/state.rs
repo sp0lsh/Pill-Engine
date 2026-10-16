@@ -561,12 +561,15 @@ pub struct State {
     // Size of TargetSize::Surface targets: the surface in logical pixels (physical ÷ scale factor),
     // so HiDPI displays don't render 4× the pixels; the swapchain pass upscales
     render_size: (u32, u32),
+    // Config RENDER_PHYSICAL_PIXELS: render at the surface's physical size instead
+    render_physical_pixels: bool,
 }
 
 impl State {
     async fn new(window: Arc<winit::window::Window>, config: EngineConfig) -> Result<Self> {
         let window_width = config.get_int("WINDOW_WIDTH")? as u32;
         let window_height = config.get_int("WINDOW_HEIGHT")? as u32;
+        let render_physical_pixels = config.get_bool("RENDER_PHYSICAL_PIXELS").unwrap_or(false);
         let window_size = winit::dpi::PhysicalSize::new(window_width, window_height);
 
         // Create wgpu instance and window surface
@@ -767,7 +770,7 @@ impl State {
         let render_size = logical_size(
             surface_configuration.width,
             surface_configuration.height,
-            window.scale_factor(),
+            render_scale_factor(&window, render_physical_pixels),
         );
 
         Ok(Self {
@@ -786,6 +789,7 @@ impl State {
             frame_counter: 0,
             target_generation: 0,
             render_size,
+            render_physical_pixels,
         })
     }
 
@@ -799,7 +803,7 @@ impl State {
             self.render_size = logical_size(
                 new_window_size.width,
                 new_window_size.height,
-                self.window.scale_factor(),
+                render_scale_factor(&self.window, self.render_physical_pixels),
             );
 
             // Passes look target views up every frame, so replacing the textures in place is enough
@@ -841,6 +845,15 @@ impl State {
 /// `(width, height)` divided by `divisor`, at least 1×1.
 fn divided_size((width, height): (u32, u32), divisor: u32) -> (u32, u32) {
     ((width / divisor).max(1), (height / divisor).max(1))
+}
+
+/// The window's scale factor, or 1 when rendering at physical pixels.
+fn render_scale_factor(window: &winit::window::Window, physical_pixels: bool) -> f64 {
+    if physical_pixels {
+        1.0
+    } else {
+        window.scale_factor()
+    }
 }
 
 /// Physical size ÷ scale factor, at least 1×1.

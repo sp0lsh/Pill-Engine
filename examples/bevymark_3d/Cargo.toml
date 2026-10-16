@@ -1,0 +1,15 @@
+[package]
+name = "pill_game"
+version = "0.1.0"
+edition = "2021"
+workspace = "NO_PATH"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pill_engine = { path = "../../engine/pill_engine", features = ["game", "ui"] }
+# Bevy's bevymark_3d RNGs (same crates and versions as Bevy's examples), so the spawn positions,
+# velocities and material colors match
+rand = { version = "0.10", default-features = false }
+chacha20 = { version = "0.10", default-features = false, features = ["rng"] }

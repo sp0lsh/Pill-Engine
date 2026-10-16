@@ -51,8 +51,21 @@ fn format_timers(system_timers: &[(UpdatePhase, Vec<(String, Timer)>)]) -> Strin
     buf
 }
 
+/// One of the engine's windows; `open(false)` hides it, applied only when hidden as it also adds a
+/// close button.
+fn engine_window<'a>(title: &str, show: bool, hidden: &'a mut bool) -> egui::Window<'a> {
+    let window = egui::Window::new(title.to_owned());
+    if show {
+        window
+    } else {
+        window.open(hidden)
+    }
+}
+
 pub struct EguiComponent {
     pub egui_client: Arc<EguiClient>,
+    /// The engine's "Pill Engine" and "Details" windows; on by default.
+    pub show_engine_windows: bool,
     game_overlay: Option<DebugUiCallback>,
     registered_ui: Vec<RegisteredUi>,
 }
@@ -67,6 +80,7 @@ impl EguiComponent {
     pub fn new() -> Self {
         Self {
             egui_client: EguiClient::new(),
+            show_engine_windows: true,
             game_overlay: None,
             registered_ui: Vec::new(),
         }
@@ -156,15 +170,16 @@ impl EguiComponent {
             .get_global_component::<BuildStatusIndicatorComponent>()?
             .last_build_status;
 
-        let registered_ui = engine
-            .get_global_component::<EguiComponent>()?
-            .snapshot_registered_ui();
+        let egui_component = engine.get_global_component::<EguiComponent>()?;
+        let registered_ui = egui_component.snapshot_registered_ui();
+        let show_engine_windows = egui_component.show_engine_windows;
 
         let ui: UiFunction = Box::new(move |ui: &egui::Context| {
             if let Some(ref overlay) = game_overlay {
                 overlay(ui);
             }
-            egui::Window::new("Pill Engine")
+            let mut hidden = false;
+            engine_window("Pill Engine", show_engine_windows, &mut hidden)
                 .default_open(false)
                 .resizable(true)
                 .anchor(egui::Align2::LEFT_TOP, [0.0, 0.0])
@@ -186,7 +201,7 @@ impl EguiComponent {
                     });
                 });
 
-            egui::Window::new("Details")
+            engine_window("Details", show_engine_windows, &mut hidden)
                 .default_open(false)
                 .resizable(true)
                 .show(ui, |ui| {
