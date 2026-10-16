@@ -1,5 +1,5 @@
-# Bevy's Cuboid::from_size(Vec3::splat(1.0)) (bevy_mesh primitives/dim3/cuboid.rs): same
-# vertices, normals and UVs; vt v = 1 - uv.y because the OBJ cooker flips V.
+# Unit cube centred on the origin, 4 vertices per face; vt v = 1 - uv.y because the OBJ
+# cooker flips V.
 v -0.5 -0.5 0.5
 v 0.5 -0.5 0.5
 v 0.5 0.5 0.5
