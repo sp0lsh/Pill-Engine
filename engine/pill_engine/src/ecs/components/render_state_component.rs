@@ -396,6 +396,11 @@ pub struct RenderStateComponent {
 }
 
 impl RenderStateComponent {
+    /// `environment_rotation` in turns, 0–1: the IBL bake and the background both use it.
+    pub(crate) fn environment_rotation_turns(&self) -> f32 {
+        (self.environment_rotation / std::f32::consts::TAU).rem_euclid(1.0)
+    }
+
     /// Creates the component in its pre-boot state; handles are replaced by `create_default_resources`.
     pub(crate) fn new() -> Self {
         Self {

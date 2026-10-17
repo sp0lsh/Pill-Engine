@@ -170,10 +170,9 @@ struct BgSubState {
     bind_group: wgpu::BindGroup,
     sampler: wgpu::Sampler,
     ibl_sampler: wgpu::Sampler,
-    // Equirect handle and IBL generation the current bind_group was built from; rebuild only
-    // when either changes.
+    // Equirect handle the current bind_group was built from; rebuild only when it changes (the
+    // IBL specular map it also binds is allocated once).
     cached_bg: PassTextureHandle,
-    cached_ibl: u64,
     // White 1×1 equirect drawn (tinted by background_color) when no environment image is set
     fallback_bg: PassTextureHandle,
 }
@@ -937,7 +936,6 @@ impl Pass for PassPBROpaque {
                 sampler: bg_sampler,
                 ibl_sampler: bg_ibl_sampler,
                 cached_bg: equirect_fallback_h,
-                cached_ibl: self.ibl.borrow().generation,
                 fallback_bg: equirect_fallback_h,
             }
         };
@@ -1053,16 +1051,12 @@ impl Pass for PassPBROpaque {
             }
         }
 
-        // Rebuild the background bind group only when the component's equirect handle or the
-        // baked IBL changes.
+        // Rebuild the background bind group only when the component's equirect handle changes.
         {
             let bg_h = render_state
                 .background
                 .unwrap_or(get_state(self).bg.fallback_bg);
-            let ibl_generation = self.ibl.borrow().generation;
-            if get_state(self).bg.cached_bg != bg_h
-                || get_state(self).bg.cached_ibl != ibl_generation
-            {
+            if get_state(self).bg.cached_bg != bg_h {
                 let fallback = get_state(self).bg.fallback_bg;
                 let equirect_view = view_or_fallback(renderer, bg_h, fallback, "background")?;
                 let ibl_specular = self.ibl.borrow().specular_view.clone();
@@ -1078,7 +1072,6 @@ impl Pass for PassPBROpaque {
                     &state.bg.ibl_sampler,
                 );
                 state.bg.cached_bg = bg_h;
-                state.bg.cached_ibl = ibl_generation;
             }
         }
 
@@ -1419,8 +1412,7 @@ impl Pass for PassPBROpaque {
                 up: up.to_array(),
                 aspect: active_camera_component.aspect.get_value(),
                 forward: fwd.to_array(),
-                rotation: (render_state.environment_rotation / std::f32::consts::TAU)
-                    .rem_euclid(1.0),
+                rotation: render_state.environment_rotation_turns(),
                 // Environment images are drawn scaled by `background_intensity`; the white fallback
                 // is tinted to the solid color
                 background_color: match render_state.background {

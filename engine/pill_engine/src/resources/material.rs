@@ -63,16 +63,18 @@ pill_core::define_new_pill_slotmap_key! {
 }
 
 /// How a material's opacity (times the albedo alpha) is applied.
+/// The discriminants are the shader's `MaterialParams::blend_mode` values (include/material.hlsl).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u32)]
 pub enum BlendMode {
     /// Opacity < 1: alpha-blended by the translucent PBR pass; else opaque.
     #[default]
-    Alpha,
+    Alpha = 0,
     /// Added on top of what is behind (glows, light shafts), scaled by opacity; no depth write.
-    Additive,
+    Additive = 1,
     /// Screen-door transparency in the opaque pass: a per-pixel hash discards a fraction
     /// 1 − opacity of the pixels; sorted with the opaque surfaces and casts full shadows.
-    Dithered,
+    Dithered = 2,
 }
 
 /// Physically based (metallic-roughness) material. Built by value before `add_resource`;

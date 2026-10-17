@@ -17,8 +17,8 @@ use crate::{Rule, TextureType};
 /// { "textures": [{ "name", "kind": "Color|Normal|MetallicRoughness|Emissive", "file" }],
 ///   "materials": [{ "name", "base_color", "metallic", "roughness", "emissive_color",
 ///                   "alpha_mode": "opaque" | "blend" | { "mask": cutoff }, "double_sided",
-///                   "transmission", "clearcoat", "clearcoat_roughness", "albedo", "normal", "metallic_roughness", "emissive",
-///                   "specular" }],
+///                   "transmission", "clearcoat", "clearcoat_roughness", "albedo", "normal",
+///                   "metallic_roughness", "emissive", "specular" }],
 ///   "meshes": [{ "name", "file", "material" }] }
 /// ```
 ///

@@ -212,19 +212,16 @@ impl Pass for PassIblBake {
             .environment
             .filter(|handle| renderer.has_texture(*handle))
             .unwrap_or(self.default_environment);
-        let rotation = (render_state.environment_rotation / std::f32::consts::TAU).rem_euclid(1.0);
-        if self.baked == Some((environment, rotation)) {
+        let rotation = render_state.environment_rotation_turns();
+        let previous = self.baked;
+        if previous == Some((environment, rotation)) {
             return Ok(());
         }
         let state = self
             .state
             .as_mut()
             .expect("PassIblBake: state not initialized — call init() before draw()");
-        if state
-            .values
-            .first()
-            .is_some_and(|value| value.rotation != rotation)
-        {
+        if previous.is_some_and(|(_, baked_rotation)| baked_rotation != rotation) {
             for (buffer, value) in state.params.iter().zip(state.values.iter_mut()) {
                 value.rotation = rotation;
                 renderer
@@ -238,8 +235,10 @@ impl Pass for PassIblBake {
             .get_texture_view(environment)
             .ok_or("PassIblBake: environment texture missing")?;
 
-        // Source chain: the environment resampled into mip 0, each further mip from the one above
-        for level in 0..SOURCE_MIPS as usize {
+        // Source chain: the environment resampled into mip 0, each further mip from the one above;
+        // a rotation alone keeps it (the bake turns its lookups)
+        let source_current = previous.is_some_and(|(baked, _)| baked == environment);
+        for level in (0..SOURCE_MIPS as usize).filter(|_| !source_current) {
             let input = if level == 0 {
                 &environment_view
             } else {

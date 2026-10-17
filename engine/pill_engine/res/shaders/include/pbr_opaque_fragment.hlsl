@@ -517,7 +517,7 @@ FragmentOutput fs_main(
     float3 coat_reflection = float3(0.0, 0.0, 0.0);
     if (surface.clearcoat > 0.0) {
         float  coat_n_dot_v = max(dot(surface.normal, surface.view_direction), 0.0);
-        float  coat_fresnel = surface.clearcoat * (0.04 + 0.96 * pow(1.0 - coat_n_dot_v, 5.0));
+        float  coat_fresnel = surface.clearcoat * float(fresnel_schlick(real(coat_n_dot_v), real3(0.04, 0.04, 0.04)).x);
         float3 coat_ibl     = sample_ibl_specular(prefilter_texture, prefilter_sampler, reflection, surface.coat_roughness * MAX_REFLECTION_LOD);
         ambient_diffuse *= 1.0 - coat_fresnel;
         specular_ibl    *= 1.0 - coat_fresnel;

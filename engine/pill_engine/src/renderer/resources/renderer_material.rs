@@ -37,6 +37,10 @@ impl MaterialParams {
         self.alpha_cutoff > 0.0 || self.blend_mode == BlendMode::Dithered
     }
 
+    pub(crate) fn additive(&self) -> bool {
+        self.blend_mode == BlendMode::Additive
+    }
+
     /// Drawn by the translucent pass (blended, back to front)
     pub(crate) fn translucent(&self) -> bool {
         match self.blend_mode {
@@ -132,7 +136,7 @@ impl RendererMaterial {
         Ok(Self {
             name: name.to_string(),
             translucent: parameters.translucent(),
-            additive: parameters.blend_mode == BlendMode::Additive,
+            additive: parameters.additive(),
             alpha_tested: parameters.alpha_tested(),
             double_sided: parameters.is_double_sided(),
             textures_bind_group,
@@ -148,7 +152,7 @@ impl RendererMaterial {
         parameters: &MaterialParams,
     ) {
         self.translucent = parameters.translucent();
-        self.additive = parameters.blend_mode == BlendMode::Additive;
+        self.additive = parameters.additive();
         self.alpha_tested = parameters.alpha_tested();
         self.double_sided = parameters.is_double_sided();
         queue.write_buffer(
