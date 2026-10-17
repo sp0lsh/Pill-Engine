@@ -1,7 +1,5 @@
 #![cfg_attr(debug_assertions, allow(dead_code, unused_imports, unused_variables))]
 
-#[cfg(feature = "gltf_loading")]
-mod gltf_scene;
 mod material;
 mod mesh;
 mod resource;
@@ -23,12 +21,12 @@ pub use resource_storage::ResourceStorage;
 pub use sound::{Sound, SoundHandle};
 
 pub(crate) use mesh::PackedVertexAttributes;
-pub use mesh::{Mesh, MeshData, MeshHandle, MeshVertex};
+pub use mesh::{Mesh, MeshData, MeshHandle, MeshVertex, TraceLod};
 
 pub(crate) use texture::parse_cooked_tex;
 
 #[cfg(feature = "gltf_loading")]
-pub use gltf_scene::{
+pub use pill_assets::gltf_scene::{
     gltf_image_kinds, gltf_resource_uris, parse_gltf_scene, CookedImages, GltfAlphaMode,
     GltfMaterialData, GltfMeshData, GltfResourceUris, GltfSceneData, GltfTextureData,
 };

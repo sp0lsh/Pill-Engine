@@ -15,12 +15,21 @@
 // runtime glTF loader. No filesystem, no glTF dep; wasm-safe so `pill_engine`'s `gltf_loading`
 // feature can compile these into a game binary.
 pub mod convert;
+// glTF → engine byte formats (RMSH meshes, RTEX textures); wasm-safe, used by the
+// `gltf_to_cooked_scene` rule and by `pill_engine`'s runtime `gltf_loading`
+#[cfg(feature = "gltf_scene")]
+pub mod gltf_scene;
 pub mod ibl;
+// Trace LODs (meshoptimizer, native only)
 #[cfg(feature = "ktx2")]
 pub mod ktx2;
+#[cfg(feature = "mesh_lod")]
+pub mod mesh_lod;
 // Asset pack (PPAK): reader + decoders are wasm-safe; the writer needs feature `encode`.
 pub mod pak_codec;
 pub mod ppak;
+mod texture_type;
+pub use texture_type::TextureType;
 
 // --- Build-time filesystem pipeline (feature `build`, the default) ---
 

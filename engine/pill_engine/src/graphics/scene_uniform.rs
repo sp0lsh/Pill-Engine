@@ -43,6 +43,7 @@ impl Scene {
                     DebugView::Lit => 0.0,
                     DebugView::LightingOnly => 1.0,
                     DebugView::DetailLighting => 2.0,
+                    DebugView::Unlit => 3.0,
                 },
             ],
             light_direction0: light0.0,

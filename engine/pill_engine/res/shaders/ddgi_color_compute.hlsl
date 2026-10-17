@@ -66,31 +66,35 @@ void cs_main(uint3 group : SV_GroupID, uint2 thread : SV_GroupThreadID, uint thr
     // Backface hits are ignored, and a probe whose rays hit backfaces RANDOM_RAY_BACKFACE_THRESHOLD
     // of the time on average is probably inside geometry: it keeps its lighting instead of
     // averaging the unlit inside of a wall. Every thread counts the same rays, so the whole group
-    // returns together
+    // takes the same branch; the barrier stays outside it all the same (WGSL rejects a barrier in
+    // control flow that depends on memory reads)
     float backface_share = lerp(ddgi_probes_out[probe_index].sh[3].w, float(backfaces) / float(ray_count), BACKFACE_BLEND);
-    if (backfaces == ray_count || backface_share > RANDOM_RAY_BACKFACE_THRESHOLD) {
-        // Every thread has read the probe above; thread 0 only moves the average on
-        GroupMemoryBarrierWithGroupSync();
+    bool  inside = backfaces == ray_count || backface_share > RANDOM_RAY_BACKFACE_THRESHOLD;
+    if (!inside) {
+        uint history_index = probe_index * TEXELS + thread_index;
+        float3 history = ddgi_history[history_index].rgb;
+        // Cosine-weighted mean of the radiance around the texel, normalized by the weight N
+        // uniformly spread rays sum to on average (∫ max(0, cos) dω / 4π = 1/4 per ray), not by
+        // this frame's weight: with few rays per probe the ratio sum / Σw returns whichever rays
+        // happened to land near the texel at any angle (grazing ones count as much as head-on
+        // ones: biased), while this estimate stays unbiased at any ray count
+        float3 result = sum * (4.0 / float(ray_count - backfaces));
+        // Running mean while the probe is new (unbiased from its first update, whatever the ray
+        // count), then the exponential blend
+        float  blend = max(1.0 / (updates + 1.0), ddgi.blend_speed);
+        float3 mean  = lerp(history, result, blend);
+        ddgi_history[history_index] = float4(mean, 0.0);
+        texel_radiance[thread_index] = mean;
+    }
+    // Every thread has read the probe above and written its texel
+    GroupMemoryBarrierWithGroupSync();
+    if (inside) {
+        // Thread 0 only moves the average on
         if (thread_index == 0) {
             ddgi_probes_out[probe_index].sh[3].w = backface_share;
         }
         return;
     }
-    uint history_index = probe_index * TEXELS + thread_index;
-    float3 history = ddgi_history[history_index].rgb;
-    // Cosine-weighted mean of the radiance around the texel, normalized by the weight N uniformly
-    // spread rays sum to on average (∫ max(0, cos) dω / 4π = 1/4 per ray), not by this frame's
-    // weight: with few rays per probe the ratio sum / Σw returns whichever rays happened to land
-    // near the texel at any angle (grazing ones count as much as head-on ones: biased), while
-    // this estimate stays unbiased at any ray count
-    float3 result = sum * (4.0 / float(ray_count - backfaces));
-    // Running mean while the probe is new (unbiased from its first update, whatever the ray
-    // count), then the exponential blend
-    float  blend = max(1.0 / (updates + 1.0), ddgi.blend_speed);
-    float3 mean  = lerp(history, result, blend);
-    ddgi_history[history_index] = float4(mean, 0.0);
-    texel_radiance[thread_index] = mean;
-    GroupMemoryBarrierWithGroupSync();
 
     if (thread_index == 0) {
         float3 sh0 = float3(0.0, 0.0, 0.0);

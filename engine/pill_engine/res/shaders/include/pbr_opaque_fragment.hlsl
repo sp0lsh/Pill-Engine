@@ -454,7 +454,8 @@ FragmentOutput fs_main(
         surface.roughness = lerp(surface.roughness, WET_ROUGHNESS, film);
     }
     // Lighting-only views (light audits): every surface white, diffuse only, unlit by itself; the
-    // light reaching it is all that shows (method: Unreal's Lighting Only / Detail Lighting views)
+    // light reaching it is all that shows (method: Unreal's Lighting Only / Detail Lighting views).
+    // The unlit view (3) is lit as one too, then shows the base color (below)
     float debug_view    = scene.ibl_intensity.w;
     bool  lighting_only = debug_view > 0.5;
     if (lighting_only) {
@@ -530,13 +531,20 @@ FragmentOutput fs_main(
     if (scene.froxel_depth.w > 0.5) {
         output.color.rgb = froxel_heatmap(punctual_count);
     }
+    // Unlit view: the base color alone (no light, emission, fog or ambient for SSAO to take back)
+    bool unlit = debug_view > 2.5;
+    if (unlit) {
+        output.color.rgb = base_color.rgb * material.base_color_factor;
+    }
     // Motion vector in UV units (NDC y points up, UV v points down); w clamped for points that were
     // at or behind the camera last frame
     float2 ndc          = clip_position.xy / max(clip_position.w, 1e-4);
     float2 previous_ndc = previous_clip_position.xy / max(previous_clip_position.w, 1e-4);
     output.velocity = (ndc - previous_ndc) * float2(0.5, -0.5);
     // What SSAO takes back must be in `color`; with SSR, PassSsr adds the specular term instead
-    output.ambient  = float4((ambient_diffuse + (ssr ? float3(0.0, 0.0, 0.0) : specular_ibl)) * (1.0 - fog), 0.0);
+    output.ambient  = unlit
+        ? float4(0.0, 0.0, 0.0, 0.0)
+        : float4((ambient_diffuse + (ssr ? float3(0.0, 0.0, 0.0) : specular_ibl)) * (1.0 - fog), 0.0);
     bool no_reflections = ddgi.enabled >= 2 || scene.froxel_depth.w > 0.5 || lighting_only;
     output.ssr_surface = float4(ssr && !no_reflections ? specular_weight * (1.0 - fog) : float3(0.0, 0.0, 0.0), surface.roughness);
     output.ssr_normal  = oct_encode(surface.normal);

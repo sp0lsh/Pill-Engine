@@ -78,8 +78,9 @@ pub struct DepthOfField {
     pub anamorphic_squeeze: f32,
 }
 
-/// What the PBR passes show: the lit image, or only the light reaching the surfaces (every
-/// surface a white diffuse material without specular or emission, for auditing light levels).
+/// What the PBR passes show: the lit image, only the light reaching the surfaces (every surface a
+/// white diffuse material without specular or emission, for auditing light levels), or only the
+/// surfaces' colors.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum DebugView {
     #[default]
@@ -88,6 +89,9 @@ pub enum DebugView {
     LightingOnly,
     /// As `LightingOnly`, with the materials' normal maps.
     DetailLighting,
+    /// The materials' base color (factor × albedo texture, alpha test kept) without any light,
+    /// emission or fog.
+    Unlit,
 }
 
 /// PostFx chain screen-space ambient occlusion; darkens only the indirect (IBL) light.

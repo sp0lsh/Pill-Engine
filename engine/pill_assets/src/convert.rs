@@ -141,7 +141,9 @@ pub fn rtex_from_rgba(width: u32, height: u32, mut rgba: Vec<u8>) -> Vec<u8> {
     rgba
 }
 
-/// RMSH v1: `b"RMSH"` + u32 version=1 + u32 vertex_count + u32 index_count + vertices + indices.
+/// RMSH v1: `b"RMSH"` + u32 version=1 + u32 vertex_count + u32 index_count + vertices + indices,
+/// optionally followed by a trace LOD chunk ([`trace_lod_bytes`]) that readers of the mesh itself
+/// skip.
 pub fn rmsh_bytes(vertices: &[CookedVertex], indices: &[u32]) -> Vec<u8> {
     let vertex_bytes: &[u8] = bytemuck::cast_slice(vertices);
     let index_bytes: &[u8] = bytemuck::cast_slice(indices);
@@ -151,6 +153,21 @@ pub fn rmsh_bytes(vertices: &[CookedVertex], indices: &[u32]) -> Vec<u8> {
     output.extend_from_slice(&(vertices.len() as u32).to_le_bytes());
     output.extend_from_slice(&(indices.len() as u32).to_le_bytes());
     output.extend_from_slice(vertex_bytes);
+    output.extend_from_slice(index_bytes);
+    output
+}
+
+/// Trace LOD chunk after an RMSH's indices: a coarse copy of the mesh for ray tracing (GI) only,
+/// `b"RTLD"` + u32 position_count + u32 index_count + f32×3 positions + u32 indices. No indices:
+/// the mesh isn't traced.
+pub fn trace_lod_bytes(positions: &[[f32; 3]], indices: &[u32]) -> Vec<u8> {
+    let position_bytes: &[u8] = bytemuck::cast_slice(positions);
+    let index_bytes: &[u8] = bytemuck::cast_slice(indices);
+    let mut output = Vec::with_capacity(12 + position_bytes.len() + index_bytes.len());
+    output.extend_from_slice(b"RTLD");
+    output.extend_from_slice(&(positions.len() as u32).to_le_bytes());
+    output.extend_from_slice(&(indices.len() as u32).to_le_bytes());
+    output.extend_from_slice(position_bytes);
     output.extend_from_slice(index_bytes);
     output
 }

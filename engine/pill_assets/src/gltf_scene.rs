@@ -1,4 +1,4 @@
-//! Runtime glTF loader (feature `gltf_loading`).
+//! glTF loader (feature `gltf_scene`; `pill_engine` re-exports it under `gltf_loading`).
 //!
 //! The single wasm-safe path for loading a glTF/glb obtained as bytes at runtime, however you got
 //! them: fetched (multi-file `.gltf` + external `.bin`/textures) or dropped/embedded (self-contained
@@ -11,11 +11,11 @@
 //! fetches external resources (see [`gltf_resource_uris`]) and uploads the result with
 //! `Mesh::from_cooked_mesh_bytes` / `Texture::from_bytes_owned`.
 
+use anyhow::{Error, Result};
 use goth_gltf::{ComponentType, NodeTransform, PrimitiveMode};
-use pill_assets::convert::{self, PrimitiveAttributes};
-use pill_core::{PillError, Result};
 
-use crate::resources::TextureType;
+use crate::convert::{self, PrimitiveAttributes};
+use crate::TextureType;
 
 type Doc = goth_gltf::Gltf<goth_gltf::default_extensions::Extensions>;
 
@@ -80,7 +80,7 @@ pub struct GltfResourceUris {
 /// (relative to the `.gltf`); the caller resolves them against its base URL.
 pub fn gltf_resource_uris(gltf_bytes: &[u8]) -> Result<GltfResourceUris> {
     let (doc, _) =
-        Doc::from_bytes(gltf_bytes).map_err(|e| PillError::from(format!("parse glTF: {e:?}")))?;
+        Doc::from_bytes(gltf_bytes).map_err(|e| Error::msg(format!("parse glTF: {e:?}")))?;
     let external = |uri: &Option<String>| uri.clone().filter(|uri| !uri.starts_with("data:"));
     Ok(GltfResourceUris {
         buffers: doc.buffers.iter().map(|b| external(&b.uri)).collect(),
@@ -93,7 +93,7 @@ pub fn gltf_resource_uris(gltf_bytes: &[u8]) -> Result<GltfResourceUris> {
 /// [`parse_gltf_scene`].
 pub fn gltf_image_kinds(gltf_bytes: &[u8]) -> Result<Vec<Vec<TextureType>>> {
     let (doc, _) =
-        Doc::from_bytes(gltf_bytes).map_err(|e| PillError::from(format!("parse glTF: {e:?}")))?;
+        Doc::from_bytes(gltf_bytes).map_err(|e| Error::msg(format!("parse glTF: {e:?}")))?;
     let mut kinds = vec![Vec::new(); doc.images.len()];
     for material in &doc.materials {
         for (texture, kind) in material_textures(material).into_iter().zip(SLOT_KINDS) {
@@ -170,23 +170,23 @@ pub fn parse_gltf_scene(
     use std::collections::{HashMap, HashSet};
 
     let (doc, blob) =
-        Doc::from_bytes(gltf_bytes).map_err(|e| PillError::from(format!("parse glTF: {e:?}")))?;
+        Doc::from_bytes(gltf_bytes).map_err(|e| Error::msg(format!("parse glTF: {e:?}")))?;
 
     // Resolve every buffer: embedded BIN blob, data: URI, or caller-supplied external bytes.
     let mut buffers: Vec<Cow<[u8]>> = Vec::with_capacity(doc.buffers.len());
     for (i, buffer) in doc.buffers.iter().enumerate() {
-        let bytes =
-            match &buffer.uri {
-                Some(uri) if uri.starts_with("data:") => Cow::Owned(decode_data_uri(uri)?),
-                Some(_) => {
-                    Cow::Borrowed(external_buffers.get(i).map(|v| v.as_slice()).ok_or_else(
-                        || PillError::from(format!("missing fetched bytes for buffer {i}")),
-                    )?)
-                }
-                None => Cow::Borrowed(blob.ok_or_else(|| {
-                    PillError::from("glTF has an embedded buffer but no blob".to_string())
-                })?),
-            };
+        let bytes = match &buffer.uri {
+            Some(uri) if uri.starts_with("data:") => Cow::Owned(decode_data_uri(uri)?),
+            Some(_) => Cow::Borrowed(
+                external_buffers
+                    .get(i)
+                    .map(|v| v.as_slice())
+                    .ok_or_else(|| Error::msg(format!("missing fetched bytes for buffer {i}")))?,
+            ),
+            None => Cow::Borrowed(blob.ok_or_else(|| {
+                Error::msg("glTF has an embedded buffer but no blob".to_string())
+            })?),
+        };
         buffers.push(bytes);
     }
     let buffers: Vec<&[u8]> = buffers.iter().map(|b| b.as_ref()).collect();
@@ -335,7 +335,7 @@ pub fn parse_gltf_scene(
             while let Some((node_idx, parent)) = stack.pop() {
                 let node = get(&doc.nodes, node_idx, "node")?;
                 if std::mem::replace(&mut visited[node_idx], true) {
-                    return Err(PillError::from(format!(
+                    return Err(Error::msg(format!(
                         "glTF node {node_idx} is reachable twice (cycle or shared child)"
                     )));
                 }
@@ -406,7 +406,7 @@ pub fn parse_gltf_scene(
                 },
                 world,
             )
-            .map_err(|e| PillError::from(format!("glTF mesh {mesh_idx}: {e}")))?;
+            .map_err(|e| Error::msg(format!("glTF mesh {mesh_idx}: {e}")))?;
             if indices.is_empty() {
                 continue;
             }
@@ -428,7 +428,7 @@ pub fn parse_gltf_scene(
 /// `slice[index]`, or an error naming what was referenced out of range.
 fn get<'a, T>(slice: &'a [T], index: usize, what: &str) -> Result<&'a T> {
     slice.get(index).ok_or_else(|| {
-        PillError::from(format!(
+        Error::msg(format!(
             "glTF {what} {index} out of range ({} defined)",
             slice.len()
         ))
@@ -450,16 +450,16 @@ fn image_bytes<'a>(
             .get(index)
             .filter(|v| !v.is_empty())
             .map(|v| Cow::Borrowed(v.as_slice()))
-            .ok_or_else(|| PillError::from(format!("missing fetched bytes for image {index}"))),
+            .ok_or_else(|| Error::msg(format!("missing fetched bytes for image {index}"))),
         (None, Some(bv)) => {
             let view = get(&doc.buffer_views, bv, "buffer view")?;
             let buffer = *get(buffers, view.buffer, "buffer")?;
             buffer
                 .get(view.byte_offset..view.byte_offset + view.byte_length)
                 .map(Cow::Borrowed)
-                .ok_or_else(|| PillError::from(format!("image {index} view exceeds its buffer")))
+                .ok_or_else(|| Error::msg(format!("image {index} view exceeds its buffer")))
         }
-        (None, None) => Err(PillError::from(format!(
+        (None, None) => Err(Error::msg(format!(
             "image {index} has neither uri nor buffer view"
         ))),
     }
@@ -470,7 +470,7 @@ fn decode_data_uri(uri: &str) -> Result<Vec<u8>> {
     let payload = uri
         .split_once(";base64,")
         .map(|(_, payload)| payload)
-        .ok_or_else(|| PillError::from("only base64 data: URIs are supported".to_string()))?;
+        .ok_or_else(|| Error::msg("only base64 data: URIs are supported".to_string()))?;
     let mut out = Vec::with_capacity(payload.len() / 4 * 3);
     let (mut bits, mut bit_count) = (0u32, 0);
     for byte in payload.bytes().filter(|&b| b != b'=') {
@@ -480,7 +480,7 @@ fn decode_data_uri(uri: &str) -> Result<Vec<u8>> {
             b'0'..=b'9' => byte - b'0' + 52,
             b'+' => 62,
             b'/' => 63,
-            _ => return Err(PillError::from("invalid base64 in data: URI".to_string())),
+            _ => return Err(Error::msg("invalid base64 in data: URI".to_string())),
         };
         bits = (bits << 6) | value as u32;
         bit_count += 6;
@@ -496,8 +496,8 @@ fn decode_data_uri(uri: &str) -> Result<Vec<u8>> {
 
 /// Reads a required float-attribute accessor (POSITION) as a flat `Vec<f32>`.
 fn read_floats(doc: &Doc, buffers: &[&[u8]], accessor: Option<usize>) -> Result<Vec<f32>> {
-    let accessor = accessor
-        .ok_or_else(|| PillError::from("primitive missing a required attribute".to_string()))?;
+    let accessor =
+        accessor.ok_or_else(|| Error::msg("primitive missing a required attribute".to_string()))?;
     read_floats_at(doc, buffers, accessor)
 }
 
@@ -548,7 +548,7 @@ fn read_indices(doc: &Doc, buffers: &[&[u8]], accessor_idx: usize) -> Result<Vec
             }
             ComponentType::UnsignedByte => buf[o] as u32,
             other => {
-                return Err(PillError::from(format!(
+                return Err(Error::msg(format!(
                     "unsupported index component type {other:?}"
                 )))
             }
@@ -568,7 +568,7 @@ fn accessor_layout<'a>(
     let acc = get(&doc.accessors, accessor_idx, "accessor")?;
     let bv = acc
         .buffer_view
-        .ok_or_else(|| PillError::from("accessor without a buffer view".to_string()))?;
+        .ok_or_else(|| Error::msg("accessor without a buffer view".to_string()))?;
     let view = get(&doc.buffer_views, bv, "buffer view")?;
     let buf = *get(buffers, view.buffer, "buffer")?;
     let comp_size = acc.component_type.byte_size();
@@ -583,7 +583,7 @@ fn accessor_layout<'a>(
             .unwrap_or(usize::MAX),
     };
     if end > buf.len() {
-        return Err(PillError::from(format!(
+        return Err(Error::msg(format!(
             "accessor {accessor_idx} reads bytes up to {end}, buffer has {}",
             buf.len()
         )));
@@ -672,7 +672,7 @@ fn decode_image(bytes: &[u8]) -> Result<DecodedImage> {
     } else if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
         decode_png(bytes)
     } else {
-        Err(PillError::from(
+        Err(Error::msg(
             "unsupported texture image (expected JPEG or PNG)".to_string(),
         ))
     }
@@ -682,10 +682,10 @@ fn decode_jpeg(bytes: &[u8]) -> Result<DecodedImage> {
     let mut decoder = zune_jpeg::JpegDecoder::new(bytes);
     let pixels = decoder
         .decode()
-        .map_err(|e| PillError::from(format!("decode JPEG: {e:?}")))?;
+        .map_err(|e| Error::msg(format!("decode JPEG: {e:?}")))?;
     let (w, h) = decoder
         .dimensions()
-        .ok_or_else(|| PillError::from("JPEG has no dimensions".to_string()))?;
+        .ok_or_else(|| Error::msg("JPEG has no dimensions".to_string()))?;
     let components = decoder
         .get_output_colorspace()
         .map(|c| c.num_components())
@@ -704,17 +704,17 @@ fn decode_png(bytes: &[u8]) -> Result<DecodedImage> {
     let mut decoder = zune_png::PngDecoder::new_with_options(bytes, options);
     let result = decoder
         .decode()
-        .map_err(|e| PillError::from(format!("decode PNG: {e:?}")))?;
+        .map_err(|e| Error::msg(format!("decode PNG: {e:?}")))?;
     let (w, h) = decoder
         .get_dimensions()
-        .ok_or_else(|| PillError::from("PNG has no dimensions".to_string()))?;
+        .ok_or_else(|| Error::msg("PNG has no dimensions".to_string()))?;
     let components = decoder
         .get_colorspace()
         .map(|c| c.num_components())
         .unwrap_or(4);
     let px8 = match result {
         DecodingResult::U8(v) => v,
-        _ => return Err(PillError::from("PNG did not decode to 8 bits".to_string())),
+        _ => return Err(Error::msg("PNG did not decode to 8 bits".to_string())),
     };
     Ok(DecodedImage {
         rgba: expand_to_rgba(px8, components),

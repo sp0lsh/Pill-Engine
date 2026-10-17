@@ -233,7 +233,8 @@ impl PassDdgi {
         signature
     }
 
-    /// World-space triangles of the opaque, shadow-casting meshes with their albedo.
+    /// World-space triangles of the opaque, shadow-casting meshes with their albedo: each mesh's
+    /// trace LOD when the cooked mesh has one (`MeshData::trace_lod`), else the mesh itself.
     fn gather_triangles(&mut self, world: &WorldQuery<'_>) {
         self.triangles.clear();
         let (Ok(transforms), Ok(meshes)) = (
@@ -282,12 +283,18 @@ impl PassDdgi {
                 })
                 .unwrap_or([0.8; 3]);
             let model = DrawTransform::from(transform).model_matrix();
-            let position = |index: u32| {
-                model.transform_point3(Vector3f::from_array(
-                    data.vertices[index as usize].position(),
-                ))
+            let (lod_positions, indices) = match &data.trace_lod {
+                Some(lod) => (Some(&lod.positions), &lod.indices),
+                None => (None, &data.indices),
             };
-            for corner in data.indices.chunks_exact(3) {
+            let position = |index: u32| {
+                let local = match lod_positions {
+                    Some(positions) => positions[index as usize],
+                    None => data.vertices[index as usize].position(),
+                };
+                model.transform_point3(Vector3f::from_array(local))
+            };
+            for corner in indices.chunks_exact(3) {
                 self.triangles.push(Triangle {
                     vertices: [
                         position(corner[0]),

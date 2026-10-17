@@ -127,7 +127,40 @@ fn load_cooked_mesh(bytes: &[u8]) -> Result<MeshData> {
         .iter()
         .map(|&bytes| u32::from_le_bytes(bytes))
         .collect();
-    Ok(MeshData { vertices, indices })
+    Ok(MeshData {
+        vertices,
+        indices,
+        trace_lod: read_trace_lod(&bytes[expected..]),
+    })
+}
+
+/// The trace LOD chunk (`b"RTLD"` + u32 position count + u32 index count + f32×3 positions + u32
+/// indices, pill_assets `convert::trace_lod_bytes`) after a cooked mesh, if there is a whole one.
+fn read_trace_lod(bytes: &[u8]) -> Option<TraceLod> {
+    if bytes.len() < 12 || &bytes[0..4] != b"RTLD" {
+        return None;
+    }
+    let read_u32 =
+        |offset: usize| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
+    let (position_count, index_count) = (read_u32(4), read_u32(8));
+    let indices_start = 12 + position_count * 12;
+    let index_bytes = bytes.get(indices_start..indices_start + index_count * 4)?;
+    let positions = bytes[12..indices_start]
+        .as_chunks::<12>()
+        .0
+        .iter()
+        .map(|position| {
+            let coordinate = |i: usize| f32::from_le_bytes(position[i..i + 4].try_into().unwrap());
+            [coordinate(0), coordinate(4), coordinate(8)]
+        })
+        .collect();
+    let indices = index_bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&bytes| u32::from_le_bytes(bytes))
+        .collect();
+    Some(TraceLod { positions, indices })
 }
 
 impl Resource for Mesh {
@@ -296,6 +329,14 @@ fn pack_unit_vector(vector: Vector3f, alpha: u32) -> u32 {
 pub struct MeshData {
     pub vertices: Vec<MeshVertex>,
     pub indices: Vec<u32>,
+    /// A coarse copy for ray tracing only (GI), when the cooked mesh has one
+    pub trace_lod: Option<TraceLod>,
+}
+
+/// Positions and triangle indices of a mesh's trace LOD; no indices: the mesh isn't traced.
+pub struct TraceLod {
+    pub positions: Vec<[f32; 3]>,
+    pub indices: Vec<u32>,
 }
 
 impl MeshData {
@@ -435,6 +476,7 @@ impl MeshData {
         let mesh_data = MeshData {
             vertices,
             indices: mesh.indices.clone(),
+            trace_lod: None,
         };
 
         Ok(mesh_data)
@@ -633,7 +675,11 @@ impl MeshData {
             20, 21, 22, 20, 22, 23, // left
         ];
 
-        MeshData { vertices, indices }
+        MeshData {
+            vertices,
+            indices,
+            trace_lod: None,
+        }
     }
 }
 
@@ -657,6 +703,51 @@ mod tests {
             tangent,
             bitangent,
         }
+    }
+
+    // A one-triangle RMSH, optionally followed by `tail`
+    fn cooked_triangle(tail: &[u8]) -> Vec<u8> {
+        let mut bytes = b"RMSH".to_vec();
+        for value in [1u32, 3, 3] {
+            bytes.extend(value.to_le_bytes());
+        }
+        bytes.extend(vec![0u8; 3 * std::mem::size_of::<MeshVertex>()]);
+        for index in 0u32..3 {
+            bytes.extend(index.to_le_bytes());
+        }
+        bytes.extend(tail);
+        bytes
+    }
+
+    #[test]
+    fn load_cooked_mesh_with_rtld_trace_lod_parsed() {
+        let mut chunk = b"RTLD".to_vec();
+        for value in [3u32, 3] {
+            chunk.extend(value.to_le_bytes());
+        }
+        for coordinate in [0.0f32, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0] {
+            chunk.extend(coordinate.to_le_bytes());
+        }
+        for index in [0u32, 1, 2] {
+            chunk.extend(index.to_le_bytes());
+        }
+        let data = load_cooked_mesh(&cooked_triangle(&chunk)).unwrap();
+        let lod = data.trace_lod.unwrap();
+        assert_eq!(lod.positions[1], [1.0, 0.0, 0.0]);
+        assert_eq!(lod.indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn load_cooked_mesh_without_chunk_no_trace_lod() {
+        assert!(load_cooked_mesh(&cooked_triangle(&[]))
+            .unwrap()
+            .trace_lod
+            .is_none());
+        // A cut-off chunk is ignored too
+        assert!(load_cooked_mesh(&cooked_triangle(b"RTLD\x05\0\0\0"))
+            .unwrap()
+            .trace_lod
+            .is_none());
     }
 
     #[test]

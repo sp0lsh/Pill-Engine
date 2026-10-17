@@ -24,6 +24,8 @@ pub struct Settings {
     /// Lighting-only view (every surface white, diffuse only), with or without normal maps.
     pub lighting_only: bool,
     pub lighting_normal_maps: bool,
+    /// Unlit view: the materials' base color only (wins over the lighting-only view).
+    pub unlit: bool,
     /// Probe spacing (m) of the fine GI cascade around the camera (the coarse one is 6 m).
     pub gi_fine_spacing: f32,
     pub ssr: bool,
@@ -49,6 +51,7 @@ pub static SETTINGS: Mutex<Settings> = Mutex::new(Settings {
     gi_probe_cells: false,
     lighting_only: false,
     lighting_normal_maps: false,
+    unlit: false,
     gi_fine_spacing: 2.0,
     ssr: true,
     ssr_reflections_only: false,
@@ -137,6 +140,7 @@ pub fn register(engine: &mut Engine) -> Result<()> {
                                 ),
                             );
                         });
+                        ui.checkbox(&mut settings.unlit, "Unlit (U)");
                         ui.add(
                             egui::Slider::new(&mut settings.gi_fine_spacing, 0.5..=3.0)
                                 .suffix(" m")
@@ -159,7 +163,7 @@ pub fn register(engine: &mut Engine) -> Result<()> {
 
 /// Keyboard shortcuts for the toggles.
 type Shortcut = (KeyboardKey, fn(&mut Settings) -> &mut bool);
-const SHORTCUTS: [Shortcut; 10] = [
+const SHORTCUTS: [Shortcut; 11] = [
     (KeyboardKey::KeyK, |settings| &mut settings.shadows),
     (KeyboardKey::KeyG, |settings| &mut settings.gi),
     (KeyboardKey::KeyH, |settings| &mut settings.gi_indirect_only),
@@ -172,6 +176,7 @@ const SHORTCUTS: [Shortcut; 10] = [
     (KeyboardKey::KeyF, |settings| &mut settings.depth_of_field),
     (KeyboardKey::KeyM, |settings| &mut settings.motion_blur),
     (KeyboardKey::KeyL, |settings| &mut settings.lighting_only),
+    (KeyboardKey::KeyU, |settings| &mut settings.unlit),
 ];
 
 pub fn shortcuts_system(engine: &mut Engine) -> Result<()> {
@@ -204,10 +209,11 @@ pub fn apply_settings_system(engine: &mut Engine) -> Result<()> {
     render_state.lights[0].color = light.color;
     render_state.lights[0].intensity = light.intensity * settings.sun_intensity;
     render_state.wetness = settings.wet;
-    render_state.debug_view = match (settings.lighting_only, settings.lighting_normal_maps) {
-        (false, _) => DebugView::Lit,
-        (true, false) => DebugView::LightingOnly,
-        (true, true) => DebugView::DetailLighting,
+    render_state.debug_view = match (settings.unlit, settings.lighting_only, settings.lighting_normal_maps) {
+        (true, _, _) => DebugView::Unlit,
+        (false, false, _) => DebugView::Lit,
+        (false, true, false) => DebugView::LightingOnly,
+        (false, true, true) => DebugView::DetailLighting,
     };
     render_state.ibl_intensity = light.sky;
     // The visible sky dims with its light

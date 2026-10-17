@@ -13,13 +13,7 @@ pill_core::define_new_pill_slotmap_key! {
     pub struct TextureHandle;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum TextureType {
-    Color,
-    Normal,
-    MetallicRoughness,
-    Emissive,
-}
+pub use pill_assets::TextureType;
 
 #[readonly::make]
 pub struct Texture {

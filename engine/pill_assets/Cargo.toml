@@ -27,17 +27,29 @@ serde_json = { version = "1", optional = true }
 png = { version = "0.17", optional = true }
 tobj = { version = "3.0", optional = true }
 gltf = { version = "1", default-features = false, features = ["utils", "names"], optional = true }
+# glTF loader (feature `gltf_scene`): goth-gltf (nanoserde, no serde_json) and the lean `zune-*`
+# image codecs keep it small in wasm
+goth-gltf = { version = "0.3", optional = true }
+log = { version = "0.4", optional = true }
+zune-jpeg = { version = "0.4", default-features = false, optional = true }
+zune-png = { version = "0.4", default-features = false, optional = true }
 
 # KTX2 (Basis Universal) → BC7 cooking for native runtimes: pure-Rust transcoder + Intel ISPC BC7
 # encoder (prebuilt kernels, not wasm)
 basisu = { version = "0.1", optional = true }
 intel_tex_2 = { version = "0.5", optional = true }
+# Trace LODs of cooked meshes (`mesh_lod`), C++ meshoptimizer: launcher only, never in wasm
+meshopt = { version = "0.6", optional = true }
 
 [features]
 default = ["build"]
 # Filesystem asset pipeline (HLSL→WGSL, glb/obj/png/hdr/equirect cooking). Used by build.rs / launcher.
-build = ["dep:glob", "dep:png", "dep:tobj", "dep:gltf", "gltf/import", "dep:serde_json"]
+build = ["dep:glob", "dep:png", "dep:tobj", "dep:gltf", "gltf/import", "dep:serde_json", "gltf_scene"]
+# glTF → RMSH meshes + RTEX textures + materials (`gltf_scene`), wasm-safe
+gltf_scene = ["dep:goth-gltf", "dep:zune-jpeg", "dep:zune-png", "dep:log"]
 # Asset pack writer (`pack_sources`, `write_pack_for_build`) for game build scripts.
 encode = ["build", "dep:brotli", "dep:webp"]
 # KTX2 → RTEX v5 (BC7 + mips) cooker, `ktx2::ktx2_to_rtex_bc7` (native only).
 ktx2 = ["dep:basisu", "dep:intel_tex_2"]
+# Coarse "trace LOD" chunk (RTLD) appended to cooked scene meshes for GI rays (`mesh_lod`).
+mesh_lod = ["dep:meshopt"]

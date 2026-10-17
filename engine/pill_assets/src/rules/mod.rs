@@ -2,6 +2,7 @@ use crate::Rule;
 
 pub mod equirect_to_ibl;
 pub mod glb_to_cooked_mesh;
+pub mod gltf_to_cooked_scene;
 pub mod hdr_to_equirect;
 pub mod hlsl_to_wgsl;
 pub mod obj_to_cooked_mesh;
@@ -10,6 +11,7 @@ pub mod procedural_equirect;
 
 pub use equirect_to_ibl::{BrdfLut, EquirectToIBL};
 pub use glb_to_cooked_mesh::GlbToCookedMesh;
+pub use gltf_to_cooked_scene::GltfToCookedScene;
 pub use hdr_to_equirect::HdrToEquirect;
 pub use hlsl_to_wgsl::HlslToWgsl;
 pub use obj_to_cooked_mesh::ObjToCookedMesh;
@@ -27,5 +29,6 @@ pub fn default_rules() -> Vec<Box<dyn Rule>> {
         Box::new(BrdfLut),       // generates the split-sum BRDF LUT from *.brdf_lut
         Box::new(ObjToCookedMesh),
         Box::new(GlbToCookedMesh),
+        Box::new(GltfToCookedScene), // *.gltf + buffers + images → {stem}.cooked/
     ]
 }
