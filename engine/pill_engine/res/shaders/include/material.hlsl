@@ -11,6 +11,10 @@ struct MaterialArray {
 };
 [[vk::binding(0, MATERIAL_ARRAY_SET)]] ConstantBuffer<MaterialArray> material_array;
 
+// MaterialParams::blend_mode values (BlendMode's discriminants)
+static const float BLEND_ADDITIVE = 1.0;
+static const float BLEND_DITHERED = 2.0;
+
 struct MaterialParams {
     float3 base_color_factor;
     float  roughness_factor;

@@ -484,8 +484,9 @@ FragmentOutput fs_main(
         outgoing_radiance += clearcoat_directional_light(surface, scene.light_direction1.xyz, scene.light_color1);
         outgoing_radiance += clearcoat_directional_light(surface, scene.light_direction2.xyz, scene.light_color2);
     }
+    float  n_dot_v         = max(dot(surface.normal, surface.view_direction), 0.0);
     // Diffuse IBL ambient.
-    float3 specular_factor = float3(fresnel_schlick(real(max(dot(surface.normal, surface.view_direction), 0.0)), real3(surface.base_reflectivity)));
+    float3 specular_factor = float3(fresnel_schlick(real(n_dot_v), real3(surface.base_reflectivity)));
     float3 diffuse_factor  = (float3(1.0, 1.0, 1.0) - specular_factor) * (1.0 - surface.metallic);
     // Indirect diffuse: DDGI probes when on (their rays that miss already see the IBL), else IBL
     float3 sky_irradiance  = sample_ibl_irradiance(irradiance_texture, irradiance_sampler, surface.normal) * scene.ibl_intensity.x;
@@ -505,8 +506,8 @@ FragmentOutput fs_main(
     // Specular IBL.
     float3 reflection        = reflect(-surface.view_direction, surface.normal);
     float3 prefiltered_color = sample_ibl_specular(prefilter_texture, prefilter_sampler, reflection, surface.roughness * MAX_REFLECTION_LOD);
-    float2 environment_brdf  = brdf_lut_texture.Sample(brdf_lut_sampler, float2(max(dot(surface.normal, surface.view_direction), 0.0), surface.roughness)).rg;
-    float3 fresnel           = float3(fresnel_schlick_roughness(real(max(dot(surface.normal, surface.view_direction), 0.0)), real3(surface.base_reflectivity), real(surface.roughness)));
+    float2 environment_brdf  = brdf_lut_texture.Sample(brdf_lut_sampler, float2(n_dot_v, surface.roughness)).rg;
+    float3 fresnel           = float3(fresnel_schlick_roughness(real(n_dot_v), real3(surface.base_reflectivity), real(surface.roughness)));
     float3 specular_weight   = lighting_only
         ? float3(0.0, 0.0, 0.0)
         : (fresnel * environment_brdf.x + environment_brdf.y) * specular_occlusion;
@@ -516,8 +517,7 @@ FragmentOutput fs_main(
     // (added also with SSR, whose pass reflects the base layer only)
     float3 coat_reflection = float3(0.0, 0.0, 0.0);
     if (surface.clearcoat > 0.0) {
-        float  coat_n_dot_v = max(dot(surface.normal, surface.view_direction), 0.0);
-        float  coat_fresnel = surface.clearcoat * float(fresnel_schlick(real(coat_n_dot_v), real3(0.04, 0.04, 0.04)).x);
+        float  coat_fresnel = surface.clearcoat * float(fresnel_schlick(real(n_dot_v), real3(0.04, 0.04, 0.04)).x);
         float3 coat_ibl     = sample_ibl_specular(prefilter_texture, prefilter_sampler, reflection, surface.coat_roughness * MAX_REFLECTION_LOD);
         ambient_diffuse *= 1.0 - coat_fresnel;
         specular_ibl    *= 1.0 - coat_fresnel;
@@ -534,7 +534,7 @@ FragmentOutput fs_main(
     float  fog      = 1.0 - exp(-fog_density * fog_density * distance * distance);
     FragmentOutput output;
     // Additive surfaces fade out in fog instead of turning fog-colored
-    bool additive   = material.blend_mode > 0.5 && material.blend_mode < 1.5;
+    bool additive   = round(material.blend_mode) == BLEND_ADDITIVE;
     output.color    = additive
         ? float4(color * (1.0 - fog), material.opacity * base_color.a)
         : float4(lerp(color, scene.fog_color_density.xyz, fog), material.opacity * base_color.a);
@@ -566,7 +566,7 @@ FragmentOutput fs_main(
     output.ssr_normal  = oct_encode(surface.normal);
     // Dithered: screen-door transparency, a per-pixel hash against the coverage. Last, after
     // every texture sample: a discard leaves its 2×2 quad without derivatives for the mip choice
-    if (ALPHA_TEST && material.blend_mode > 1.5) {
+    if (ALPHA_TEST && round(material.blend_mode) == BLEND_DITHERED) {
         float2 cell = floor(frag_coord.xy);
         float  hash = frac(52.9829189 * frac(dot(cell, float2(0.06711056, 0.00583715))));
         if (hash >= material.opacity * base_color.a) {

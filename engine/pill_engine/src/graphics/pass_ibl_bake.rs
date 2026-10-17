@@ -221,7 +221,11 @@ impl Pass for PassIblBake {
             .state
             .as_mut()
             .expect("PassIblBake: state not initialized — call init() before draw()");
-        if previous.is_some_and(|(_, baked_rotation)| baked_rotation != rotation) {
+        if state
+            .values
+            .first()
+            .is_some_and(|value| value.rotation != rotation)
+        {
             for (buffer, value) in state.params.iter().zip(state.values.iter_mut()) {
                 value.rotation = rotation;
                 renderer
