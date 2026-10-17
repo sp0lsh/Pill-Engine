@@ -138,6 +138,7 @@ struct SceneVariant {
     ssr: bool,
     alpha_test: bool,
     double_sided: bool,
+    additive: bool,
 }
 
 impl SceneVariant {
@@ -146,6 +147,7 @@ impl SceneVariant {
             ssr,
             alpha_test: material.alpha_tested,
             double_sided: material.double_sided,
+            additive: material.additive,
         }
     }
 }
@@ -167,8 +169,11 @@ struct BgSubState {
     camera_buf: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     sampler: wgpu::Sampler,
-    // Equirect handle the current bind_group was built from; rebuild only when it changes.
+    ibl_sampler: wgpu::Sampler,
+    // Equirect handle and IBL generation the current bind_group was built from; rebuild only
+    // when either changes.
     cached_bg: PassTextureHandle,
+    cached_ibl: u64,
     // White 1×1 equirect drawn (tinted by background_color) when no environment image is set
     fallback_bg: PassTextureHandle,
 }
@@ -269,18 +274,23 @@ fn build_globals_bind_group(
     .create(device, layout)
 }
 
-/// Builds the background bind group (camera UBO + equirect view + sampler).
+/// Builds the background bind group (camera UBO + equirect view + sampler + the prefiltered
+/// environment its blur reads).
 fn build_bg_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     camera_buffer: &wgpu::Buffer,
     equirect_view: &wgpu::TextureView,
     sampler: &wgpu::Sampler,
+    ibl_specular: &wgpu::TextureView,
+    ibl_sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     background_fragment::Group0 {
         camera: camera_buffer,
         equirect_texture: equirect_view,
         equirect_sampler: sampler,
+        ibl_specular,
+        ibl_sampler,
     }
     .create(device, layout)
 }
@@ -469,8 +479,22 @@ impl PassPBROpaque {
         &self,
         color_format: wgpu::TextureFormat,
         ssr: bool,
+        additive: bool,
     ) -> [Option<wgpu::ColorTargetState>; 5] {
-        let blend = if self.translucent {
+        let blend = if self.translucent && additive {
+            wgpu::BlendState {
+                color: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::SrcAlpha,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+                alpha: wgpu::BlendComponent {
+                    src_factor: wgpu::BlendFactor::Zero,
+                    dst_factor: wgpu::BlendFactor::One,
+                    operation: wgpu::BlendOperation::Add,
+                },
+            }
+        } else if self.translucent {
             wgpu::BlendState::ALPHA_BLENDING
         } else {
             wgpu::BlendState::REPLACE
@@ -517,7 +541,8 @@ impl PassPBROpaque {
         let bind_groups =
             merge_layouts(&[pbr_opaque_vertex::layout(), pbr_opaque_fragment::layout()]);
 
-        let color_targets = self.color_targets(renderer.get_hdr_format(), variant.ssr);
+        let color_targets =
+            self.color_targets(renderer.get_hdr_format(), variant.ssr, variant.additive);
         let desc = PipelineDesc {
             label: Some("pass_pbr_opaque_pipeline"),
             vs: ShaderDesc {
@@ -544,7 +569,8 @@ impl PassPBROpaque {
                 format: DEPTH_TARGET_FORMAT,
                 // Translucent surfaces also write depth (drawn back to front), so the passes after
                 // them (DoF, motion blur) see the glass rather than what is behind it
-                depth_write_enabled: true,
+                // Additive ones don't: what they add to stays visible to those passes
+                depth_write_enabled: !variant.additive,
                 depth_compare: wgpu::CompareFunction::Less,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
@@ -570,7 +596,7 @@ impl PassPBROpaque {
             merge_layouts(&[background_vertex::layout(), background_fragment::layout()]);
         // Same attachments as the scene draw; the sky writes color and velocity, ambient and
         // the SSR inputs stay 0
-        let mut bg_targets = self.color_targets(renderer.get_hdr_format(), ssr);
+        let mut bg_targets = self.color_targets(renderer.get_hdr_format(), ssr, false);
         for target in bg_targets[2..].iter_mut().flatten() {
             target.write_mask = wgpu::ColorWrites::empty();
         }
@@ -618,7 +644,8 @@ fn get_state(pass: &mut PassPBROpaque) -> &mut PassPBROpaqueState {
         .expect("PassPBROpaque: state not initialized — call init() before draw()")
 }
 
-/// Whether the material of a render key has opacity < 1; a missing material counts as opaque.
+/// Whether the material of a render key is translucent (opacity < 1 alpha-blended, or additive);
+/// a missing material counts as opaque.
 pub(crate) fn is_translucent(world: &WorldQuery<'_>, key: RenderQueueKey) -> bool {
     let key_fields = decompose_render_queue_key(key);
     let Some(version) = NonZeroU32::new(key_fields.material_version.into()) else {
@@ -872,6 +899,8 @@ impl Pass for PassPBROpaque {
             let equirect_view = renderer
                 .get_texture_view(equirect_fallback_h)
                 .ok_or("PassPBROpaque: background fallback texture missing")?;
+            // The oct IBL map carries its own seam borders: clamp (oct_ibl.hlsl)
+            let bg_ibl_sampler = linear_clamp_sampler(renderer);
             let bg_sampler = renderer
                 .get_device()
                 .create_sampler(&wgpu::SamplerDescriptor {
@@ -897,6 +926,8 @@ impl Pass for PassPBROpaque {
                 &bg_camera_buf,
                 &equirect_view,
                 &bg_sampler,
+                &self.ibl.borrow().specular_view,
+                &bg_ibl_sampler,
             );
             BgSubState {
                 pipeline: bg_pipeline,
@@ -904,7 +935,9 @@ impl Pass for PassPBROpaque {
                 camera_buf: bg_camera_buf,
                 bind_group: bg_bind_group,
                 sampler: bg_sampler,
+                ibl_sampler: bg_ibl_sampler,
                 cached_bg: equirect_fallback_h,
+                cached_ibl: self.ibl.borrow().generation,
                 fallback_bg: equirect_fallback_h,
             }
         };
@@ -1020,14 +1053,19 @@ impl Pass for PassPBROpaque {
             }
         }
 
-        // Rebuild the background bind group only when the component's equirect handle changes.
+        // Rebuild the background bind group only when the component's equirect handle or the
+        // baked IBL changes.
         {
             let bg_h = render_state
                 .background
                 .unwrap_or(get_state(self).bg.fallback_bg);
-            if get_state(self).bg.cached_bg != bg_h {
+            let ibl_generation = self.ibl.borrow().generation;
+            if get_state(self).bg.cached_bg != bg_h
+                || get_state(self).bg.cached_ibl != ibl_generation
+            {
                 let fallback = get_state(self).bg.fallback_bg;
                 let equirect_view = view_or_fallback(renderer, bg_h, fallback, "background")?;
+                let ibl_specular = self.ibl.borrow().specular_view.clone();
                 let device = renderer.get_device();
                 let state = get_state(self);
                 state.bg.bind_group = build_bg_bind_group(
@@ -1036,8 +1074,11 @@ impl Pass for PassPBROpaque {
                     &state.bg.camera_buf,
                     &equirect_view,
                     &state.bg.sampler,
+                    &ibl_specular,
+                    &state.bg.ibl_sampler,
                 );
                 state.bg.cached_bg = bg_h;
+                state.bg.cached_ibl = ibl_generation;
             }
         }
 
@@ -1378,14 +1419,15 @@ impl Pass for PassPBROpaque {
                 up: up.to_array(),
                 aspect: active_camera_component.aspect.get_value(),
                 forward: fwd.to_array(),
-                _padding: 0.0,
+                rotation: (render_state.environment_rotation / std::f32::consts::TAU)
+                    .rem_euclid(1.0),
                 // Environment images are drawn scaled by `background_intensity`; the white fallback
                 // is tinted to the solid color
                 background_color: match render_state.background {
                     Some(_) => [render_state.background_intensity; 3],
                     None => render_state.background_color,
                 },
-                _padding_2: 0.0,
+                blur: render_state.background_blur.clamp(0.0, 1.0),
                 previous_view_projection: previous_view_projection.to_cols_array_2d(),
             };
             renderer

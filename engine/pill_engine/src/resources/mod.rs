@@ -33,4 +33,4 @@ pub use pill_assets::gltf_scene::{
 
 pub use texture::{Texture, TextureHandle, TextureType};
 
-pub use material::{Material, MaterialHandle};
+pub use material::{BlendMode, Material, MaterialHandle};

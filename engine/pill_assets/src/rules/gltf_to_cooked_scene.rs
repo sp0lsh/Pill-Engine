@@ -17,7 +17,7 @@ use crate::{Rule, TextureType};
 /// { "textures": [{ "name", "kind": "Color|Normal|MetallicRoughness|Emissive", "file" }],
 ///   "materials": [{ "name", "base_color", "metallic", "roughness", "emissive_color",
 ///                   "alpha_mode": "opaque" | "blend" | { "mask": cutoff }, "double_sided",
-///                   "transmission", "albedo", "normal", "metallic_roughness", "emissive",
+///                   "transmission", "clearcoat", "clearcoat_roughness", "albedo", "normal", "metallic_roughness", "emissive",
 ///                   "specular" }],
 ///   "meshes": [{ "name", "file", "material" }] }
 /// ```
@@ -200,6 +200,8 @@ fn material_json(material: &GltfMaterialData) -> serde_json::Value {
         },
         "double_sided": material.double_sided,
         "transmission": material.transmission,
+        "clearcoat": material.clearcoat,
+        "clearcoat_roughness": material.clearcoat_roughness,
         "albedo": material.albedo,
         "normal": material.normal,
         "metallic_roughness": material.metallic_roughness,

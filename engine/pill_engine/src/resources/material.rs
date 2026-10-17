@@ -62,6 +62,19 @@ pill_core::define_new_pill_slotmap_key! {
     pub struct MaterialHandle;
 }
 
+/// How a material's opacity (times the albedo alpha) is applied.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BlendMode {
+    /// Opacity < 1: alpha-blended by the translucent PBR pass; else opaque.
+    #[default]
+    Alpha,
+    /// Added on top of what is behind (glows, light shafts), scaled by opacity; no depth write.
+    Additive,
+    /// Screen-door transparency in the opaque pass: a per-pixel hash discards a fraction
+    /// 1 − opacity of the pixels; sorted with the opaque surfaces and casts full shadows.
+    Dithered,
+}
+
 /// Physically based (metallic-roughness) material. Built by value before `add_resource`;
 /// after that, use the `set_*` methods so changes reach the GPU.
 #[readonly::make]
@@ -93,6 +106,8 @@ pub struct Material {
     /// Both faces drawn (no back-face culling); back faces are lit with the flipped normal.
     #[readonly]
     pub double_sided: bool,
+    #[readonly]
+    pub blend_mode: BlendMode,
     /// The normal map's green channel points down (DirectX convention) instead of up (glTF).
     #[readonly]
     pub directx_normals: bool,
@@ -121,6 +136,7 @@ impl Material {
             opacity: 1.0,
             alpha_cutoff: 0.0,
             double_sided: false,
+            blend_mode: BlendMode::Alpha,
             directx_normals: false,
             albedo_texture: None,
             normal_texture: None,
@@ -159,6 +175,11 @@ impl Material {
     pub fn clearcoat(mut self, weight: f32, roughness: f32) -> Self {
         self.clearcoat = weight.clamp(0.0, 1.0);
         self.clearcoat_roughness = roughness.clamp(0.0, 1.0);
+        self
+    }
+
+    pub fn blend_mode(mut self, blend_mode: BlendMode) -> Self {
+        self.blend_mode = blend_mode;
         self
     }
 
@@ -235,6 +256,11 @@ impl Material {
         self.post_deferred_update_request(DEFERRED_REQUEST_VARIANT_PARAMETERS);
     }
 
+    pub fn set_blend_mode(&mut self, blend_mode: BlendMode) {
+        self.blend_mode = blend_mode;
+        self.post_deferred_update_request(DEFERRED_REQUEST_VARIANT_PARAMETERS);
+    }
+
     pub fn set_albedo_texture(&mut self, handle: Option<TextureHandle>) {
         self.albedo_texture = handle;
         self.post_deferred_update_request(DEFERRED_REQUEST_VARIANT_TEXTURES);
@@ -285,6 +311,7 @@ impl Material {
             alpha_cutoff: self.alpha_cutoff,
             normal_y_sign: if self.directx_normals { -1.0 } else { 1.0 },
             double_sided: self.double_sided as u32 as f32,
+            blend_mode: self.blend_mode,
         }
     }
 

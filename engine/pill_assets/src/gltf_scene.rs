@@ -17,7 +17,46 @@ use goth_gltf::{ComponentType, NodeTransform, PrimitiveMode};
 use crate::convert::{self, PrimitiveAttributes};
 use crate::TextureType;
 
-type Doc = goth_gltf::Gltf<goth_gltf::default_extensions::Extensions>;
+type Doc = goth_gltf::Gltf<Extensions>;
+
+/// goth-gltf's default extensions, with the material extensions it lacks (`KHR_materials_clearcoat`)
+#[derive(Debug, Default, Clone, Copy, nanoserde::DeJson, nanoserde::SerJson)]
+pub struct Extensions;
+
+impl goth_gltf::Extensions for Extensions {
+    type RootExtensions = goth_gltf::default_extensions::RootExtensions;
+    type TextureExtensions = goth_gltf::default_extensions::TextureExtensions;
+    type TextureInfoExtensions = goth_gltf::default_extensions::TextureInfoExtensions;
+    type MaterialExtensions = MaterialExtensions;
+    type BufferExtensions = goth_gltf::default_extensions::BufferExtensions;
+    type NodeExtensions = goth_gltf::default_extensions::NodeExtensions;
+    type NodeExtras = goth_gltf::default_extensions::NodeExtras;
+    type BufferViewExtensions = goth_gltf::default_extensions::BufferViewExtensions;
+    type PrimitiveExtensions = goth_gltf::default_extensions::PrimitiveExtensions;
+}
+
+#[derive(Debug, nanoserde::DeJson, nanoserde::SerJson, Default, Clone)]
+pub struct MaterialExtensions {
+    #[nserde(rename = "KHR_materials_specular")]
+    pub khr_materials_specular: Option<goth_gltf::extensions::KhrMaterialsSpecular<Extensions>>,
+    #[nserde(rename = "KHR_materials_transmission")]
+    pub khr_materials_transmission:
+        Option<goth_gltf::extensions::KhrMaterialsTransmission<Extensions>>,
+    #[nserde(rename = "KHR_materials_clearcoat")]
+    pub khr_materials_clearcoat: Option<KhrMaterialsClearcoat>,
+}
+
+/// `KHR_materials_clearcoat`'s factors (its textures aren't read: engine materials have no slots
+/// for them)
+#[derive(Debug, nanoserde::DeJson, nanoserde::SerJson, Default, Clone, Copy)]
+pub struct KhrMaterialsClearcoat {
+    #[nserde(rename = "clearcoatFactor")]
+    #[nserde(default)]
+    pub clearcoat_factor: f32,
+    #[nserde(rename = "clearcoatRoughnessFactor")]
+    #[nserde(default)]
+    pub clearcoat_roughness_factor: f32,
+}
 
 /// A texture ready to upload via `Texture::from_bytes_owned(name, kind, rtex)`.
 pub struct GltfTextureData {
@@ -53,6 +92,9 @@ pub struct GltfMaterialData {
     pub double_sided: bool,
     /// `KHR_materials_transmission` factor (0 = none).
     pub transmission: f32,
+    /// `KHR_materials_clearcoat` layer strength (0 = none) and its roughness.
+    pub clearcoat: f32,
+    pub clearcoat_roughness: f32,
 }
 
 /// A mesh primitive ready to upload via `Mesh::from_cooked_mesh_bytes(name, &rmsh)`.
@@ -119,9 +161,7 @@ const SLOT_KINDS: [TextureType; 5] = [
 ];
 
 /// Texture indices of a material: base color, normal, metallic-roughness, emissive, specular.
-fn material_textures(
-    material: &goth_gltf::Material<goth_gltf::default_extensions::Extensions>,
-) -> [Option<usize>; 5] {
+fn material_textures(material: &goth_gltf::Material<Extensions>) -> [Option<usize>; 5] {
     let pbr = &material.pbr_metallic_roughness;
     [
         pbr.base_color_texture.as_ref().map(|t| t.index),
@@ -277,6 +317,7 @@ pub fn parse_gltf_scene(
             });
         }
         let pbr = &material.pbr_metallic_roughness;
+        let clearcoat = material.extensions.khr_materials_clearcoat;
         let [albedo, normal, metallic_roughness, emissive, specular] = slots;
         materials.push(GltfMaterialData {
             name: format!("{name_prefix}_mat_{idx}"),
@@ -300,6 +341,8 @@ pub fn parse_gltf_scene(
                 .khr_materials_transmission
                 .as_ref()
                 .map_or(0.0, |transmission| transmission.transmission_factor),
+            clearcoat: clearcoat.map_or(0.0, |coat| coat.clearcoat_factor),
+            clearcoat_roughness: clearcoat.map_or(0.0, |coat| coat.clearcoat_roughness_factor),
         });
     }
 
@@ -319,6 +362,8 @@ pub fn parse_gltf_scene(
         alpha_mode: GltfAlphaMode::Opaque,
         double_sided: false,
         transmission: 0.0,
+        clearcoat: 0.0,
+        clearcoat_roughness: 0.0,
     });
 
     // (name label, mesh index, world transform): walk the scene graph, or, without a scene, every
@@ -620,9 +665,7 @@ fn to_vec4(flat: Vec<f32>) -> Vec<[f32; 4]> {
 }
 
 /// Node local transform → row-major Mat4 (matching `pill_assets::convert`).
-fn node_transform(
-    node: &goth_gltf::Node<goth_gltf::default_extensions::Extensions>,
-) -> convert::Mat4 {
+fn node_transform(node: &goth_gltf::Node<Extensions>) -> convert::Mat4 {
     match node.transform() {
         NodeTransform::Matrix(m) => {
             // glTF matrices are column-major; group into columns for mat4_from_cols.

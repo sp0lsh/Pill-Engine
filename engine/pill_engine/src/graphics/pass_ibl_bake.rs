@@ -32,8 +32,9 @@ struct IblBakeState {
     source_view: wgpu::TextureView,
     // Equirect addressing: u wraps around the horizon, v clamps at the poles
     equirect_sampler: wgpu::Sampler,
-    // One per bake draw: the specular mips, then the irradiance map
+    // One per bake draw: the specular mips, then the irradiance map; `values` as last written
     params: Vec<wgpu::Buffer>,
+    values: Vec<IblBakeParams>,
 }
 
 /// Bakes the octahedral IBL maps of `IblFrame` on the GPU from
@@ -44,7 +45,8 @@ pub(crate) struct PassIblBake {
     frame: Rc<RefCell<IblFrame>>,
     // Baked when the game's environment is unset or not a valid texture
     default_environment: PassTextureHandle,
-    baked: Option<PassTextureHandle>,
+    // Environment and rotation (turns) of the current maps
+    baked: Option<(PassTextureHandle, f32)>,
     state: Option<IblBakeState>,
 }
 
@@ -157,10 +159,10 @@ impl Pass for PassIblBake {
                 sample_count: sample_count as f32,
                 source_size: [SOURCE_WIDTH as f32, SOURCE_HEIGHT as f32],
                 source_max_lod: (SOURCE_MIPS - 1) as f32,
-                _padding: 0.0,
+                rotation: 0.0,
             };
         let mut params = Vec::with_capacity(IBL_SPECULAR_MIPS as usize + 1);
-        let values = (0..IBL_SPECULAR_MIPS)
+        let values: Vec<IblBakeParams> = (0..IBL_SPECULAR_MIPS)
             .map(|level| {
                 source_params(
                     IBL_SPECULAR_SIZE >> level,
@@ -174,12 +176,13 @@ impl Pass for PassIblBake {
                 1.0,
                 1.0,
                 IRRADIANCE_SAMPLES,
-            )]);
-        for value in values {
+            )])
+            .collect();
+        for value in &values {
             let buffer = uniform_buffer::<IblBakeParams>(renderer, "pass_ibl_bake_params");
             renderer
                 .get_queue()
-                .write_buffer(&buffer, 0, bytemuck::bytes_of(&value));
+                .write_buffer(&buffer, 0, bytemuck::bytes_of(value));
             params.push(buffer);
         }
 
@@ -192,6 +195,7 @@ impl Pass for PassIblBake {
             source_view: source.create_view(&Default::default()),
             equirect_sampler,
             params,
+            values,
         });
         Ok(())
     }
@@ -208,13 +212,27 @@ impl Pass for PassIblBake {
             .environment
             .filter(|handle| renderer.has_texture(*handle))
             .unwrap_or(self.default_environment);
-        if self.baked == Some(environment) {
+        let rotation = (render_state.environment_rotation / std::f32::consts::TAU).rem_euclid(1.0);
+        if self.baked == Some((environment, rotation)) {
             return Ok(());
         }
         let state = self
             .state
-            .as_ref()
+            .as_mut()
             .expect("PassIblBake: state not initialized — call init() before draw()");
+        if state
+            .values
+            .first()
+            .is_some_and(|value| value.rotation != rotation)
+        {
+            for (buffer, value) in state.params.iter().zip(state.values.iter_mut()) {
+                value.rotation = rotation;
+                renderer
+                    .get_queue()
+                    .write_buffer(buffer, 0, bytemuck::bytes_of(value));
+            }
+        }
+        let state = &*state;
         let device = renderer.get_device();
         let environment_view = renderer
             .get_texture_view(environment)
@@ -255,7 +273,7 @@ impl Pass for PassIblBake {
             draw_into(encoder, "pass_ibl_bake", &state.bake, &bind_group, &target);
         }
         frame.generation += 1;
-        self.baked = Some(environment);
+        self.baked = Some((environment, rotation));
         Ok(())
     }
 }

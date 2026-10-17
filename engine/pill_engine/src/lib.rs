@@ -72,8 +72,8 @@ pub mod game {
         engine::{Engine, KeyboardKey, MouseButton, PillGame},
         graphics::PassTextureHandle,
         resources::{
-            Material, MaterialHandle, Mesh, MeshHandle, Resource, ResourceLoader, ResourceStorage,
-            Texture, TextureHandle, TextureType,
+            BlendMode, Material, MaterialHandle, Mesh, MeshHandle, Resource, ResourceLoader,
+            ResourceStorage, Texture, TextureHandle, TextureType,
         },
     };
 

@@ -353,6 +353,12 @@ pub struct RenderStateComponent {
     pub background_color: [f32; 3],
     /// Scales the `background` environment image (e.g. a daytime sky dimmed at night).
     pub background_intensity: f32,
+    /// Turns the environment (its image-based lighting and the `background` image) about +Y, in
+    /// radians; a change rebakes the IBL maps.
+    pub environment_rotation: f32,
+    /// Blurs the `background` image toward the prefiltered environment: 0 = sharp, 1 = the
+    /// roughest IBL mip.
+    pub background_blur: f32,
     pub ibl_brdf_lut: PassTextureHandle,
     /// Exponential-squared fog: color is mixed toward `fog_color` by 1 - exp(-density² · distance²);
     /// density 0 disables fog.
@@ -379,6 +385,8 @@ pub struct RenderStateComponent {
     /// PostFx chain: motion blur length as a fraction of the frame's motion (0.5 = 180° shutter,
     /// 0 = off).
     pub motion_blur: f32,
+    /// PostFx chain: contrast-adaptive sharpening of the tonemapped image (0 = off, 1 = strongest).
+    pub sharpness: f32,
     pub ssao: Ssao,
     pub depth_of_field: DepthOfField,
     pub bloom: Bloom,
@@ -401,6 +409,8 @@ impl RenderStateComponent {
             background: None,
             background_color: [0.15, 0.15, 0.15],
             background_intensity: 1.0,
+            environment_rotation: 0.0,
+            background_blur: 0.0,
             ibl_brdf_lut: PassTextureHandle::default(),
             fog_color: [0.0, 0.0, 0.0],
             fog_density: 0.0,
@@ -433,6 +443,7 @@ impl RenderStateComponent {
                 white_point: f32::INFINITY,
             },
             motion_blur: 0.5,
+            sharpness: 0.0,
             ssao: Ssao {
                 strength: 1.0,
                 radius: 0.5,

@@ -7,7 +7,7 @@ use crate::{
         shader_bindings::pbr_opaque_fragment, RendererMaterialHandle, RendererTextureHandle,
     },
     renderer::resources::RendererTexture,
-    resources::{Resource, ResourceManager, ResourceStorage},
+    resources::{BlendMode, Resource, ResourceManager, ResourceStorage},
 };
 use pill_core::{debug, LogContext, PillError, PillStyle, PillTypeMapKey, RendererError, Result};
 
@@ -28,11 +28,22 @@ pub(crate) struct MaterialParams {
     pub(crate) normal_y_sign: f32,
     /// 1 = no back-face culling; back faces are lit with the flipped normal.
     pub(crate) double_sided: f32,
+    pub(crate) blend_mode: BlendMode,
 }
 
 impl MaterialParams {
+    /// Alpha test or dithering: the shader with discard
     pub(crate) fn alpha_tested(&self) -> bool {
-        self.alpha_cutoff > 0.0
+        self.alpha_cutoff > 0.0 || self.blend_mode == BlendMode::Dithered
+    }
+
+    /// Drawn by the translucent pass (blended, back to front)
+    pub(crate) fn translucent(&self) -> bool {
+        match self.blend_mode {
+            BlendMode::Alpha => self.opacity < 1.0,
+            BlendMode::Additive => true,
+            BlendMode::Dithered => false,
+        }
     }
 
     pub(crate) fn is_double_sided(&self) -> bool {
@@ -56,7 +67,8 @@ impl MaterialParams {
             pair(self.clearcoat, self.clearcoat_roughness),
             pair(self.opacity, self.alpha_cutoff),
             pair(self.normal_y_sign, self.double_sided),
-            0,
+            // Blend mode: 0 alpha, 1 additive, 2 dithered
+            pair(self.blend_mode as u32 as f32, 0.0),
         ])
     }
 }
@@ -90,8 +102,11 @@ pub(crate) fn material_textures_layout_entries() -> Vec<wgpu::BindGroupLayoutEnt
 
 pub struct RendererMaterial {
     pub name: String,
-    /// Opacity < 1: drawn by the translucent PBR pass (blended, back to front) instead of the opaque one.
+    /// Opacity < 1 or additive: drawn by the translucent PBR pass (blended, back to front)
+    /// instead of the opaque one.
     pub translucent: bool,
+    /// Added to the image instead of alpha-blended (`BlendMode::Additive`).
+    pub additive: bool,
     /// Alpha cutoff set: drawn with discard; shadow casters use the cutout pipeline.
     pub alpha_tested: bool,
     /// Drawn without back-face culling.
@@ -116,7 +131,8 @@ impl RendererMaterial {
 
         Ok(Self {
             name: name.to_string(),
-            translucent: parameters.opacity < 1.0,
+            translucent: parameters.translucent(),
+            additive: parameters.blend_mode == BlendMode::Additive,
             alpha_tested: parameters.alpha_tested(),
             double_sided: parameters.is_double_sided(),
             textures_bind_group,
@@ -131,7 +147,8 @@ impl RendererMaterial {
         index: u32,
         parameters: &MaterialParams,
     ) {
-        self.translucent = parameters.opacity < 1.0;
+        self.translucent = parameters.translucent();
+        self.additive = parameters.blend_mode == BlendMode::Additive;
         self.alpha_tested = parameters.alpha_tested();
         self.double_sided = parameters.is_double_sided();
         queue.write_buffer(
@@ -236,9 +253,10 @@ mod tests {
             alpha_cutoff: 0.5,
             normal_y_sign: -1.0,
             double_sided: 1.0,
+            blend_mode: BlendMode::Dithered,
         };
         let expected = [
-            0.8, 0.5, 0.25, 0.35, 12.0, 0.0, 3.5, 1.0, 0.6, 0.1, 0.75, 0.5, -1.0, 1.0, 0.0, 0.0,
+            0.8, 0.5, 0.25, 0.35, 12.0, 0.0, 3.5, 1.0, 0.6, 0.1, 0.75, 0.5, -1.0, 1.0, 2.0, 0.0,
         ];
         for (unpacked, expected) in unpack(&parameters.packed()).iter().zip(expected) {
             assert!((unpacked - expected).abs() <= expected.abs() / 1024.0);

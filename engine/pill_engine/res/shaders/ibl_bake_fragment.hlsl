@@ -14,7 +14,7 @@ struct IblBakeParams {
     float sample_count;
     float2 source_size; // source equirect mip 0 in texels
     float source_max_lod;
-    float _padding;
+    float rotation;     // environment turned about +Y, in turns
 };
 
 [[vk::binding(0, 0)]] Texture2D                        source;
@@ -62,7 +62,9 @@ float source_lod(float pdf, float count) {
 }
 
 float3 environment(float3 direction, float lod) {
-    return source.SampleLevel(source_sampler, dir_to_equirect_uv(direction), lod).rgb;
+    float2 uv = dir_to_equirect_uv(direction);
+    uv.x += params.rotation; // the sampler repeats in u
+    return source.SampleLevel(source_sampler, uv, lod).rgb;
 }
 
 [shader("fragment")]

@@ -23,8 +23,8 @@ use crate::ecs::egui_system;
 
 #[cfg(feature = "post_fx")]
 use crate::graphics::{
-    PassBloom, PassDepthOfField, PassFxaa, PassLens, PassMotionBlur, PassPBRTranslucent, PassSsao,
-    PassSsr,
+    PassBloom, PassDepthOfField, PassFxaa, PassLens, PassMotionBlur, PassPBRTranslucent,
+    PassSharpen, PassSsao, PassSsr,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -214,6 +214,8 @@ pub const SSAO_APPLY_FRAGMENT_SHADER: &str =
 #[cfg(feature = "post_fx")]
 pub const FXAA_FRAGMENT_SHADER: &str = include_str!("../res/shaders/fxaa_fragment.wgsl");
 #[cfg(feature = "post_fx")]
+pub const SHARPEN_FRAGMENT_SHADER: &str = include_str!("../res/shaders/sharpen_fragment.wgsl");
+#[cfg(feature = "post_fx")]
 pub const LENS_FRAGMENT_SHADER: &str = include_str!("../res/shaders/lens_fragment.wgsl");
 #[cfg(feature = "post_fx")]
 pub const MOTION_BLUR_FRAGMENT_SHADER: &str =
@@ -279,6 +281,7 @@ pub fn post_fx_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
     // FXAA at the render size, before the upscale: its blend reaches less than a pixel, so it
     // smooths 1-texel stair steps but not the 2-pixel steps of an upscaled image
     let fxaa_target = create_target(engine, "fxaa_target", LDR_TARGET_FORMAT)?;
+    let sharpen_target = create_target(engine, "sharpen_target", LDR_TARGET_FORMAT)?;
 
     let (ibl_bake, ibl_frame) = ibl_pass(engine)?;
     let (lights, punctual_shadows, lights_frame) = lights_pass(engine)?;
@@ -350,7 +353,8 @@ pub fn post_fx_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
         PassTonemap::new(bloom_target).with_output(ldr_target),
     ));
     passes.push(Box::new(PassFxaa::new(ldr_target, fxaa_target)));
-    passes.push(Box::new(PassLens::new(fxaa_target)));
+    passes.push(Box::new(PassSharpen::new(fxaa_target, sharpen_target)));
+    passes.push(Box::new(PassLens::new(sharpen_target)));
     push_ui_pass(engine, &mut passes)?;
     Ok(passes)
 }

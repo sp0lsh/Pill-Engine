@@ -511,17 +511,33 @@ FragmentOutput fs_main(
         ? float3(0.0, 0.0, 0.0)
         : (fresnel * environment_brdf.x + environment_brdf.y) * specular_occlusion;
     float3 specular_ibl      = prefiltered_color * specular_weight * scene.ibl_intensity.x;
+    // Clear coat's environment reflection (dielectric F0 0.04, as glTF KHR_materials_clearcoat);
+    // what it reflects no longer reaches the base layer's indirect light
+    // (added also with SSR, whose pass reflects the base layer only)
+    float3 coat_reflection = float3(0.0, 0.0, 0.0);
+    if (surface.clearcoat > 0.0) {
+        float  coat_n_dot_v = max(dot(surface.normal, surface.view_direction), 0.0);
+        float  coat_fresnel = surface.clearcoat * (0.04 + 0.96 * pow(1.0 - coat_n_dot_v, 5.0));
+        float3 coat_ibl     = sample_ibl_specular(prefilter_texture, prefilter_sampler, reflection, surface.coat_roughness * MAX_REFLECTION_LOD);
+        ambient_diffuse *= 1.0 - coat_fresnel;
+        specular_ibl    *= 1.0 - coat_fresnel;
+        coat_reflection  = coat_ibl * coat_fresnel * specular_occlusion * scene.ibl_intensity.x;
+    }
     float3 emissive = lighting_only
         ? float3(0.0, 0.0, 0.0)
         : emissive_texture.Sample(emissive_sampler, texture_coordinates).rgb * material.emissive_factor;
     // With SSR (ibl_intensity.y) PassSsr adds the specular term: reflection where its ray hits, IBL elsewhere
     bool   ssr   = scene.ibl_intensity.y > 0.5;
-    float3 color = outgoing_radiance + ambient_diffuse + (ssr ? float3(0.0, 0.0, 0.0) : specular_ibl) + emissive;
+    float3 color = outgoing_radiance + ambient_diffuse + (ssr ? float3(0.0, 0.0, 0.0) : specular_ibl) + coat_reflection + emissive;
     float  distance = length(camera.position.xyz - world_position);
     float  fog_density = scene.fog_color_density.w;
     float  fog      = 1.0 - exp(-fog_density * fog_density * distance * distance);
     FragmentOutput output;
-    output.color    = float4(lerp(color, scene.fog_color_density.xyz, fog), material.opacity * base_color.a);
+    // Additive surfaces fade out in fog instead of turning fog-colored
+    bool additive   = material.blend_mode > 0.5 && material.blend_mode < 1.5;
+    output.color    = additive
+        ? float4(color * (1.0 - fog), material.opacity * base_color.a)
+        : float4(lerp(color, scene.fog_color_density.xyz, fog), material.opacity * base_color.a);
     if (ddgi.enabled == 2) {
         output.color.rgb = ambient_diffuse;
     }
@@ -548,5 +564,14 @@ FragmentOutput fs_main(
     bool no_reflections = ddgi.enabled >= 2 || scene.froxel_depth.w > 0.5 || lighting_only;
     output.ssr_surface = float4(ssr && !no_reflections ? specular_weight * (1.0 - fog) : float3(0.0, 0.0, 0.0), surface.roughness);
     output.ssr_normal  = oct_encode(surface.normal);
+    // Dithered: screen-door transparency, a per-pixel hash against the coverage. Last, after
+    // every texture sample: a discard leaves its 2×2 quad without derivatives for the mip choice
+    if (ALPHA_TEST && material.blend_mode > 1.5) {
+        float2 cell = floor(frag_coord.xy);
+        float  hash = frac(52.9829189 * frac(dot(cell, float2(0.06711056, 0.00583715))));
+        if (hash >= material.opacity * base_color.a) {
+            discard;
+        }
+    }
     return output;
 }

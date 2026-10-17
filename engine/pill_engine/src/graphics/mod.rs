@@ -24,6 +24,8 @@ mod pass_pbr_opaque;
 mod pass_punctual_shadows;
 mod pass_shadow;
 #[cfg(feature = "post_fx")]
+mod pass_sharpen;
+#[cfg(feature = "post_fx")]
 mod pass_ssao;
 #[cfg(feature = "post_fx")]
 mod pass_ssr;
@@ -68,6 +70,8 @@ pub use pass_pbr_opaque::PassPBROpaque;
 pub use pass_pbr_opaque::PassPBRTranslucent;
 pub(crate) use pass_punctual_shadows::PassPunctualShadows;
 pub(crate) use pass_shadow::PassShadow;
+#[cfg(feature = "post_fx")]
+pub use pass_sharpen::PassSharpen;
 #[cfg(feature = "post_fx")]
 pub use pass_ssao::PassSsao;
 #[cfg(feature = "post_fx")]

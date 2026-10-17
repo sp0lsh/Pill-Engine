@@ -22,6 +22,7 @@ struct MaterialParams {
     float  alpha_cutoff;        // > 0: texels with base-color alpha below it are discarded
     float  normal_y_sign;       // -1: DirectX normal map (green down)
     float  double_sided;        // 1: back faces drawn, lit with the flipped normal
+    float  blend_mode;          // 0 alpha, 1 additive, 2 dithered (BlendMode)
 };
 
 float2 unpack_halves(uint word) {
@@ -35,6 +36,7 @@ MaterialParams load_material(uint index) {
     float2 emissive_rg = unpack_halves(row0.z), emissive_b_metallic = unpack_halves(row0.w);
     float2 clearcoat = unpack_halves(row1.x), opacity_cutoff = unpack_halves(row1.y);
     float2 normal_sign_double_sided = unpack_halves(row1.z);
+    float2 blend_mode = unpack_halves(row1.w);
 
     MaterialParams material;
     material.base_color_factor   = float3(rg, b_roughness.x);
@@ -47,6 +49,7 @@ MaterialParams load_material(uint index) {
     material.alpha_cutoff        = opacity_cutoff.y;
     material.normal_y_sign       = normal_sign_double_sided.x;
     material.double_sided        = normal_sign_double_sided.y;
+    material.blend_mode          = blend_mode.x;
     return material;
 }
 #endif

@@ -2,15 +2,19 @@
 struct BackgroundCamera {
     float3 right;            float tangent_half_fov;
     float3 up;               float aspect;
-    float3 forward;          float _padding;
-    float3 background_color;  float _padding_2;
+    float3 forward;          float rotation; // environment turned about +Y, in turns
+    float3 background_color;  float blur;     // 0 = sharp, 1 = the roughest IBL mip
     column_major float4x4 previous_view_projection;
 };
 [[vk::binding(0, 0)]] ConstantBuffer<BackgroundCamera> camera;
 [[vk::binding(1, 0)]] Texture2D    equirect_texture;
 [[vk::binding(2, 0)]] SamplerState equirect_sampler;
+// The prefiltered environment (PassIblBake, already turned by `rotation`), for `blur`
+[[vk::binding(3, 0)]] Texture2D    ibl_specular;
+[[vk::binding(4, 0)]] SamplerState ibl_sampler;
 
 #include "equirect.hlsl"
+#include "oct_ibl.hlsl"
 
 // Same targets as the PBR pass: color and velocity (ignored without a velocity target; ambient is
 // masked off).
@@ -27,7 +31,12 @@ FragmentOutput fs_main(float2 normalized_device_coordinates : TEXCOORD0) {
       + camera.forward
     );
     float2 texture_coordinates = dir_to_equirect_uv(direction);
+    texture_coordinates.x += camera.rotation; // the sampler repeats in u
     float3 sky_color = equirect_texture.Sample(equirect_sampler, texture_coordinates).rgb;
+    if (camera.blur > 0.0) {
+        float3 blurred = sample_ibl_specular(ibl_specular, ibl_sampler, direction, camera.blur * IBL_SPECULAR_MAX_LOD);
+        sky_color = lerp(sky_color, blurred, saturate(camera.blur * 4.0));
+    }
     FragmentOutput output;
     output.color    = float4(sky_color * camera.background_color, 1.0);
     // The sky is at infinity: only camera rotation moves it, so project the direction (w = 0)
