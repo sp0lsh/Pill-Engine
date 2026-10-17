@@ -14,7 +14,7 @@ use crate::graphics::pass_pbr_opaque::{is_translucent, DrawTransform};
 use crate::graphics::shader_bindings::{
     ddgi_color_compute, ddgi_depth_compute, ddgi_relocate_compute, ddgi_reset_compute,
     ddgi_trace_compute,
-    structs::{DdgiCascade, DdgiParams, DdgiProbe, DdgiRay},
+    structs::{BvhNode, BvhTriangle, DdgiCascade, DdgiParams, DdgiProbe, DdgiRay},
 };
 use crate::graphics::{
     BufferDesc, ComputePipeline, ComputePipelineDesc, FrameTarget, Pass, PassTextureHandle,
@@ -149,7 +149,11 @@ struct Pipelines {
     sampler: wgpu::Sampler,
 }
 
-/// Scene BVH on the GPU.
+/// Initial room (triangles) for the dynamic tree after the static one; it grows when exceeded
+/// (rebuilding the static tree into larger buffers).
+const DYNAMIC_CAPACITY: usize = 4096;
+
+/// Scene BVH on the GPU: the static tree, then room for the dynamic tree (`dynamic_capacity`).
 struct SceneBvh {
     nodes: wgpu::Buffer,
     triangles: wgpu::Buffer,
@@ -167,8 +171,18 @@ pub(crate) struct PassDdgi {
     /// Baked IBL irradiance, the radiance of ray misses.
     ibl: Rc<RefCell<IblFrame>>,
     pipelines: Option<Pipelines>,
-    /// Signature of the scene the BVH was built from (also when it had no triangles).
+    /// Signature of the static meshes the BVH was built from (also when it had no triangles).
     bvh_signature: Option<u64>,
+    /// Signature (with transforms) of the dynamic meshes (`MeshRenderingComponent::gi_dynamic`)
+    /// the dynamic tree was built from.
+    dynamic_signature: Option<u64>,
+    /// Nodes and triangles of the static tree, its bounds
+    static_counts: (u32, u32),
+    static_bounds: Option<(Vector3f, Vector3f)>,
+    /// Triangles the buffers have room for after the static tree
+    dynamic_capacity: usize,
+    /// Root node of the dynamic tree; 0: none, or the only tree (no static geometry)
+    dynamic_root: u32,
     bvh: Option<SceneBvh>,
     bvh_generation: u64,
     storage: Option<ProbeStorage>,
@@ -203,6 +217,11 @@ impl PassDdgi {
             ibl,
             pipelines: None,
             bvh_signature: None,
+            dynamic_signature: None,
+            static_counts: (0, 0),
+            static_bounds: None,
+            dynamic_capacity: DYNAMIC_CAPACITY,
+            dynamic_root: 0,
             bvh: None,
             bvh_generation: 0,
             storage: None,
@@ -216,26 +235,41 @@ impl PassDdgi {
         }
     }
 
-    /// Order-independent hash of the mesh entities the BVH contains (static geometry: their
-    /// transforms are not part of it).
-    fn scene_signature(world: &WorldQuery<'_>) -> u64 {
-        let Ok(meshes) = world.query::<MeshRenderingComponent>() else {
+    /// Order-independent hash of the static or (`dynamic`) the dynamic mesh entities the BVH
+    /// contains; the dynamic ones with their transforms.
+    fn scene_signature(world: &WorldQuery<'_>, dynamic: bool) -> u64 {
+        let (Ok(transforms), Ok(meshes)) = (
+            world.query::<TransformComponent>(),
+            world.query::<MeshRenderingComponent>(),
+        ) else {
             return 0;
         };
         let mut signature = 0u64;
-        for (slot, mesh) in meshes.data.iter().enumerate() {
-            let Some(key) = mesh.as_ref().and_then(|mesh| bvh_candidate(world, mesh)) else {
+        for (slot, (transform, mesh)) in transforms.data.iter().zip(&meshes.data).enumerate() {
+            let Some(mesh) = mesh.as_ref().filter(|mesh| mesh.gi_dynamic == dynamic) else {
                 continue;
             };
-            let value = key ^ ((slot as u64) << 40);
+            let Some(key) = bvh_candidate(world, mesh) else {
+                continue;
+            };
+            let mut value = key ^ ((slot as u64) << 40);
+            if let (true, Some(transform)) = (dynamic, transform) {
+                for element in DrawTransform::from(transform)
+                    .model_matrix()
+                    .to_cols_array()
+                {
+                    value = value.rotate_left(7) ^ element.to_bits() as u64;
+                }
+            }
             signature = signature.wrapping_add(value.wrapping_mul(0x9E37_79B9_7F4A_7C15));
         }
         signature
     }
 
-    /// World-space triangles of the opaque, shadow-casting meshes with their albedo: each mesh's
-    /// trace LOD when the cooked mesh has one (`MeshData::trace_lod`), else the mesh itself.
-    fn gather_triangles(&mut self, world: &WorldQuery<'_>) {
+    /// World-space triangles of the opaque, shadow-casting static or (`dynamic`) dynamic meshes
+    /// with their albedo: each mesh's trace LOD when the cooked mesh has one
+    /// (`MeshData::trace_lod`), else the mesh itself.
+    fn gather_triangles(&mut self, world: &WorldQuery<'_>, dynamic: bool) {
         self.triangles.clear();
         let (Ok(transforms), Ok(meshes)) = (
             world.query::<TransformComponent>(),
@@ -247,7 +281,9 @@ impl PassDdgi {
             let (Some(transform), Some(mesh_rendering)) = (transform, mesh_rendering) else {
                 continue;
             };
-            if bvh_candidate(world, mesh_rendering).is_none() {
+            if mesh_rendering.gi_dynamic != dynamic
+                || bvh_candidate(world, mesh_rendering).is_none()
+            {
                 continue;
             }
             let Some(data) = mesh_rendering
@@ -308,24 +344,51 @@ impl PassDdgi {
         }
     }
 
-    /// Rebuilds the BVH when the scene signature changes; `None` when the scene has no triangles.
+    /// Rebuilds the static tree when the set of static meshes changes and the dynamic tree when
+    /// a dynamic mesh moves, appears or goes; `None` when neither has triangles.
     fn update_bvh(
         &mut self,
         renderer: &mut dyn PillRenderer,
         world: &WorldQuery<'_>,
     ) -> Result<()> {
-        let signature = Self::scene_signature(world);
-        if self.bvh_signature == Some(signature) {
+        let static_signature = Self::scene_signature(world, false);
+        let dynamic_signature = Self::scene_signature(world, true);
+        let static_changed = self.bvh_signature != Some(static_signature);
+        if !static_changed && self.dynamic_signature == Some(dynamic_signature) {
             return Ok(());
         }
-        self.bvh_signature = Some(signature);
+        self.gather_triangles(world, true);
+        let dynamic = Bvh::build(&self.triangles);
+        let fits = dynamic.triangles.len() <= self.dynamic_capacity;
+        if !fits {
+            self.dynamic_capacity = dynamic.triangles.len().next_power_of_two();
+        }
+        if static_changed || !fits || self.bvh.is_none() {
+            self.bvh_signature = Some(static_signature);
+            self.build_static(renderer, world, !dynamic.triangles.is_empty())?;
+        }
+        self.dynamic_signature = Some(dynamic_signature);
+        self.upload_dynamic(renderer, dynamic);
+        Ok(())
+    }
+
+    /// The static tree into new buffers with room for the dynamic tree after it; `None` when
+    /// there's nothing to trace.
+    fn build_static(
+        &mut self,
+        renderer: &mut dyn PillRenderer,
+        world: &WorldQuery<'_>,
+        has_dynamic: bool,
+    ) -> Result<()> {
         let start = web_time::Instant::now();
-        self.gather_triangles(world);
+        self.gather_triangles(world, false);
         let bvh = Bvh::build(&self.triangles);
-        let Some(bounds) = bvh.bounds() else {
+        self.static_counts = (bvh.nodes.len() as u32, bvh.triangles.len() as u32);
+        self.static_bounds = bvh.bounds();
+        if bvh.triangles.is_empty() && !has_dynamic {
             self.bvh = None;
             return Ok(());
-        };
+        }
         info!(LogContext::Rendering =>
             "PassDdgi: BVH of {} triangles, {} nodes, depth {} in {:.1} ms",
             bvh.triangles.len(),
@@ -333,15 +396,17 @@ impl PassDdgi {
             bvh.depth,
             start.elapsed().as_secs_f32() * 1000.0
         );
+        // A tree of n triangles has at most 2n − 1 nodes
         let nodes = storage_buffer(
             renderer,
             "ddgi_bvh_nodes",
-            std::mem::size_of_val(bvh.nodes.as_slice()) as u64,
+            ((bvh.nodes.len() + 2 * self.dynamic_capacity) * std::mem::size_of::<BvhNode>()) as u64,
         )?;
         let triangles = storage_buffer(
             renderer,
             "ddgi_bvh_triangles",
-            std::mem::size_of_val(bvh.triangles.as_slice()) as u64,
+            ((bvh.triangles.len() + self.dynamic_capacity) * std::mem::size_of::<BvhTriangle>())
+                as u64,
         )?;
         renderer
             .get_queue()
@@ -352,10 +417,52 @@ impl PassDdgi {
         self.bvh = Some(SceneBvh {
             nodes,
             triangles,
-            bounds,
+            bounds: self
+                .static_bounds
+                .unwrap_or((Vector3f::ZERO, Vector3f::ZERO)),
         });
         self.bvh_generation += 1;
         Ok(())
+    }
+
+    /// The dynamic tree into the buffers after the static one (the buffers have room: see
+    /// `update_bvh`).
+    fn upload_dynamic(&mut self, renderer: &mut dyn PillRenderer, mut dynamic: Bvh) {
+        let (node_count, triangle_count) = self.static_counts;
+        let Some(scene) = &mut self.bvh else {
+            self.dynamic_root = 0;
+            return;
+        };
+        let dynamic_bounds = dynamic.bounds();
+        if dynamic.triangles.is_empty() {
+            self.dynamic_root = 0;
+            match self.static_bounds {
+                Some(bounds) => scene.bounds = bounds,
+                // Nothing left to trace
+                None => self.bvh = None,
+            }
+            return;
+        }
+        dynamic.offset(node_count, triangle_count);
+        let queue = renderer.get_queue();
+        queue.write_buffer(
+            &scene.nodes,
+            (node_count as usize * std::mem::size_of::<BvhNode>()) as u64,
+            bytemuck::cast_slice(&dynamic.nodes),
+        );
+        queue.write_buffer(
+            &scene.triangles,
+            (triangle_count as usize * std::mem::size_of::<BvhTriangle>()) as u64,
+            bytemuck::cast_slice(&dynamic.triangles),
+        );
+        // Without static geometry the dynamic tree is the only one, at root 0
+        self.dynamic_root = node_count;
+        scene.bounds = match (self.static_bounds, dynamic_bounds) {
+            (Some((min, max)), Some((dynamic_min, dynamic_max))) => {
+                (min.min(dynamic_min), max.max(dynamic_max))
+            }
+            (bounds, dynamic) => bounds.or(dynamic).unwrap_or(scene.bounds),
+        };
     }
 
     /// Probe SH, depth atlas and estimator histories for the cascades' `grids` (same dims),
@@ -594,7 +701,7 @@ impl Pass for PassDdgi {
             self.pipelines = Some(create_pipelines(renderer)?);
         }
 
-        // Static geometry: rebuild the BVH only when the set of meshes changes
+        // Static meshes: rebuild only when their set changes; dynamic ones: when they move too
         self.update_bvh(renderer, world)?;
         let Some(bvh) = &self.bvh else {
             self.disable(renderer);
@@ -768,6 +875,7 @@ impl Pass for PassDdgi {
             blend_origin: camera_position.to_array(),
             intensity: settings.intensity,
             update_mask,
+            dynamic_root: self.dynamic_root,
             cascades,
             ..bytemuck::Zeroable::zeroed()
         };

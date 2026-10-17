@@ -14,11 +14,12 @@ const LEAF_SIZE: usize = 4;
 /// SAH bins per split axis.
 const BIN_COUNT: usize = 12;
 /// Node-index stack of the traversal in include/bvh_trace.hlsl (`BVH_STACK_SIZE`). It pushes
-/// both children of an interior node, so the stack holds at most one entry per level plus one.
+/// both children of an interior node, so the stack holds at most one entry per level plus one,
+/// plus the static tree's root while the dynamic tree is traversed.
 pub(crate) const BVH_STACK_SIZE: usize = 32;
 /// Deepest node level (root = 0); deeper subtrees become one leaf so traversal never needs more
 /// than `BVH_STACK_SIZE` entries.
-pub(crate) const MAX_DEPTH: usize = BVH_STACK_SIZE - 2;
+pub(crate) const MAX_DEPTH: usize = BVH_STACK_SIZE - 3;
 
 /// A world-space triangle with the diffuse albedo of its material (linear RGB) and the share of
 /// rays it stops (1 = opaque; less for alpha-tested materials, whose texture has holes).
@@ -109,6 +110,18 @@ impl Bvh {
             nodes,
             triangles,
             depth,
+        }
+    }
+
+    /// As a tree stored after `node_offset` nodes and `triangle_offset` triangles of another (the
+    /// dynamic tree after the static one, traversed from root `node_offset`).
+    pub(crate) fn offset(&mut self, node_offset: u32, triangle_offset: u32) {
+        for node in &mut self.nodes {
+            node.left_or_first += if node.count > 0 {
+                triangle_offset
+            } else {
+                node_offset
+            };
         }
     }
 
@@ -278,9 +291,22 @@ mod tests {
     /// Stack traversal in the shader's order, with its fixed stack: panics where the shader
     /// would have to drop a subtree.
     fn trace(bvh: &Bvh, origin: Vector3f, direction: Vector3f) -> Option<f32> {
+        trace_roots(bvh, origin, direction, 0)
+    }
+
+    /// `trace` from root 0 and, unless 0, `dynamic_root` (traversed first, as the shader does).
+    fn trace_roots(
+        bvh: &Bvh,
+        origin: Vector3f,
+        direction: Vector3f,
+        dynamic_root: usize,
+    ) -> Option<f32> {
         let inv_direction = direction.recip();
         let mut best: Option<f32> = None;
         let mut stack = vec![0usize];
+        if dynamic_root != 0 {
+            stack.push(dynamic_root);
+        }
         while let Some(index) = stack.pop() {
             assert!(
                 stack.len() + 2 <= BVH_STACK_SIZE,
@@ -452,5 +478,30 @@ mod tests {
         assert_eq!(pack_rgba8([1.0, 0.0, 0.0], 1.0), 0xFF0000FF);
         assert_eq!(pack_rgba8([0.0, 0.0, 1.0], 1.0) & 0x00FF0000, 0x00FF0000);
         assert_eq!(pack_rgba8([0.0; 3], 0.5) >> 24, 128);
+    }
+
+    #[test]
+    fn bvh_dynamic_tree_after_static_offset_hit() {
+        let triangle = |z: f32| Triangle {
+            vertices: [
+                Vector3f::new(-1.0, -1.0, z),
+                Vector3f::new(1.0, -1.0, z),
+                Vector3f::new(0.0, 1.0, z),
+            ],
+            albedo: [1.0; 3],
+            coverage: 1.0,
+        };
+        // Static: a triangle at z = -10; dynamic: one at z = -5, nearer to a ray from the origin
+        let mut combined = Bvh::build(&[triangle(-10.0)]);
+        let mut dynamic = Bvh::build(&[triangle(-5.0)]);
+        let root = combined.nodes.len();
+        dynamic.offset(root as u32, combined.triangles.len() as u32);
+        combined.nodes.extend(dynamic.nodes);
+        combined.triangles.extend(dynamic.triangles);
+        let direction = Vector3f::new(0.0, 0.0, -1.0);
+        let hit = trace_roots(&combined, Vector3f::ZERO, direction, root).unwrap();
+        assert!((hit - 5.0).abs() < 1e-4, "{hit}");
+        // Without the dynamic root only the static triangle is found
+        assert!((trace(&combined, Vector3f::ZERO, direction).unwrap() - 10.0).abs() < 1e-4);
     }
 }

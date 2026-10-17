@@ -78,7 +78,7 @@ impl ProbeGrid {
     }
 
     /// Grid of the largest size the caps and the atlas allow, `spacing` apart, centred on
-    /// `center` and snapped to whole cells of the world.
+    /// `center` and snapped to the centres of whole cells of the world.
     pub(crate) fn around(center: Vector3f, spacing: f32) -> Self {
         let spacing = spacing.max(0.05);
         let mut dims = MAX_PROBES_PER_AXIS;
@@ -90,7 +90,9 @@ impl ProbeGrid {
             [0, 1, 2].map(|axis| (center[axis] / spacing).floor() as i32 - (dims[axis] / 2) as i32);
         let cell = Vector3f::splat(spacing);
         Self {
-            min: Vector3f::new(origin[0] as f32, origin[1] as f32, origin[2] as f32) * cell,
+            // Probes at the centres of the world's cells, not on their corners: floors and walls
+            // are often at whole metres (y = 0), and probes on a surface see the inside of it
+            min: (Vector3f::new(origin[0] as f32, origin[1] as f32, origin[2] as f32) + 0.5) * cell,
             cell,
             dims,
             origin,

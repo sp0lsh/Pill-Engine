@@ -75,7 +75,7 @@ float3 direct_irradiance(float3 P, float3 N, uint seed) {
     float3 origin = P + N * 0.01;
     float3 to_sun = -ddgi.sun_direction;
     float  sun_dot = dot(N, to_sun);
-    if (sun_dot > 0.0 && any(ddgi.sun_radiance > 0.0) && !bvh_trace_any(origin, to_sun, 1.0e30, pcg_hash(seed + 1u))) {
+    if (sun_dot > 0.0 && any(ddgi.sun_radiance > 0.0) && !bvh_trace_any(origin, to_sun, 1.0e30, pcg_hash(seed + 1u), ddgi.dynamic_root)) {
         irradiance += ddgi.sun_radiance * sun_dot;
     }
     if (ddgi.light_count > 0) {
@@ -85,7 +85,7 @@ float3 direct_irradiance(float3 P, float3 N, uint seed) {
         float  attenuation = punctual_attenuation(light, P, incoming, distance_square);
         float  light_dot = dot(N, incoming);
         if (attenuation > 0.0 && light_dot > 0.0
-            && !bvh_trace_any(origin, incoming, sqrt(distance_square) - 0.02, pcg_hash(seed + 2u))) {
+            && !bvh_trace_any(origin, incoming, sqrt(distance_square) - 0.02, pcg_hash(seed + 2u), ddgi.dynamic_root)) {
             irradiance += light.color_intensity.rgb * light.color_intensity.w * attenuation * light_dot
                         * float(ddgi.light_count);
         }
@@ -117,7 +117,7 @@ void cs_main(uint3 dispatch_id : SV_DispatchThreadID) {
     {
         float3 fibonacci = spherical_fibonacci(float(ray * RAY_CYCLE + slice), float(ray_count * RAY_CYCLE));
         float3 direction = normalize(rotate(probe_rotation(probe_index, cycle), fibonacci));
-        BvhHit hit = bvh_trace_closest(probe_pos, direction, 1.0e30, pcg_hash(id.x ^ pcg_hash(ddgi.frame)));
+        BvhHit hit = bvh_trace_closest(probe_pos, direction, 1.0e30, pcg_hash(id.x ^ pcg_hash(ddgi.frame)), ddgi.dynamic_root);
         DdgiRay result;
         if (!hit.found) {
             result.direction_depth = float4(direction, -1.0);

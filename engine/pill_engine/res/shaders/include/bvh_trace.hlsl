@@ -2,7 +2,8 @@
 #define BVH_TRACE_HLSL
 // Triangle BVH traversal in compute (no ray-tracing hardware), after WickedEngine's
 // TraceRay_Closest / TraceRay_Any (raytracingHF.hlsli): a stack of node indices, slab test per
-// node, Möller–Trumbore per triangle. Nodes and triangles are built by ddgi/bvh.rs.
+// node, Möller–Trumbore per triangle. Nodes and triangles are built by ddgi/bvh.rs: the static
+// tree from root 0, then the dynamic tree from `dynamic_root` (0: none) in the same buffers.
 // The includer declares `bvh_nodes` and `bvh_triangles`.
 //
 // Alpha-tested triangles (coverage below 1 in the albedo alpha) stop a ray with probability
@@ -77,7 +78,7 @@ float bvh_triangle(BvhTriangle triangle, float3 origin, float3 direction, out bo
     return (u < 0.0 || u > 1.0 || v < 0.0 || u + v > 1.0 || t <= 0.0) ? 3.4e38 : t;
 }
 
-BvhHit bvh_trace_closest(float3 origin, float3 direction, float tmax, uint seed) {
+BvhHit bvh_trace_closest(float3 origin, float3 direction, float tmax, uint seed, uint dynamic_root) {
     BvhHit hit;
     hit.distance = tmax;
     hit.triangle = 0;
@@ -87,6 +88,11 @@ BvhHit bvh_trace_closest(float3 origin, float3 direction, float tmax, uint seed)
     uint stack[BVH_STACK_SIZE];
     uint depth = 0;
     stack[depth++] = 0;
+    // The dynamic tree (moving meshes) after the static one; it's traversed first, with the
+    // static root waiting at the bottom of the stack (one entry more than one tree needs)
+    if (dynamic_root != 0) {
+        stack[depth++] = dynamic_root;
+    }
     while (depth > 0) {
         uint    index = stack[--depth];
         BvhNode node  = bvh_nodes[index];
@@ -114,11 +120,16 @@ BvhHit bvh_trace_closest(float3 origin, float3 direction, float tmax, uint seed)
 }
 
 // Whether anything blocks the ray before `tmax` (shadow rays)
-bool bvh_trace_any(float3 origin, float3 direction, float tmax, uint seed) {
+bool bvh_trace_any(float3 origin, float3 direction, float tmax, uint seed, uint dynamic_root) {
     float3 inv_direction = 1.0 / direction;
     uint stack[BVH_STACK_SIZE];
     uint depth = 0;
     stack[depth++] = 0;
+    // The dynamic tree (moving meshes) after the static one; it's traversed first, with the
+    // static root waiting at the bottom of the stack (one entry more than one tree needs)
+    if (dynamic_root != 0) {
+        stack[depth++] = dynamic_root;
+    }
     while (depth > 0) {
         uint    index = stack[--depth];
         BvhNode node  = bvh_nodes[index];

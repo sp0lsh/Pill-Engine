@@ -67,7 +67,7 @@ void cs_main(uint3 id : SV_DispatchThreadID) {
         for (uint ray = 0; ray < RELOCATION_RAYS; ray++) {
             float3 direction = fixed_ray_direction(ray);
             // Fixed seed per probe and ray: the same leaves block it every time it is relocated
-            BvhHit hit = bvh_trace_closest(origin, direction, max_distance, probe_index * RELOCATION_RAYS + ray);
+            BvhHit hit = bvh_trace_closest(origin, direction, max_distance, probe_index * RELOCATION_RAYS + ray, ddgi.dynamic_root);
             // A miss counts as a frontface at the longest ray distance
             float distance = hit.found ? hit.distance : max_distance;
             if (hit.found && hit.backface) {

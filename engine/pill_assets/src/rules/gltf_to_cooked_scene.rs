@@ -128,7 +128,9 @@ impl Rule for GltfToCookedScene {
         }
         let mut meshes = Vec::with_capacity(scene.meshes.len());
         // Triangles of the meshes and of their trace LODs
-        let (mut triangles, mut traced) = (0usize, 0usize);
+        let mut triangles = 0usize;
+        #[cfg_attr(not(feature = "mesh_lod"), allow(unused_mut))]
+        let mut traced = 0usize;
         for (index, mesh) in scene.meshes.iter().enumerate() {
             let file = format!("meshes/{index}.cooked_mesh");
             triangles += rmsh_index_count(&mesh.rmsh) / 3;

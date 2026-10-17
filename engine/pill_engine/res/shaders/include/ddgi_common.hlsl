@@ -41,7 +41,7 @@ struct DdgiParams {
     float3 blend_origin;  // camera position: where the cascade blend weights are centred
     float  intensity;
     uint   update_mask;   // bit c: cascade c updates this frame
-    uint   _padding0;
+    uint   dynamic_root;  // first node of the dynamic tree after the static one, 0: none (bvh_trace.hlsl)
     uint   _padding1;
     uint   _padding2;
     DdgiCascade cascades[DDGI_MAX_CASCADES];

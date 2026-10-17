@@ -46,6 +46,12 @@ impl MeshRenderingComponentBuilder {
         self
     }
 
+    /// Whether the mesh moves often (default false): see `MeshRenderingComponent::gi_dynamic`.
+    pub fn gi_dynamic(mut self, gi_dynamic: bool) -> Self {
+        self.component.gi_dynamic = gi_dynamic;
+        self
+    }
+
     pub fn build(self) -> MeshRenderingComponent {
         self.component
     }
@@ -62,6 +68,9 @@ pub struct MeshRenderingComponent {
     pub(crate) render_queue_key: Option<RenderQueueKey>,
     /// Drawn into the shadow map of the key light.
     pub cast_shadows: bool,
+    /// Moves often: diffuse GI traces it in a small BVH of its own, rebuilt whenever such a mesh
+    /// moves, appears or goes; the rest is rebuilt only when the set of meshes changes.
+    pub gi_dynamic: bool,
 
     entity_handle: Option<EntityHandle>,
     scene_handle: Option<SceneHandle>,
@@ -85,6 +94,7 @@ impl MeshRenderingComponent {
             material_handle: None,
             render_queue_key: None,
             cast_shadows: true,
+            gi_dynamic: false,
             entity_handle: None,
             scene_handle: None,
             deferred_update_manager: None,
