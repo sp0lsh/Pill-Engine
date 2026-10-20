@@ -607,11 +607,18 @@ fn make_window_init(config: &Config, game_resources_directory_path: &Path) -> Wi
         .or_else(|_| config.get_str("TITLE"))
         .unwrap_or_else(|_| "Pill".to_owned());
 
+    // `PILL_WINDOW_SIZE=WxH` overrides the config (e.g. captures at a fixed size)
+    let env_size = std::env::var("PILL_WINDOW_SIZE").ok().and_then(|size| {
+        let (width, height) = size.split_once('x')?;
+        Some((width.parse::<u32>().ok()?, height.parse::<u32>().ok()?))
+    });
     let window_size = match (
+        env_size,
         config.get_int("WINDOW_WIDTH"),
         config.get_int("WINDOW_HEIGHT"),
     ) {
-        (Ok(width), Ok(height)) => winit::dpi::PhysicalSize::new(width as u32, height as u32),
+        (Some((width, height)), _, _) => winit::dpi::PhysicalSize::new(width, height),
+        (None, Ok(width), Ok(height)) => winit::dpi::PhysicalSize::new(width as u32, height as u32),
         _ => winit::dpi::PhysicalSize::new(1280, 720),
     };
 

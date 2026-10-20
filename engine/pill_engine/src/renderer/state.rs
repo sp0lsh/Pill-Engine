@@ -2,7 +2,7 @@
 use crate::{
     app_config::EngineConfig,
     config::MATERIAL_ARRAY_CAPACITY,
-    ecs::{EntityHandle, Scene},
+    ecs::{EntityHandle, RenderStateComponent, Scene},
     graphics::{
         BufferDesc, ComputePipeline, ComputePipelineDesc, FrameTarget, Pass, PassPBROpaque,
         PassTextureHandle, PillRenderer, Pipeline, PipelineDesc, RendererTargetDesc, TargetSize,
@@ -76,7 +76,10 @@ impl PillRenderer for Renderer {
         let frame = match frame {
             Ok(frame) => frame,
             Err(error) => match error {
-                wgpu::SurfaceError::Lost => return Err(RendererError::SurfaceLost.into()),
+                // Outdated: the window changed size since the surface was configured (X11 under Xvfb)
+                wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated => {
+                    return Err(RendererError::SurfaceLost.into())
+                }
                 wgpu::SurfaceError::OutOfMemory => {
                     return Err(RendererError::SurfaceOutOfMemory.into())
                 }
@@ -126,13 +129,21 @@ impl PillRenderer for Renderer {
         timer.record("Submit commands and present frame");
 
         self.state.frame_counter += 1;
-        let capture = self.state.screenshot.as_ref().and_then(|(target, path)| {
-            if self.state.frame_counter == *target {
-                Some(path.clone())
-            } else {
-                None
-            }
-        });
+        // The env-var screenshot on its frame, else a capture the game requested (each path once)
+        let requested = crate::ecs::get_global_component_from::<RenderStateComponent>(globals)
+            .ok()
+            .and_then(|render_state| render_state.capture.clone())
+            .filter(|path| self.state.captured.as_ref() != Some(path));
+        let capture = self
+            .state
+            .screenshot
+            .as_ref()
+            .and_then(|(target, path)| (self.state.frame_counter == *target).then(|| path.clone()))
+            .or(requested.clone())
+            .filter(|_| self.state.copy_src);
+        if requested.is_some() && capture.is_some() {
+            self.state.captured = requested;
+        }
 
         let screenshot_buf = if let Some(ref _path) = capture {
             let w = self.state.surface_configuration.width;
@@ -555,6 +566,9 @@ pub struct State {
     window: Arc<winit::window::Window>,
     // Optional frame capture: (target_frame, output_path). Set via PILL_SCREENSHOT env var.
     screenshot: Option<(u32, String)>,
+    // The swapchain can be copied from (captures need it), and the last game-requested capture path
+    copy_src: bool,
+    captured: Option<String>,
     frame_counter: u32,
     // Bumped when resize rebuilds the surface-sized targets
     target_generation: u64,
@@ -671,6 +685,7 @@ impl State {
                 })?
         };
 
+        let copy_src;
         let mut screenshot = std::env::var("PILL_SCREENSHOT").ok().map(|s| {
             let frame = std::env::var("PILL_SCREENSHOT_FRAME")
                 .ok()
@@ -700,18 +715,17 @@ impl State {
             let preferred_format = wgpu::TextureFormat::Rgba8UnormSrgb;
             let surface_capabilities = surface.get_capabilities(&adapter);
 
-            // Screenshots copy the swapchain image, which needs COPY_SRC; request it only then
+            // Screenshots and captures copy the swapchain image, which needs COPY_SRC (native only)
             let mut usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
-            if screenshot.is_some() {
-                if surface_capabilities
+            copy_src = cfg!(not(target_arch = "wasm32"))
+                && surface_capabilities
                     .usages
-                    .contains(wgpu::TextureUsages::COPY_SRC)
-                {
-                    usage |= wgpu::TextureUsages::COPY_SRC;
-                } else {
-                    info!(LogContext::Rendering => "PILL_SCREENSHOT ignored: surface does not support COPY_SRC");
-                    screenshot = None;
-                }
+                    .contains(wgpu::TextureUsages::COPY_SRC);
+            if copy_src {
+                usage |= wgpu::TextureUsages::COPY_SRC;
+            } else if screenshot.is_some() {
+                info!(LogContext::Rendering => "PILL_SCREENSHOT ignored: surface does not support COPY_SRC");
+                screenshot = None;
             }
 
             #[cfg(target_arch = "wasm32")]
@@ -786,6 +800,8 @@ impl State {
             passes: Vec::new(),
             window,
             screenshot,
+            copy_src,
+            captured: None,
             frame_counter: 0,
             target_generation: 0,
             render_size,

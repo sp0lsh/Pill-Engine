@@ -387,6 +387,9 @@ pub struct RenderStateComponent {
     pub motion_blur: f32,
     /// PostFx chain: contrast-adaptive sharpening of the tonemapped image (0 = off, 1 = strongest).
     pub sharpness: f32,
+    /// Native: saves the next presented frame as a PNG at this path (once per distinct path; the
+    /// file exists when the following frame starts).
+    pub capture: Option<String>,
     pub ssao: Ssao,
     pub depth_of_field: DepthOfField,
     pub bloom: Bloom,
@@ -449,6 +452,7 @@ impl RenderStateComponent {
             },
             motion_blur: 0.5,
             sharpness: 0.0,
+            capture: None,
             ssao: Ssao {
                 strength: 1.0,
                 radius: 0.5,
