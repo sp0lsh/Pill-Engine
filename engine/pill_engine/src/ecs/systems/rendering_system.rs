@@ -27,6 +27,7 @@ pub fn rendering_system(engine: &mut Engine) -> Result<()> {
             PassChain::Default => default_pass_chain(engine)?,
             #[cfg(feature = "post_fx")]
             PassChain::PostFx => crate::config::post_fx_pass_chain(engine)?,
+            PassChain::UiOnly => crate::config::ui_only_pass_chain(engine)?,
         };
         engine.renderer.set_passes(passes)?;
         return Ok(());

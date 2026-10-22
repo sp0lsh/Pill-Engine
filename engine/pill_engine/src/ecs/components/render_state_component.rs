@@ -51,6 +51,9 @@ pub enum PassChain {
     /// pill_engine's `post_fx` feature.
     #[cfg(feature = "post_fx")]
     PostFx,
+    /// Game passes → UI only; no scene passes. The UI pass loads the swapchain uncleared, so the
+    /// UI (or a game pass) must cover the whole window.
+    UiOnly,
 }
 
 /// PostFx chain bloom.

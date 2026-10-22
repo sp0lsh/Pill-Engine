@@ -250,6 +250,13 @@ pub fn default_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
     Ok(passes)
 }
 
+/// `PassChain::UiOnly`: game passes → UI.
+pub fn ui_only_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
+    let mut passes = std::mem::take(&mut engine.custom_render_passes);
+    push_ui_pass(engine, &mut passes)?;
+    Ok(passes)
+}
+
 #[cfg(feature = "post_fx")]
 /// `PassChain::PostFx`: the default chain with post-processing between the scene passes and
 /// tonemapping; parameters live in `RenderStateComponent`:
