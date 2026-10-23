@@ -40,8 +40,8 @@ pub use components::skeletal_animation_component::{
 };
 
 pub use components::render_state_component::{
-    Bloom, DebugView, DepthOfField, DirectionalLight, Gi, Lens, PassChain, PunctualLights,
-    RenderStateComponent, Shadow, Ssao, Ssr, Tonemap,
+    AutoExposure, Bloom, DebugView, DepthOfField, DirectionalLight, Gi, Lens, PassChain,
+    PunctualLights, RenderStateComponent, Shadow, Ssao, Ssr, Tonemap,
 };
 
 #[cfg(feature = "ui")]

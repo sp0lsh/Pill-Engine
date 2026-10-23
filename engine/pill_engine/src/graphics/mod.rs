@@ -12,6 +12,7 @@ mod pass_bloom;
 mod pass_depth_of_field;
 #[cfg(feature = "ui")]
 mod pass_egui;
+mod pass_exposure;
 #[cfg(feature = "post_fx")]
 mod pass_fxaa;
 pub(crate) mod pass_ibl_bake;
@@ -59,6 +60,8 @@ pub use pass_bloom::PassBloom;
 pub use pass_depth_of_field::PassDepthOfField;
 #[cfg(feature = "ui")]
 pub use pass_egui::PassEgui;
+pub(crate) use pass_exposure::exposure_state_buffer;
+pub use pass_exposure::PassExposure;
 #[cfg(feature = "post_fx")]
 pub use pass_fxaa::PassFxaa;
 #[cfg(feature = "post_fx")]

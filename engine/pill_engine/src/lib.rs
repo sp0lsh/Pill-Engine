@@ -62,9 +62,9 @@ macro_rules! define_global_component {
 pub mod game {
     pub use crate::{
         ecs::{
-            Bloom, CameraAspectRatio, CameraComponent, Component, ComponentStorage, DebugView,
-            DepthOfField, DirectionalLight, EntityHandle, GamepadAxis, GamepadButton, Gi,
-            GlobalComponent, GlobalComponentStorage, InputComponent, Lens, LightComponent,
+            AutoExposure, Bloom, CameraAspectRatio, CameraComponent, Component, ComponentStorage,
+            DebugView, DepthOfField, DirectionalLight, EntityHandle, GamepadAxis, GamepadButton,
+            Gi, GlobalComponent, GlobalComponentStorage, InputComponent, Lens, LightComponent,
             LightType, MeshRenderingComponent, PassChain, PlayerId, PunctualLights,
             RenderStateComponent, SceneHandle, Shadow, SkeletalAnimationComponent,
             SkeletalModelHandle, Ssao, Ssr, TimeComponent, Tonemap, TransformComponent,
@@ -93,7 +93,7 @@ pub mod game {
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::{
         ecs::{AudioListenerComponent, AudioManagerComponent, AudioSourceComponent, SoundType},
-        resources::Sound,
+        resources::{Sound, SoundHandle},
     };
 
     #[cfg(feature = "physics")]
@@ -118,6 +118,9 @@ pub mod game {
         gltf_skin::{parse_gltf_skinned, GltfSkinnedData},
         skinning,
     };
+    // Quake `.map` levels → scene data + lights, sky, fog, spawns
+    #[cfg(feature = "quake_map_loading")]
+    pub use pill_assets::{quake_map, quake_mdl, quake_player};
     // IBL bake, shared with the build-time cooker (lives in pill_assets, surfaced here for games).
     #[cfg(feature = "ibl_bake")]
     pub use pill_assets::ibl;

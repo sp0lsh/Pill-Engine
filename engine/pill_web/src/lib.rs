@@ -12,7 +12,7 @@ use winit::{
     dpi::PhysicalSize,
     event::{DeviceEvent, Event, WindowEvent},
     event_loop::EventLoop,
-    window::WindowAttributes,
+    window::{CursorGrabMode, WindowAttributes},
 };
 
 use pill_engine::internal::*;
@@ -142,6 +142,7 @@ async fn run_async(game: Box<dyn PillGame>, config_ini: &'static str) {
         .unwrap_or(0.0);
 
     let window_clone = Arc::clone(&window);
+    let mut cursor_locked = false;
 
     #[allow(deprecated)]
     let _ = event_loop.run(move |event, elwt| match event {
@@ -172,12 +173,25 @@ async fn run_async(game: Box<dyn PillGame>, config_ini: &'static str) {
                     let dt = std::time::Duration::from_secs_f64(dt_ms / 1000.0);
 
                     engine.update(dt);
+                    // Locking needs a user gesture (see MouseInput); unlocking doesn't
+                    if cursor_locked && !engine.cursor_lock_requested() {
+                        let _ = window_clone.set_cursor_grab(CursorGrabMode::None);
+                        window_clone.set_cursor_visible(true);
+                        cursor_locked = false;
+                    }
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
                     engine.pass_keyboard_key_input(event);
                 }
                 WindowEvent::MouseInput { button, state, .. } => {
                     engine.pass_mouse_key_input(button, state);
+                    // Pointer Lock from inside the click handler (a user gesture); re-requested on
+                    // every click, since the browser drops it on Escape without telling winit
+                    if engine.cursor_lock_requested() {
+                        let _ = window_clone.set_cursor_grab(CursorGrabMode::Locked);
+                        window_clone.set_cursor_visible(false);
+                        cursor_locked = true;
+                    }
                 }
                 WindowEvent::CursorMoved { position, .. } => {
                     engine.pass_mouse_position_input(position);

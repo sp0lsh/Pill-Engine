@@ -283,6 +283,9 @@ pub struct InputComponent {
     // Haptics commands queue and in-flight effects
     pub(crate) haptic_commands: VecDeque<HapticCommand>,
     pub(crate) in_flight_force_feedback: Vec<InFlight>,
+
+    // Requested cursor lock (hidden, held in the window: mouse look); applied by the host
+    pub(crate) cursor_locked: bool,
 }
 
 impl Default for InputComponent {
@@ -318,7 +321,20 @@ impl InputComponent {
 
             haptic_commands: VecDeque::new(),
             in_flight_force_feedback: Vec::new(),
+
+            cursor_locked: false,
         }
+    }
+
+    /// Hides the cursor and keeps it in the window (mouse look from `get_mouse_delta`). The host
+    /// applies it on the next frame; in the browser it takes effect on the next click (Pointer
+    /// Lock needs a user gesture), and the browser releases it on Escape.
+    pub fn set_cursor_locked(&mut self, locked: bool) {
+        self.cursor_locked = locked;
+    }
+
+    pub fn cursor_locked(&self) -> bool {
+        self.cursor_locked
     }
 
     // frame-reset

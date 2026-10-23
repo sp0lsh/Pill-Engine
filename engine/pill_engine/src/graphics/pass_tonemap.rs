@@ -7,10 +7,13 @@ use crate::graphics::fullscreen::{
 use crate::graphics::shader_bindings::{structs::TonemapParams, tonemap_fragment};
 use crate::graphics::{FrameTarget, Pass, PassTextureHandle, PillRenderer, Pipeline, WorldQuery};
 
+use std::rc::Rc;
+
 use pill_core::Result;
 
 pub struct PassTonemap {
     hdr_source: PassTextureHandle,
+    exposure_state: Rc<wgpu::Buffer>,
     // None: the swapchain (sRGB view); Some: an LDR_TARGET_FORMAT target for later post passes
     output: Option<PassTextureHandle>,
     state: Option<TonemapState>,
@@ -84,9 +87,10 @@ mod tests {
 }
 
 impl PassTonemap {
-    pub fn new(hdr_source: PassTextureHandle) -> Self {
+    pub fn new(hdr_source: PassTextureHandle, exposure_state: Rc<wgpu::Buffer>) -> Self {
         Self {
             hdr_source,
+            exposure_state,
             output: None,
             state: None,
         }
@@ -160,6 +164,7 @@ impl Pass for PassTonemap {
                 hdr_texture: input_view(renderer, self.hdr_source, "pass_tonemap")?,
                 hdr_sampler: &state.sampler,
                 params: &state.params_buffer,
+                exposure_state: &self.exposure_state,
             },
             output,
         )

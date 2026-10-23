@@ -51,6 +51,8 @@ default = ["build"]
 build = ["dep:glob", "dep:png", "dep:tobj", "dep:gltf", "gltf/import", "dep:serde_json", "gltf_scene"]
 # glTF → RMSH meshes + RTEX textures + materials (`gltf_scene`), wasm-safe
 gltf_scene = ["dep:goth-gltf", "dep:nanoserde", "dep:zune-jpeg", "dep:zune-png", "dep:log", "dep:glam"]
+# Quake `.map` levels (`quake_map`): builds on the glTF loader's scene types and PNG decoder
+quake_map = ["gltf_scene"]
 # Asset pack writer (`pack_sources`, `write_pack_for_build`) for game build scripts.
 encode = ["build", "dep:brotli", "dep:webp"]
 # KTX2 → RTEX v5 (BC7 + mips) cooker, `ktx2::ktx2_to_rtex_bc7` (native only).

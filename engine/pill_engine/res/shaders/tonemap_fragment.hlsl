@@ -12,10 +12,12 @@ struct TonemapParams {
     float _padding0, _padding1;
 };
 [[vk::binding(2, 0)]] ConstantBuffer<TonemapParams> params;
+// [1]: exposure multiplier from the exposure pass (auto exposure / RenderStateComponent::exposure)
+[[vk::binding(3, 0)]] StructuredBuffer<float> exposure_state;
 
 [shader("fragment")]
 float4 fs_main(float2 texture_coordinates : TEXCOORD0) : SV_Target {
-    float3 hdr_color = hdr_texture.Sample(hdr_sampler, texture_coordinates).rgb;
+    float3 hdr_color = hdr_texture.Sample(hdr_sampler, texture_coordinates).rgb * exposure_state[1];
     if (params.mode == 1) {
         hdr_color = hdr_color * (1.0 + hdr_color * params.inverse_white_squared) / (1.0 + hdr_color);
     } else if (params.mode == 2) {

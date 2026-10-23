@@ -315,6 +315,16 @@ extern "C" fn reload_game(engine: EngineHandle, game_dylib_path: *const c_char) 
     }
 }
 
+extern "C" fn cursor_locked(engine: EngineHandle) -> bool {
+    if engine.is_null() {
+        return false;
+    }
+    let rt = unsafe { &*(engine as *const Runtime) };
+    rt.engine
+        .as_ref()
+        .is_some_and(|e| e.cursor_lock_requested())
+}
+
 static API: PillEngineApiV1 = PillEngineApiV1 {
     struct_size: std::mem::size_of::<PillEngineApiV1>() as u32,
     abi_version: PILL_ENGINE_ABI_VERSION,
@@ -331,6 +341,7 @@ static API: PillEngineApiV1 = PillEngineApiV1 {
     cursor_position,
     mouse_wheel_line,
     reload_game,
+    cursor_locked,
 };
 
 #[no_mangle]

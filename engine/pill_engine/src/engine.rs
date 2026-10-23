@@ -509,6 +509,13 @@ impl Engine {
         debug!(LogContext::Input => "Got new mouse wheel input");
     }
 
+    /// Cursor lock the game requested (`InputComponent::set_cursor_locked`), for the host.
+    pub fn cursor_lock_requested(&self) -> bool {
+        self.get_global_component::<InputComponent>()
+            .map(InputComponent::cursor_locked)
+            .unwrap_or(false)
+    }
+
     pub fn pass_mouse_delta_input(&mut self, delta: &(f64, f64)) {
         let input_event = InputEvent::Mouse(MouseEvent::Delta {
             delta: Vector2f::new(delta.0 as f32, delta.1 as f32),

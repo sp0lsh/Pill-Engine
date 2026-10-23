@@ -8,6 +8,7 @@ pub mod hlsl_to_wgsl;
 pub mod obj_to_cooked_mesh;
 pub mod png_to_cooked_tex;
 pub mod procedural_equirect;
+pub mod procedural_footstep;
 
 pub use equirect_to_ibl::{BrdfLut, EquirectToIBL};
 pub use glb_to_cooked_mesh::GlbToCookedMesh;
@@ -17,6 +18,7 @@ pub use hlsl_to_wgsl::HlslToWgsl;
 pub use obj_to_cooked_mesh::ObjToCookedMesh;
 pub use png_to_cooked_tex::PngToCookedTex;
 pub use procedural_equirect::ProceduralEquirect;
+pub use procedural_footstep::ProceduralFootstep;
 
 /// Built-in rule set used by both the cargo build-script and the launcher.
 pub fn default_rules() -> Vec<Box<dyn Rule>> {
@@ -27,6 +29,7 @@ pub fn default_rules() -> Vec<Box<dyn Rule>> {
         Box::new(HdrToEquirect),      // generates *_equirect.cooked_tex from *.hdr
         Box::new(EquirectToIBL), // generates IBL maps from *_equirect.cooked_tex (runs after both)
         Box::new(BrdfLut),       // generates the split-sum BRDF LUT from *.brdf_lut
+        Box::new(ProceduralFootstep), // generates *.cooked.wav from *.procedural_footstep
         Box::new(ObjToCookedMesh),
         Box::new(GlbToCookedMesh),
         Box::new(GltfToCookedScene), // *.gltf + buffers + images → {stem}.cooked/

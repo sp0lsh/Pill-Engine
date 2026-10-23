@@ -27,6 +27,15 @@ pub mod ibl;
 pub mod ktx2;
 #[cfg(feature = "mesh_lod")]
 pub mod mesh_lod;
+// Quake `.map` → RMSH meshes + RTEX textures + materials, lights, sky; wasm-safe
+#[cfg(feature = "quake_map")]
+pub mod quake_map;
+// Quake player movement against a map's brushes; wasm-safe
+#[cfg(feature = "quake_map")]
+pub mod quake_player;
+// Quake `.mdl` models → one mesh per frame; wasm-safe
+#[cfg(feature = "quake_map")]
+pub mod quake_mdl;
 // Asset pack (PPAK): reader + decoders are wasm-safe; the writer needs feature `encode`.
 pub mod pak_codec;
 pub mod ppak;

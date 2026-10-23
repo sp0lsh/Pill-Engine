@@ -1,0 +1,10 @@
+{
+  "seed": 4,
+  "heel_cutoff": 500,
+  "heel_decay": 0.024,
+  "knock_frequency": 92,
+  "knock_level": 0.4,
+  "toe_delay": 0.052,
+  "toe_decay": 0.042,
+  "toe_level": 0.6
+}

@@ -324,6 +324,39 @@ impl Default for PunctualLights {
     }
 }
 
+/// Eye adaptation: the tonemap pass scales the image so its average log luminance (metered on a
+/// grid, clamped to `min_ev`..`max_ev`) maps to `key`, easing toward a new average over time.
+/// A camera cut (`reset_motion_history`) adapts at once.
+#[derive(Clone, Copy, Debug)]
+pub struct AutoExposure {
+    pub enabled: bool,
+    /// EV added to the metered exposure (+1 = twice as bright).
+    pub compensation_ev: f32,
+    /// Metering range of log2 luminance: darker or brighter parts count as these.
+    pub min_ev: f32,
+    pub max_ev: f32,
+    /// Adaptation rates (1/s) after the scene got brighter / darker; an eye adapts to light
+    /// faster than to dark.
+    pub adapt_to_bright_speed: f32,
+    pub adapt_to_dark_speed: f32,
+    /// Luminance the metered average is mapped to (middle grey).
+    pub key: f32,
+}
+
+impl Default for AutoExposure {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            compensation_ev: 0.0,
+            min_ev: -8.0,
+            max_ev: 8.0,
+            adapt_to_bright_speed: 3.0,
+            adapt_to_dark_speed: 1.0,
+            key: 0.18,
+        }
+    }
+}
+
 /// Directional light; `direction` points from the light toward the scene.
 #[derive(Clone, Copy, Debug)]
 pub struct DirectionalLight {
@@ -385,6 +418,10 @@ pub struct RenderStateComponent {
     /// PostFx chain: screen-space reflections; off by default.
     pub ssr: Ssr,
     pub tonemap: Tonemap,
+    /// Manual exposure in EV, applied before tonemapping (+1 = twice as bright); with
+    /// `auto_exposure` on, added to the metered exposure.
+    pub exposure: f32,
+    pub auto_exposure: AutoExposure,
     /// PostFx chain: motion blur length as a fraction of the frame's motion (0.5 = 180° shutter,
     /// 0 = off).
     pub motion_blur: f32,
@@ -453,6 +490,8 @@ impl RenderStateComponent {
             tonemap: Tonemap::Reinhard {
                 white_point: f32::INFINITY,
             },
+            exposure: 0.0,
+            auto_exposure: AutoExposure::default(),
             motion_blur: 0.5,
             sharpness: 0.0,
             capture: None,

@@ -18,7 +18,7 @@ use winit::{
     application::ApplicationHandler,
     event::{DeviceEvent, ElementState, MouseScrollDelta, WindowEvent},
     event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    window::{Fullscreen, Icon, Window, WindowAttributes},
+    window::{CursorGrabMode, Fullscreen, Icon, Window, WindowAttributes},
 };
 
 const RELOAD_COOLDOWN: Duration = Duration::from_millis(1000);
@@ -503,6 +503,14 @@ impl RuntimeHost {
 
         let runtime_api = unsafe { &*self.api };
         (runtime_api.mouse_button)(self.handle, button, pressed);
+    }
+
+    fn cursor_locked(&self) -> bool {
+        if self.handle.is_null() {
+            return false;
+        }
+        let runtime_api = unsafe { &*self.api };
+        (runtime_api.cursor_locked)(self.handle)
     }
 
     fn mouse_delta(&mut self, dx: f64, dy: f64) {
@@ -997,6 +1005,22 @@ struct App {
     file_watchers: Option<FileWatchers>,
     last_render_time: Instant,
     last_reload_poll: Instant,
+    cursor_locked: bool,
+}
+
+/// Hides the cursor and holds it in the window (Locked, else Confined), or releases it.
+fn apply_cursor_lock(window: &Window, locked: bool) {
+    if locked {
+        if let Err(error) = window
+            .set_cursor_grab(CursorGrabMode::Locked)
+            .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined))
+        {
+            log::warn!("Cursor lock failed: {error}");
+        }
+    } else {
+        let _ = window.set_cursor_grab(CursorGrabMode::None);
+    }
+    window.set_cursor_visible(!locked);
 }
 
 impl App {
@@ -1018,6 +1042,7 @@ impl App {
             file_watchers: None,
             last_render_time: Instant::now(),
             last_reload_poll: Instant::now(),
+            cursor_locked: false,
         }
     }
 }
@@ -1131,6 +1156,11 @@ impl ApplicationHandler for App {
 
                 if let Some(runtime_host) = self.runtime_host.as_mut() {
                     runtime_host.update(delta);
+                    let locked = runtime_host.cursor_locked();
+                    if locked != self.cursor_locked {
+                        apply_cursor_lock(window, locked);
+                        self.cursor_locked = locked;
+                    }
                 }
 
                 if self.hot_reload_enabled {
@@ -1154,6 +1184,11 @@ impl ApplicationHandler for App {
                 if let Some(runtime_host) = self.runtime_host.as_mut() {
                     runtime_host.key_event(&event);
                 }
+            }
+            // Re-applied from the game's request on the next frame after focus returns
+            WindowEvent::Focused(false) if self.cursor_locked => {
+                apply_cursor_lock(window, false);
+                self.cursor_locked = false;
             }
             WindowEvent::MouseInput { button, state, .. } => {
                 if let Some(runtime_host) = self.runtime_host.as_mut() {

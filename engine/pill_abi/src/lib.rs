@@ -1,6 +1,6 @@
 use std::ffi::{c_char, c_void};
 
-pub const PILL_ENGINE_ABI_VERSION: u32 = 1;
+pub const PILL_ENGINE_ABI_VERSION: u32 = 2;
 
 // return codes
 pub const PILL_OK: i32 = 0;
@@ -63,6 +63,10 @@ pub struct PillEngineApiV1 {
 
     // --- Hot reload ---
     pub reload_game: extern "C" fn(engine: EngineHandle, game_dylib_path: *const c_char) -> i32,
+
+    // --- Window requests ---
+    /// Cursor lock the game requested (hide the cursor, keep it in the window).
+    pub cursor_locked: extern "C" fn(engine: EngineHandle) -> bool,
 }
 
 pub const PILL_ENGINE_API_SYMBOL: &[u8] = b"get_pill_engine_api_v1\0";

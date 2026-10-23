@@ -54,6 +54,10 @@ pub fn audio_system(engine: &mut Engine) -> Result<()> {
             active_scene.get_two_component_iterator::<AudioSourceComponent, TransformComponent>()
         {
             for (_entity_handle, audio_source_component, transform_component) in iter {
+                // 2D sources hold ambient sink handles, which don't index the spatial pool
+                if audio_source_component.sound_type != SoundType::Sound3D {
+                    continue;
+                }
                 let audio_manager = engine.get_global_component::<AudioManagerComponent>()?;
                 if let Some(index) = audio_source_component.sink_handle {
                     audio_manager
@@ -79,16 +83,10 @@ pub fn audio_system(engine: &mut Engine) -> Result<()> {
             for (_entity_handle, audio_source_component) in iter {
                 // Check if the audio source has sink handle assigned
                 if let Some(sink_handle) = audio_source_component.sink_handle {
-                    // Check if is playing
+                    // Still holds sound to play (a paused sink keeps it); a finished one is empty
                     let playing = match audio_source_component.sound_type {
-                        SoundType::Sound2D => {
-                            let sink = audio_manager.get_ambient_sink(sink_handle);
-                            !sink.is_paused()
-                        }
-                        SoundType::Sound3D => {
-                            let sink = audio_manager.get_spatial_sink(sink_handle);
-                            !sink.is_paused()
-                        }
+                        SoundType::Sound2D => !audio_manager.get_ambient_sink(sink_handle).empty(),
+                        SoundType::Sound3D => !audio_manager.get_spatial_sink(sink_handle).empty(),
                     };
 
                     // Return sink to pool if stopped playing

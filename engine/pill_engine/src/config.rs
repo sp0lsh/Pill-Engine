@@ -7,12 +7,13 @@ use crate::{
     engine::Engine,
     graphics::{
         ddgi::{DdgiFrame, PassDdgi, PassDdgiProbes},
+        exposure_state_buffer,
         ibl::IblFrame,
         pass_ibl_bake::PassIblBake,
         pass_lights::LightsFrame,
         shadow::ShadowFrame,
-        Pass, PassLights, PassPBROpaque, PassPunctualShadows, PassShadow, PassSkinning,
-        PassTextureHandle, PassTonemap, RendererMaterialHandle, RendererTargetDesc,
+        Pass, PassExposure, PassLights, PassPBROpaque, PassPunctualShadows, PassShadow,
+        PassSkinning, PassTextureHandle, PassTonemap, RendererMaterialHandle, RendererTargetDesc,
         RendererTextureHandle, TargetSize,
     },
     renderer::resources::RendererTexture,
@@ -170,6 +171,7 @@ pub const DDGI_COLOR_COMPUTE_SHADER: &str = include_str!("../res/shaders/ddgi_co
 pub const DDGI_DEPTH_COMPUTE_SHADER: &str = include_str!("../res/shaders/ddgi_depth_compute.wgsl");
 pub const DDGI_RESET_COMPUTE_SHADER: &str = include_str!("../res/shaders/ddgi_reset_compute.wgsl");
 pub const SKINNING_COMPUTE_SHADER: &str = include_str!("../res/shaders/skinning_compute.wgsl");
+pub const EXPOSURE_COMPUTE_SHADER: &str = include_str!("../res/shaders/exposure_compute.wgsl");
 pub const DDGI_PROBES_DEBUG_VERTEX_SHADER: &str =
     include_str!("../res/shaders/ddgi_probes_debug_vertex.wgsl");
 pub const DDGI_PROBES_DEBUG_FRAGMENT_SHADER: &str =
@@ -260,7 +262,12 @@ pub fn default_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
         Box::new(probes),
     ];
     passes.append(&mut engine.custom_render_passes);
-    passes.push(Box::new(PassTonemap::new(hdr_target)));
+    let exposure_state = exposure_state_buffer(engine.renderer.as_ref());
+    passes.push(Box::new(PassExposure::new(
+        hdr_target,
+        exposure_state.clone(),
+    )));
+    passes.push(Box::new(PassTonemap::new(hdr_target, exposure_state)));
     push_ui_pass(engine, &mut passes)?;
     Ok(passes)
 }
@@ -373,8 +380,13 @@ pub fn post_fx_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
         .with_depth_of_field(depth_of_field_target),
     ));
     passes.push(Box::new(PassBloom::new(motion_blur_target, bloom_target)));
+    let exposure_state = exposure_state_buffer(engine.renderer.as_ref());
+    passes.push(Box::new(PassExposure::new(
+        bloom_target,
+        exposure_state.clone(),
+    )));
     passes.push(Box::new(
-        PassTonemap::new(bloom_target).with_output(ldr_target),
+        PassTonemap::new(bloom_target, exposure_state).with_output(ldr_target),
     ));
     passes.push(Box::new(PassFxaa::new(ldr_target, fxaa_target)));
     passes.push(Box::new(PassSharpen::new(fxaa_target, sharpen_target)));

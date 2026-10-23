@@ -717,13 +717,13 @@ fn node_transform(node: &goth_gltf::Node<Extensions>) -> convert::Mat4 {
 
 // --- Texture decode (lean zune codecs) ---
 
-struct DecodedImage {
-    rgba: Vec<u8>,
-    w: u32,
-    h: u32,
+pub(crate) struct DecodedImage {
+    pub(crate) rgba: Vec<u8>,
+    pub(crate) w: u32,
+    pub(crate) h: u32,
 }
 
-fn decode_image(bytes: &[u8]) -> Result<DecodedImage> {
+pub(crate) fn decode_image(bytes: &[u8]) -> Result<DecodedImage> {
     if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
         decode_jpeg(bytes)
     } else if bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {

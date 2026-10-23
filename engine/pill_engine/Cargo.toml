@@ -64,6 +64,8 @@ ui = ["dep:egui", "dep:egui-wgpu", "dep:egui-winit"]
 obj_loading = ["dep:tobj"]
 # Runtime multi-file/embedded glTF loading into engine byte formats (RMSH meshes, RTEX textures).
 gltf_loading = ["pill_assets/gltf_scene"]
+# Runtime Quake `.map` level loading (brushes, textures, lights, sky) into the same scene data.
+quake_map_loading = ["gltf_loading", "pill_assets/quake_map"]
 # Runtime IBL bake (equirect → diffuse/specular), shared with the build-time cooker.
 ibl_bake = []
 # Embedded PPAK asset pack (`Engine::mount_asset_pack`); path-based resources load from it first.
