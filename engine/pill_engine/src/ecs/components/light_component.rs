@@ -41,8 +41,8 @@ impl LightComponentBuilder {
         self
     }
 
-    /// Renders a shadow map for the light (spot: 1, point: 6), within the per-frame budget
-    /// `PunctualLights::max_shadow_maps`.
+    /// Gives the light shadow maps (spot: 1, point: 6) in the shadow atlas
+    /// (`PunctualLights::atlas_size`), sized by its on-screen size.
     pub fn cast_shadows(mut self, cast_shadows: bool) -> Self {
         self.component.cast_shadows = cast_shadows;
         self

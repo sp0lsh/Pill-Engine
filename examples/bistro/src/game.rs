@@ -23,14 +23,13 @@ define_component!(FlickerLight {
 pub struct Game {}
 
 /// Night point lights of the emissive meshes: intensity and range of lamps (street lights,
-/// spotlight glass) and of small sources (string lights, shop signs). All cast shadows; the
-/// shadow maps go to the `SHADOWED_LIGHTS` nearest the camera. Inverse-square: a lamp gives
+/// spotlight glass) and of small sources (string lights, shop signs). All cast shadows, sized in
+/// the shadow atlas by their on-screen size. Inverse-square: a lamp gives
 /// 24 / 2² = 6 at 2 m, 1.5× the noon sun.
 const LAMP_INTENSITY: f32 = 24.0;
 const LAMP_RANGE: f32 = 12.0;
 const SMALL_LIGHT_INTENSITY: f32 = 6.0;
 const SMALL_LIGHT_RANGE: f32 = 6.0;
-const SHADOWED_LIGHTS: u32 = 10;
 /// Flicker: a slow ambient swell and a small fast flutter, as fractions of the intensity.
 const FLICKER_DEPTH: f32 = 0.12;
 const FLUTTER_DEPTH: f32 = 0.04;
@@ -423,8 +422,6 @@ impl PillGame for Game {
             render_state.gi.cascades = 2;
             render_state.gi.cascade_spacings[1] = 6.0;
             render_state.gi.rays_per_probe = 4;
-            // Shadows for the night lights nearest the camera: 6 cube faces each
-            render_state.punctual_lights.max_shadow_maps = 6 * SHADOWED_LIGHTS;
             // Averages ~1000 frames (~4000 rays per texel): 1/128 left visible jitter at 4 rays
             // (temporal std 0.84 vs 0.29 of 255); lighting changes blend fast
             render_state.gi.blend_speed = 1.0 / 512.0;

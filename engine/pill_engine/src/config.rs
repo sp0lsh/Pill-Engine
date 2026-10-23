@@ -178,6 +178,8 @@ pub const DDGI_PROBES_DEBUG_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/ddgi_probes_debug_fragment.wgsl");
 pub const DDGI_RELOCATE_COMPUTE_SHADER: &str =
     include_str!("../res/shaders/ddgi_relocate_compute.wgsl");
+pub const SHADOW_TILE_CLEAR_VERTEX_SHADER: &str =
+    include_str!("../res/shaders/shadow_tile_clear_vertex.wgsl");
 pub const SHADOW_CASTER_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/shadow_caster_fragment.wgsl");
 pub const SHADOW_CASTER_CUTOUT_VERTEX_SHADER: &str =

@@ -294,11 +294,21 @@ pub struct PunctualLights {
     pub debug_heatmap: bool,
     /// Shadow maps of lights with `cast_shadows`; off skips rendering them.
     pub shadows_enabled: bool,
-    /// Width and height of each point/spot shadow map in texels.
-    pub shadow_map_size: u32,
-    /// Shadow maps rendered per frame (spot light: 1, point light: 6), given to the lights
-    /// nearest the camera; at most 64.
-    pub max_shadow_maps: u32,
+    /// Width and height (texels, power of two) of the shadow atlas every point/spot shadow map is
+    /// a tile of (spot light: 1 tile, point light: 6). Lights get tiles by on-screen size; when
+    /// it's full, the least important light's shadow fades out to make room.
+    pub atlas_size: u32,
+    /// Tile texels per pixel of a light's on-screen range radius (tiles are 128–1024 texels).
+    pub resolution_scale: f32,
+    /// On-screen range radius (px at 1080p, scaled with the screen height) where a light's shadow
+    /// starts fading out, and where it's gone.
+    pub fade_start_px: f32,
+    pub fade_end_px: f32,
+    /// Shadow strength change per second when a light gains or loses its shadow.
+    pub fade_speed: f32,
+    /// Shadows of moving casters (dynamic tiles) of the least important lights update every this
+    /// many frames (more important ones every frame or every 2nd).
+    pub dynamic_update_far_frames: u32,
     /// Hardware depth bias of the shadow casters, in depth-buffer units; read when the pass
     /// chain is built.
     pub shadow_constant_bias: i32,
@@ -315,8 +325,12 @@ impl Default for PunctualLights {
             first_slice_depth: 5.0,
             debug_heatmap: false,
             shadows_enabled: true,
-            shadow_map_size: 1024,
-            max_shadow_maps: 16,
+            atlas_size: 4096,
+            resolution_scale: 0.5,
+            fade_start_px: 96.0,
+            fade_end_px: 48.0,
+            fade_speed: 4.0,
+            dynamic_update_far_frames: 4,
             shadow_constant_bias: 2,
             shadow_slope_bias: 2.0,
             shadow_normal_bias: 1.5,

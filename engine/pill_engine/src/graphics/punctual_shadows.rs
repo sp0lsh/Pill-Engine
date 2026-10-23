@@ -1,14 +1,16 @@
-//! Shadow maps of point and spot lights (Filament's model): a per-frame budget of maps, given to
-//! the shadow-casting lights nearest the camera; a spot light takes one perspective map, a point
-//! light six 90° cube faces. All maps are layers of one depth texture array; a light's record
-//! carries its first layer, a point light's face follows from the light-to-surface direction.
+//! Shadow maps of point and spot lights (Filament's model): a spot light takes one perspective
+//! map, a point light six 90° cube faces. All maps are tiles of one depth atlas, owned and sized
+//! per light by `punctual_shadow_cache`; a light's record carries its first shadow record, a point
+//! light's face follows from the light-to-surface direction.
 
 use crate::graphics::shadow::light_up;
 
 use pill_core::{Matrix4f, Vector3f};
 
-/// Upper bound of `PunctualLights::max_shadow_maps` (texture array layers).
-pub(crate) const MAX_PUNCTUAL_SHADOW_MAPS: usize = 64;
+/// Shadow records (one per map) uploaded per frame: the maps of the lights holding atlas tiles.
+pub(crate) const MAX_SHADOW_RECORDS: usize = 2048;
+/// Tiles drawn per frame (light matrices per frame); more waiting tiles are drawn next frame.
+pub(crate) const MAX_TILE_DRAWS: usize = 128;
 /// Near plane of the light projections (m).
 pub(crate) const SHADOW_NEAR: f32 = 0.05;
 
@@ -101,33 +103,6 @@ pub(crate) fn texel_scale(fov: f32, size: u32) -> f32 {
     2.0 * (fov * 0.5).tan() / size.max(1) as f32
 }
 
-/// A shadow-casting light competing for the budget.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct ShadowCandidate {
-    pub(crate) light: usize,
-    pub(crate) camera_distance: f32,
-    pub(crate) is_point: bool,
-}
-
-/// Fills `budget` maps with the candidates nearest the camera (spot: 1 map, point: 6); a light
-/// that doesn't fit is skipped and the next ones are still tried. Returns (light, first layer).
-pub(crate) fn assign_shadow_layers(
-    candidates: &mut [ShadowCandidate],
-    budget: usize,
-    out: &mut Vec<(usize, usize)>,
-) {
-    out.clear();
-    candidates.sort_by(|a, b| a.camera_distance.total_cmp(&b.camera_distance));
-    let mut used = 0;
-    for candidate in candidates.iter() {
-        let needed = if candidate.is_point { 6 } else { 1 };
-        if used + needed <= budget {
-            out.push((candidate.light, used));
-            used += needed;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,24 +181,5 @@ mod tests {
         let edge = position + Vector3f::new(20f32.to_radians().tan() * 5.0, -5.0, 0.0);
         let ndc = project(&matrix, edge);
         assert!((ndc.x.abs().max(ndc.y.abs()) - 1.0).abs() < 1e-3, "{ndc}");
-    }
-
-    #[test]
-    fn budget_goes_to_the_nearest_lights_and_skips_what_does_not_fit() {
-        let candidate = |light, camera_distance, is_point| ShadowCandidate {
-            light,
-            camera_distance,
-            is_point,
-        };
-        let mut candidates = vec![
-            candidate(0, 30.0, false),
-            candidate(1, 5.0, true),
-            candidate(2, 10.0, true),
-            candidate(3, 20.0, false),
-        ];
-        let mut layers = Vec::new();
-        assign_shadow_layers(&mut candidates, 8, &mut layers);
-        // Point 1 (6 maps), point 2 doesn't fit, spot 3, spot 0
-        assert_eq!(layers, vec![(1, 0), (3, 6), (0, 7)]);
     }
 }

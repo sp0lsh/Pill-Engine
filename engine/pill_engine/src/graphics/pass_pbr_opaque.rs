@@ -858,10 +858,7 @@ impl Pass for PassPBROpaque {
                 usage: wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             })
-            .create_view(&wgpu::TextureViewDescriptor {
-                dimension: Some(wgpu::TextureViewDimension::D2Array),
-                ..Default::default()
-            });
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
         let globals_bind_group = build_globals_bind_group(
             renderer.get_device(),

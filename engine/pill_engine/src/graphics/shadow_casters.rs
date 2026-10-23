@@ -5,6 +5,7 @@
 use crate::config::{
     SHADOW_CASTER_CUTOUT_FRAGMENT_SHADER, SHADOW_CASTER_CUTOUT_VERTEX_SHADER,
     SHADOW_CASTER_FRAGMENT_SHADER, SHADOW_CASTER_VERTEX_SHADER, SHADOW_MAP_FORMAT,
+    SHADOW_TILE_CLEAR_VERTEX_SHADER,
 };
 use crate::ecs::{MeshRenderingComponent, TransformComponent};
 use crate::graphics::pass_pbr_opaque::{DrawTransform, PER_DRAW_STRIDE_BYTES};
@@ -48,10 +49,23 @@ impl Caster {
 /// center of those bounds (computed once, tested against every shadow map).
 pub(crate) struct CasterCandidate {
     pub(crate) caster: Caster,
+    /// Entity slot (stable across frames while the entity lives).
+    pub(crate) entity: usize,
+    /// `MeshRenderingComponent::gi_dynamic`: declared as moving.
+    pub(crate) gi_dynamic: bool,
     pub(crate) model: Matrix4f,
     pub(crate) local_bounds: (Vector3f, Vector3f),
     pub(crate) world_corners: [Vector3f; 8],
     pub(crate) world_center: Vector3f,
+    /// Radius of the world bounds around `world_center`.
+    pub(crate) world_radius: f32,
+}
+
+impl CasterCandidate {
+    /// Its bounds reach into the sphere at `center` of `radius`.
+    pub(crate) fn within(&self, center: Vector3f, radius: f32) -> bool {
+        self.world_center.distance(center) < radius + self.world_radius
+    }
 }
 
 /// Mesh entities with `cast_shadows` whose material is opaque; none when the scene has no mesh
@@ -64,7 +78,12 @@ pub(crate) fn gather_casters(world: &WorldQuery<'_>, out: &mut Vec<CasterCandida
     ) else {
         return;
     };
-    for (transform, mesh_rendering) in transforms.data.iter().zip(&mesh_renderings.data) {
+    for (entity, (transform, mesh_rendering)) in transforms
+        .data
+        .iter()
+        .zip(&mesh_renderings.data)
+        .enumerate()
+    {
         let (Some(transform), Some(mesh_rendering)) = (transform, mesh_rendering) else {
             continue;
         };
@@ -108,12 +127,19 @@ pub(crate) fn gather_casters(world: &WorldQuery<'_>, out: &mut Vec<CasterCandida
         let model = transform.model_matrix();
         let world_corners =
             box_corners(renderer_mesh.local_bounds).map(|corner| model.transform_point3(corner));
+        let world_center = world_corners.iter().copied().sum::<Vector3f>() / 8.0;
         out.push(CasterCandidate {
             caster,
+            entity,
+            gi_dynamic: mesh_rendering.gi_dynamic,
             model,
             local_bounds: renderer_mesh.local_bounds,
             world_corners,
-            world_center: world_corners.iter().copied().sum::<Vector3f>() / 8.0,
+            world_center,
+            world_radius: world_corners
+                .iter()
+                .map(|corner| corner.distance(world_center))
+                .fold(0.0, f32::max),
         });
     }
 }
@@ -162,6 +188,8 @@ pub(crate) struct ShadowCasters {
     two_sided_pipeline: Pipeline,
     // Alpha test, no culling: casters with a `cutout` material
     cutout_pipeline: Pipeline,
+    // Writes the far plane over the viewport: clears one atlas tile
+    clear_pipeline: Pipeline,
     camera_buffer: wgpu::Buffer,
     camera_stride: u64,
     camera_bind_group: wgpu::BindGroup,
@@ -246,6 +274,31 @@ impl ShadowCasters {
             },
         })?;
 
+        let clear_pipeline = renderer.create_pipeline(PipelineDesc {
+            label: Some(label),
+            vs: ShaderDesc {
+                source: SHADOW_TILE_CLEAR_VERTEX_SHADER,
+                entry_func: "vs_main",
+            },
+            ps: ShaderDesc {
+                source: SHADOW_CASTER_FRAGMENT_SHADER,
+                entry_func: "fs_main",
+            },
+            fragment_constants: &[],
+            vertex_buffers: &[],
+            bind_groups: Vec::new(),
+            targets: &[],
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: SHADOW_MAP_FORMAT,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Always,
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            primitive: wgpu::PrimitiveState::default(),
+        })?;
+
         let matrix_size = std::mem::size_of::<ShadowCamera>() as u64;
         let alignment = renderer
             .get_device()
@@ -285,6 +338,7 @@ impl ShadowCasters {
             cutout_pipeline,
             camera_buffer,
             camera_stride,
+            clear_pipeline,
             camera_bind_group,
             per_draw_buffer,
             per_draw_bind_group,
@@ -338,20 +392,49 @@ impl ShadowCasters {
         range: Range<usize>,
         world: &WorldQuery<'_>,
     ) {
-        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let mut render_pass = self.begin_pass(encoder, depth_view, wgpu::LoadOp::Clear(1.0));
+        self.draw_into(&mut render_pass, map, casters, range, world);
+    }
+
+    /// A depth-only pass on `depth_view` for `draw_into` (several maps, e.g. atlas tiles).
+    pub(crate) fn begin_pass<'pass>(
+        &self,
+        encoder: &'pass mut wgpu::CommandEncoder,
+        depth_view: &'pass wgpu::TextureView,
+        load: wgpu::LoadOp<f32>,
+    ) -> wgpu::RenderPass<'pass> {
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some(&self.label),
             color_attachments: &[],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth_view,
                 depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
+                    load,
                     store: wgpu::StoreOp::Store,
                 }),
                 stencil_ops: None,
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
-        });
+        })
+    }
+
+    /// Clears the current viewport of `render_pass` (begun by `begin_pass`) to the far plane.
+    pub(crate) fn clear_viewport(&self, render_pass: &mut wgpu::RenderPass<'_>) {
+        render_pass.set_pipeline(&self.clear_pipeline.pipeline);
+        render_pass.draw(0..3, 0..1);
+    }
+
+    /// Draws `casters[range]` with the light matrix of `map` into `render_pass` (its current
+    /// viewport): one instanced draw per run of casters sharing a mesh.
+    pub(crate) fn draw_into(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        map: usize,
+        casters: &[Caster],
+        range: Range<usize>,
+        world: &WorldQuery<'_>,
+    ) {
         if map >= self.map_capacity {
             return;
         }
@@ -413,9 +496,9 @@ impl ShadowCasters {
             if let Ok(mesh) = world.resources.get_resource::<RendererMesh>(&mesh_handle) {
                 // Cutouts read uvs from the attribute stream; the other casters only positions
                 if cutout.is_some() {
-                    mesh.set_vertex_buffers(&mut render_pass);
+                    mesh.set_vertex_buffers(render_pass);
                 } else {
-                    mesh.set_position_buffer(&mut render_pass);
+                    mesh.set_position_buffer(render_pass);
                 }
                 render_pass
                     .set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
@@ -479,10 +562,13 @@ mod tests {
                     double_sided: false,
                     transform: DrawTransform::from(&crate::ecs::TransformComponent::default()),
                 },
+                entity: 0,
+                gi_dynamic: false,
                 model: Matrix4f::IDENTITY,
                 local_bounds: (Vector3f::ZERO, Vector3f::ZERO),
                 world_corners: [Vector3f::new(x, 0.0, 0.0); 8],
                 world_center: Vector3f::new(x, 0.0, 0.0),
+                world_radius: 0.0,
             })
             .collect();
         let mut selected: Vec<usize> = (0..candidates.len()).collect();

@@ -1,9 +1,8 @@
 use crate::config::SHADOW_MAP_FORMAT;
-use crate::graphics::pass_lights::{LightsFrame, PunctualShadowMap};
-use crate::graphics::punctual_shadows::MAX_PUNCTUAL_SHADOW_MAPS;
+use crate::graphics::pass_lights::{LightsFrame, ShadowJob};
+use crate::graphics::punctual_shadows::MAX_TILE_DRAWS;
 use crate::graphics::shadow_casters::{
-    frustum_planes, gather_casters, keep_nearest, outside_frustum, sort_by_mesh, Caster,
-    CasterCandidate, ShadowCasters,
+    frustum_planes, keep_nearest, outside_frustum, sort_by_mesh, Caster, ShadowCasters,
 };
 use crate::graphics::{FrameTarget, Pass, PillRenderer, WorldQuery};
 
@@ -12,28 +11,28 @@ use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
 
-/// Shadow texture array: `layers` maps of `size`², a render view per layer and the array view the
-/// PBR passes sample.
-struct ShadowArray {
+/// The shadow atlas texture and its view.
+struct ShadowAtlasTexture {
     size: u32,
-    layers: u32,
-    layer_views: Vec<wgpu::TextureView>,
+    view: wgpu::TextureView,
 }
 
-/// Depth-only pass rendering the point/spot shadow maps `PassLights` assigned this frame
-/// (`LightsFrame::shadow_maps`) into the layers of a depth texture array, which it owns and
-/// publishes in the same frame. Settings: `RenderStateComponent::punctual_lights`.
+/// Depth-only pass drawing the point/spot shadow atlas tiles `PassLights` scheduled this frame
+/// (`LightsFrame::shadow_jobs`): each tile is cleared and redrawn in place, the rest of the atlas
+/// (cached tiles) is kept. Owns the atlas texture and publishes it in the same frame. Settings:
+/// `RenderStateComponent::punctual_lights`.
 pub(crate) struct PassPunctualShadows {
     frame: Rc<RefCell<LightsFrame>>,
     max_instances: usize,
     // Hardware depth bias, fixed in the pipeline
     constant_bias: i32,
     slope_bias: f32,
-    array: Option<ShadowArray>,
+    atlas: Option<ShadowAtlasTexture>,
     // Per-frame scratch, capacity reused across frames
-    maps: Vec<PunctualShadowMap>,
+    jobs: Vec<ShadowJob>,
     view_projections: Vec<Matrix4f>,
-    candidates: Vec<CasterCandidate>,
+    // Casters of the current light and kind within its range, then those in the tile's frustum
+    in_range: Vec<usize>,
     selected: Vec<usize>,
     casters: Vec<Caster>,
     ranges: Vec<Range<usize>>,
@@ -41,7 +40,7 @@ pub(crate) struct PassPunctualShadows {
 }
 
 impl PassPunctualShadows {
-    /// `max_instances`: caster draws across all maps of a frame; past it, maps get the casters
+    /// `max_instances`: caster draws across all tiles of a frame; past it, tiles get the casters
     /// nearest their light that still fit.
     pub(crate) fn new(
         frame: Rc<RefCell<LightsFrame>>,
@@ -54,10 +53,10 @@ impl PassPunctualShadows {
             max_instances,
             constant_bias,
             slope_bias,
-            array: None,
-            maps: Vec::new(),
+            atlas: None,
+            jobs: Vec::new(),
             view_projections: Vec::new(),
-            candidates: Vec::new(),
+            in_range: Vec::new(),
             selected: Vec::new(),
             casters: Vec::new(),
             ranges: Vec::new(),
@@ -65,55 +64,34 @@ impl PassPunctualShadows {
         }
     }
 
-    /// (Re)creates the texture array when the map size changes or more layers are needed (grows
-    /// only) and publishes the sampling view. `size` is clamped to the device by `PassLights`.
-    fn ensure_array(&mut self, renderer: &dyn PillRenderer, size: u32, layers: u32) {
-        let device = renderer.get_device();
-        if self
-            .array
-            .as_ref()
-            .is_some_and(|array| array.size == size && array.layers >= layers)
-        {
+    /// (Re)creates the atlas when its size changes and publishes the sampling view; the cache
+    /// starts over at a new size (`ShadowCache::update`), so nothing is lost.
+    fn ensure_atlas(&mut self, renderer: &dyn PillRenderer, size: u32) {
+        if self.atlas.as_ref().is_some_and(|atlas| atlas.size == size) {
             return;
         }
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("punctual_shadow_maps"),
-            size: wgpu::Extent3d {
-                width: size,
-                height: size,
-                depth_or_array_layers: layers,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: SHADOW_MAP_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let layer_views = (0..layers)
-            .map(|layer| {
-                texture.create_view(&wgpu::TextureViewDescriptor {
-                    label: Some("punctual_shadow_map_layer"),
-                    dimension: Some(wgpu::TextureViewDimension::D2),
-                    base_array_layer: layer,
-                    array_layer_count: Some(1),
-                    ..Default::default()
-                })
-            })
-            .collect();
-        let array_view = texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("punctual_shadow_maps"),
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            ..Default::default()
-        });
+        let texture = renderer
+            .get_device()
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("punctual_shadow_atlas"),
+                size: wgpu::Extent3d {
+                    width: size,
+                    height: size,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: SHADOW_MAP_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut frame = self.frame.borrow_mut();
-        frame.shadow_view = Some(array_view);
+        frame.shadow_view = Some(view.clone());
         frame.shadow_generation += 1;
-        self.array = Some(ShadowArray {
-            size,
-            layers,
-            layer_views,
-        });
+        self.atlas = Some(ShadowAtlasTexture { size, view });
     }
 }
 
@@ -126,7 +104,7 @@ impl Pass for PassPunctualShadows {
         self.shadow_casters = Some(ShadowCasters::new(
             renderer,
             "pass_punctual_shadows",
-            MAX_PUNCTUAL_SHADOW_MAPS,
+            MAX_TILE_DRAWS,
             self.max_instances,
             self.constant_bias,
             self.slope_bias,
@@ -141,75 +119,92 @@ impl Pass for PassPunctualShadows {
         _frame_target: &FrameTarget,
         world: &WorldQuery<'_>,
     ) -> Result<()> {
-        let map_size = {
-            let frame = self.frame.borrow();
-            self.maps.clear();
-            self.maps.extend_from_slice(&frame.shadow_maps);
-            frame.shadow_map_size
-        };
-        if self.maps.is_empty() {
+        let frame_cell = self.frame.clone();
+        let frame = frame_cell.borrow();
+        self.jobs.clear();
+        self.jobs.extend_from_slice(&frame.shadow_jobs);
+        let atlas_size = frame.atlas_size;
+        if self.jobs.is_empty() || atlas_size == 0 {
             return Ok(());
         }
-        // Layers in multiples of 4, grown only, so a changing map count doesn't churn the texture
-        self.ensure_array(
-            renderer,
-            map_size,
-            self.maps.len().next_multiple_of(4) as u32,
-        );
+        drop(frame);
+        self.ensure_atlas(renderer, atlas_size);
+        let mut frame = frame_cell.borrow_mut();
 
-        // Per map, best effort: the casters inside its frustum (far plane = the light's range),
-        // nearest to the light first while caster draws are left; maps are in priority order
-        gather_casters(world, &mut self.candidates);
+        // Per tile, best effort: the casters of its kind (static or moving) inside its frustum
+        // (far plane = the light's range), nearest to the light first while caster draws are
+        // left; tiles are in priority order. A light's tiles of one kind are consecutive, so the
+        // range test runs once per light and kind.
         self.casters.clear();
         self.ranges.clear();
         self.view_projections.clear();
-        for map in &self.maps {
-            let planes = frustum_planes(&map.view_projection);
+        let mut current = None;
+        for job in &self.jobs {
+            if current != Some((job.light, job.dynamic)) {
+                current = Some((job.light, job.dynamic));
+                self.in_range.clear();
+                self.in_range
+                    .extend((0..frame.casters.len()).filter(|&index| {
+                        frame.caster_dynamic[index] == job.dynamic
+                            && frame.casters[index].within(job.light_position, job.light_range)
+                    }));
+            }
+            let planes = frustum_planes(&job.view_projection);
             self.selected.clear();
             self.selected.extend(
-                (0..self.candidates.len()).filter(|&index| {
-                    !outside_frustum(&planes, &self.candidates[index].world_corners)
+                self.in_range.iter().copied().filter(|&index| {
+                    !outside_frustum(&planes, &frame.casters[index].world_corners)
                 }),
             );
-            let room = self.max_instances - self.casters.len();
-            let candidates = &self.candidates;
+            let room = self.max_instances.saturating_sub(self.casters.len());
+            // A static tile drawn without all its casters is redrawn when there's room
+            if self.selected.len() > room
+                && !job.dynamic
+                && !frame.truncated_lights.contains(&job.light)
+            {
+                frame.truncated_lights.push(job.light);
+            }
+            let candidates = &frame.casters;
             keep_nearest(&mut self.selected, room, |&index| {
                 candidates[index]
                     .world_center
-                    .distance_squared(map.light_position)
+                    .distance_squared(job.light_position)
             });
             let start = self.casters.len();
             self.casters.extend(
                 self.selected
                     .iter()
-                    .map(|&index| self.candidates[index].caster),
+                    .map(|&index| frame.casters[index].caster),
             );
             sort_by_mesh(&mut self.casters[start..]);
             self.ranges.push(start..self.casters.len());
-            self.view_projections.push(map.view_projection);
+            self.view_projections.push(job.view_projection);
         }
+        drop(frame);
 
         let shadow_casters = self
             .shadow_casters
             .as_mut()
             .expect("PassPunctualShadows: not initialized — call init() before draw()");
         shadow_casters.upload(renderer.get_queue(), &self.view_projections, &self.casters);
-        let array = self
-            .array
+        let atlas = self
+            .atlas
             .as_ref()
-            .expect("PassPunctualShadows: array created above");
-        for (map, range) in self.ranges.iter().enumerate() {
-            let Some(layer_view) = array.layer_views.get(map) else {
-                break;
-            };
-            shadow_casters.draw(
-                encoder,
-                layer_view,
-                map,
-                &self.casters,
-                range.clone(),
-                world,
+            .expect("PassPunctualShadows: atlas created above");
+        let mut render_pass = shadow_casters.begin_pass(encoder, &atlas.view, wgpu::LoadOp::Load);
+        for (map, (job, range)) in self.jobs.iter().zip(&self.ranges).enumerate() {
+            let tile = job.tile;
+            render_pass.set_viewport(
+                tile.x as f32,
+                tile.y as f32,
+                tile.size as f32,
+                tile.size as f32,
+                0.0,
+                1.0,
             );
+            render_pass.set_scissor_rect(tile.x, tile.y, tile.size, tile.size);
+            shadow_casters.clear_viewport(&mut render_pass);
+            shadow_casters.draw_into(&mut render_pass, map, &self.casters, range.clone(), world);
         }
         Ok(())
     }

@@ -49,22 +49,27 @@ struct PunctualLight {
     float4 position_falloff;  // xyz = world position, w = 1 / range²
     float4 direction;         // xyz = direction the spot shines in
     float4 color_intensity;   // rgb = color, w = intensity
-    // x, y: angle term saturate(cos · x + y) (point light: 0, 1); z: first shadow layer (−1 = no
-    // shadow); w: 1 = point light (6 cube-face layers from z)
+    // x, y: angle term saturate(cos · x + y) (point light: 0, 1); z: first shadow record (−1 = no
+    // shadow); w: 1 = point light (6 cube-face records from z)
     float4 spot_scale_offset;
 };
 [[vk::binding(10, 0)]] StructuredBuffer<PunctualLight> punctual_lights;
 [[vk::binding(11, 0)]] StructuredBuffer<uint2>         froxel_entries; // (offset, count) per froxel
 [[vk::binding(12, 0)]] StructuredBuffer<uint>          froxel_records; // u16 light indices, 2 per uint
 
-// Point/spot shadow maps (punctual_shadows.rs): one per spot light, six cube faces per point
-// light, all layers of one depth array; sampled with shadow_sampler
+// Point/spot shadow maps (punctual_shadows.rs, punctual_shadow_cache.rs): one per spot light, six
+// cube faces per point light, all tiles of one depth atlas; a map's static tile holds the casters
+// that don't move (cached), its optional dynamic tile the moving ones. Sampled with shadow_sampler.
 struct PunctualShadow {
     column_major float4x4 view_projection; // world → light clip space (depth 0..1)
-    float4 params; // x = normal offset per meter of light distance, y = map size, z = 1 / map size
+    // x = normal offset per meter of light distance, y = tile size, z = 1 / tile size,
+    // w = shadow strength (0 = none, fading)
+    float4 params;
+    float4 static_rect;  // atlas uv = tile uv · xy + zw
+    float4 dynamic_rect; // same; x = 0: no dynamic tile
 };
 [[vk::binding(13, 0)]] StructuredBuffer<PunctualShadow> punctual_shadows;
-[[vk::binding(14, 0)]] [Depth] DepthTexture2DArray      punctual_shadow_maps;
+[[vk::binding(14, 0)]] [Depth] DepthTexture2D           punctual_shadow_maps;
 
 // Diffuse GI probes (ddgi/pass_ddgi.rs); `ddgi.enabled` 0 = off (use the IBL), 2 = indirect-only
 // view, 3 = probe-cell colours
@@ -282,31 +287,46 @@ uint cube_face(float3 direction) {
     return direction.z > 0.0 ? 4u : 5u;
 }
 
-// Fraction of a point/spot light reaching `world_position` (1 = lit, or the light has no shadow
-// map this frame). Same normal offset and tent PCF as the key light. A point light's face is
-// chosen for the offset receiver; faces carry a texel border (cube_face_fov), so the taps of a
-// receiver on a face edge stay inside that face's map.
-float punctual_shadow_visibility(PunctualLight light, float3 world_position, float3 geometric_normal, float distance) {
-    int layer = int(light.spot_scale_offset.z);
-    if (layer < 0) {
-        return 1.0;
-    }
-    // All maps of a frame share the params (map size); the normal offset per meter as well
-    float3 receiver = world_position + geometric_normal * (punctual_shadows[layer].params.x * distance);
-    if (light.spot_scale_offset.w > 0.5) {
-        layer += int(cube_face(receiver - light.position_falloff.xyz));
-    }
-    PunctualShadow shadow = punctual_shadows[layer];
-    float4 clip     = mul(shadow.view_projection, float4(receiver, 1.0));
-    float3 ndc      = clip.xyz / max(clip.w, 1e-6);
-    float2 uv       = ndc.xy * float2(0.5, -0.5) + 0.5;
-    TentTaps taps   = tent_taps(uv, shadow.params.y, shadow.params.z);
+// Tent PCF of one atlas tile (`rect`) at tile uv `uv`; taps stay inside the tile.
+float punctual_tile_visibility(float4 rect, float2 uv, float depth, float size, float texel) {
+    TentTaps taps   = tent_taps(uv, size, texel);
+    float2   lowest = rect.zw + rect.xy * (0.5 * texel);
+    float2   upper  = rect.zw + rect.xy * (1.0 - 0.5 * texel);
     float    sum    = 0.0;
     for (uint tap = 0; tap < 4; tap++) {
-        sum += taps.weight[tap] * punctual_shadow_maps.SampleCmpLevelZero(shadow_sampler, float3(taps.uv[tap], float(layer)), ndc.z);
+        float2 atlas_uv = clamp(taps.uv[tap] * rect.xy + rect.zw, lowest, upper);
+        sum += taps.weight[tap] * punctual_shadow_maps.SampleCmpLevelZero(shadow_sampler, atlas_uv, depth);
     }
-    bool outside = clip.w <= 0.0 || any(uv < 0.0) || any(uv > 1.0) || ndc.z > 1.0;
-    return outside ? 1.0 : sum / 16.0;
+    return sum / 16.0;
+}
+
+// Fraction of a point/spot light reaching `world_position` (1 = lit, or the light has no shadow
+// map). Same normal offset and tent PCF as the key light. A point light's face is chosen for the
+// offset receiver; faces carry a texel border (cube_face_fov), so the taps of a receiver on a face
+// edge stay inside that face's tile. Static and dynamic tiles both block; the strength fades the
+// shadow in and out.
+float punctual_shadow_visibility(PunctualLight light, float3 world_position, float3 geometric_normal, float distance) {
+    int record = int(light.spot_scale_offset.z);
+    if (record < 0) {
+        return 1.0;
+    }
+    // A point light's faces share the tile size, so the first face's offset holds for all
+    float3 receiver = world_position + geometric_normal * (punctual_shadows[record].params.x * distance);
+    if (light.spot_scale_offset.w > 0.5) {
+        record += int(cube_face(receiver - light.position_falloff.xyz));
+    }
+    PunctualShadow shadow = punctual_shadows[record];
+    float4 clip = mul(shadow.view_projection, float4(receiver, 1.0));
+    float3 ndc  = clip.xyz / max(clip.w, 1e-6);
+    float2 uv   = ndc.xy * float2(0.5, -0.5) + 0.5;
+    if (clip.w <= 0.0 || any(uv < 0.0) || any(uv > 1.0) || ndc.z > 1.0) {
+        return 1.0;
+    }
+    float visibility = punctual_tile_visibility(shadow.static_rect, uv, ndc.z, shadow.params.y, shadow.params.z);
+    if (shadow.dynamic_rect.x > 0.0) {
+        visibility *= punctual_tile_visibility(shadow.dynamic_rect, uv, ndc.z, shadow.params.y, shadow.params.z);
+    }
+    return lerp(1.0, visibility, shadow.params.w);
 }
 
 // One point/spot light at the surface: Filament's inverse-square falloff with a smooth window to
@@ -319,7 +339,8 @@ float3 punctual_light_radiance(uint light_index, Surface surface) {
     float3 incoming        = to_light * rsqrt(max(distance_square, 1e-8));
     float  angle           = saturate(dot(light.direction.xyz, -incoming) * light.spot_scale_offset.x + light.spot_scale_offset.y);
     float  attenuation     = window * window / max(distance_square, 1e-4) * angle * angle;
-    if (attenuation > 0.0) {
+    // Facing away: no light reaches the surface, so skip the shadow taps
+    if (attenuation > 0.0 && dot(surface.normal, incoming) > 0.0) {
         attenuation *= punctual_shadow_visibility(light, surface.position, surface.geometric_normal, sqrt(distance_square));
     }
     float4 light_color = float4(light.color_intensity.rgb, light.color_intensity.w * attenuation);

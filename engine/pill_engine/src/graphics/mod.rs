@@ -34,12 +34,14 @@ mod pass_ssr;
 mod pass_tonemap;
 #[cfg(feature = "post_fx")]
 mod projection;
+mod punctual_shadow_cache;
 mod punctual_shadows;
 mod render_queue;
 mod renderer;
 mod scene_uniform;
 pub(crate) mod shader_bindings;
 pub(crate) mod shadow;
+mod shadow_atlas;
 mod shadow_casters;
 
 // --- Use ---

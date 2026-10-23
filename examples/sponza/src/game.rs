@@ -398,8 +398,6 @@ impl PillGame for Game {
                 light.intensity = 0.0;
             }
             render_state.ibl_intensity = 0.0;
-            // 3 point lights (6 cube faces each) + 2 spot lights (1 map each)
-            render_state.punctual_lights.max_shadow_maps = 20;
             // Diffuse GI: light bouncing off the court floor onto columns and arches
             render_state.gi.enabled = true;
             // Post chain for the screen-space reflections in the wet floor; motion blur off
