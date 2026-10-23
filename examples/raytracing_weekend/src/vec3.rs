@@ -1,6 +1,7 @@
 //! The book's `vec3.h`: a 3-component f64 vector, used as point and color.
 
 use crate::rtweekend::{random_double, random_double_range};
+use rand::RngCore;
 use std::ops::{Add, AddAssign, Div, DivAssign, Mul, MulAssign, Neg, Sub};
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -41,15 +42,15 @@ impl Vec3 {
         self.e[0].abs() < s && self.e[1].abs() < s && self.e[2].abs() < s
     }
 
-    pub fn random() -> Self {
-        Self::new(random_double(), random_double(), random_double())
+    pub fn random(rng: &mut dyn RngCore) -> Self {
+        Self::new(random_double(rng), random_double(rng), random_double(rng))
     }
 
-    pub fn random_range(min: f64, max: f64) -> Self {
+    pub fn random_range(rng: &mut dyn RngCore, min: f64, max: f64) -> Self {
         Self::new(
-            random_double_range(min, max),
-            random_double_range(min, max),
-            random_double_range(min, max),
+            random_double_range(rng, min, max),
+            random_double_range(rng, min, max),
+            random_double_range(rng, min, max),
         )
     }
 }
@@ -141,11 +142,11 @@ pub fn unit_vector(v: Vec3) -> Vec3 {
     v / v.length()
 }
 
-pub fn random_in_unit_disk() -> Vec3 {
+pub fn random_in_unit_disk(rng: &mut dyn RngCore) -> Vec3 {
     loop {
         let p = Vec3::new(
-            random_double_range(-1.0, 1.0),
-            random_double_range(-1.0, 1.0),
+            random_double_range(rng, -1.0, 1.0),
+            random_double_range(rng, -1.0, 1.0),
             0.0,
         );
         if p.length_squared() < 1.0 {
@@ -154,9 +155,9 @@ pub fn random_in_unit_disk() -> Vec3 {
     }
 }
 
-pub fn random_unit_vector() -> Vec3 {
+pub fn random_unit_vector(rng: &mut dyn RngCore) -> Vec3 {
     loop {
-        let p = Vec3::random_range(-1.0, 1.0);
+        let p = Vec3::random_range(rng, -1.0, 1.0);
         let lensq = p.length_squared();
         if 1e-160 < lensq && lensq <= 1.0 {
             return p / lensq.sqrt();

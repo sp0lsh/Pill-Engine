@@ -1,8 +1,7 @@
 //! Progressive CPU path tracing of Ray Tracing in One Weekend's final scene, with the book's
-//! code structure and no optimizations. One worker thread per core owns every n-th image row,
-//! adds one sample per pixel to its rows per pass and publishes each finished row as sRGB8 into a
-//! shared image; the egui overlay uploads that image as a texture whenever it changed and shows
-//! it letterboxed over the window.
+//! code structure and no optimizations. Each pass maps every pixel to one more sample with rayon
+//! (`par_iter_mut` over the accumulation buffer) and publishes the whole image as sRGB8; the egui
+//! overlay uploads it as a texture whenever it changed and shows it letterboxed over the window.
 
 use crate::{
     camera::Camera,
@@ -11,6 +10,7 @@ use crate::{
     scene,
 };
 use pill_engine::game::*;
+use rayon::prelude::*;
 use std::{
     sync::{
         atomic::{AtomicU32, AtomicU64, Ordering},
@@ -28,23 +28,20 @@ struct Shared {
     height: usize,
     /// RGBA8, sRGB-encoded.
     pixels: Mutex<Vec<u8>>,
-    /// Bumped on every published row.
+    /// Bumped on every published pass.
     version: AtomicU64,
     /// Rays traced so far, all bounces included.
     rays: AtomicU64,
-    /// Completed passes per worker; the image's sample count is their minimum.
-    worker_samples: Vec<AtomicU32>,
+    /// Samples per pixel in the published image.
+    samples: AtomicU32,
+    thread_count: usize,
     started: Instant,
     finished: Mutex<Option<Duration>>,
 }
 
 impl Shared {
     fn samples(&self) -> u32 {
-        self.worker_samples
-            .iter()
-            .map(|samples| samples.load(Ordering::Relaxed))
-            .min()
-            .unwrap_or(0)
+        self.samples.load(Ordering::Relaxed)
     }
 }
 
@@ -67,7 +64,7 @@ impl PillGame for Game {
             .with_component(CameraComponent::builder().enabled(true).build())
             .build();
 
-        let shared = spawn_workers();
+        let shared = spawn_render();
         let egui_component = engine.get_global_component_mut::<EguiComponent>()?;
         egui_component.show_engine_windows = false;
         let texture: Mutex<Option<(egui::TextureHandle, u64)>> = Mutex::new(None);
@@ -78,64 +75,62 @@ impl PillGame for Game {
     }
 }
 
-fn spawn_workers() -> Arc<Shared> {
-    let world = Arc::new(scene::final_scene());
-    let camera = Arc::new(scene::final_camera(IMAGE_WIDTH, SAMPLES_PER_PIXEL));
-    let worker_count = std::thread::available_parallelism().map_or(4, |n| n.get());
+fn spawn_render() -> Arc<Shared> {
+    let world = scene::final_scene(&mut rand::rng());
+    let camera = scene::final_camera(IMAGE_WIDTH, SAMPLES_PER_PIXEL);
     let shared = Arc::new(Shared {
         width: camera.image_width,
         height: camera.image_height,
         pixels: Mutex::new(vec![0; camera.image_width * camera.image_height * 4]),
         version: AtomicU64::new(0),
         rays: AtomicU64::new(0),
-        worker_samples: (0..worker_count).map(|_| AtomicU32::new(0)).collect(),
+        samples: AtomicU32::new(0),
+        thread_count: rayon::current_num_threads(),
         started: Instant::now(),
         finished: Mutex::new(None),
     });
-    for worker in 0..worker_count {
-        let camera = Arc::clone(&camera);
-        let world = Arc::clone(&world);
-        let shared = Arc::clone(&shared);
-        std::thread::spawn(move || render_rows(&camera, &world, &shared, worker, worker_count));
-    }
+    let render_shared = Arc::clone(&shared);
+    // The render thread owns the world and camera; rayon's threads borrow them
+    std::thread::spawn(move || render(&camera, &world, &render_shared));
     shared
 }
 
-/// Accumulates SAMPLES_PER_PIXEL passes over rows `worker, worker + worker_count, …`.
-fn render_rows(
-    camera: &Camera,
-    world: &HittableList,
-    shared: &Shared,
-    worker: usize,
-    worker_count: usize,
-) {
+/// The book's render loop, one sample per pixel per pass: every pixel is an independent
+/// `pixel → sample` map over the accumulation buffer, with a thread-local RNG.
+fn render(camera: &Camera, world: &HittableList, shared: &Shared) {
     let width = camera.image_width;
-    let rows: Vec<usize> = (worker..camera.image_height)
-        .step_by(worker_count)
-        .collect();
-    let mut accumulation = vec![Color::default(); rows.len() * width];
-    let mut row_rgba = vec![255u8; width * 4];
+    let mut accumulation = vec![Color::default(); width * camera.image_height];
     for pass in 1..=camera.samples_per_pixel {
+        let rays: u64 = accumulation
+            .par_iter_mut()
+            .enumerate()
+            .map(|(index, sum)| {
+                let mut rays = 0;
+                *sum += camera.pixel_sample(
+                    index % width,
+                    index / width,
+                    world,
+                    &mut rand::rng(),
+                    &mut rays,
+                );
+                rays
+            })
+            .sum();
+
         let pixel_samples_scale = 1.0 / pass as f64;
-        for (row_index, &y) in rows.iter().enumerate() {
-            let row = &mut accumulation[row_index * width..(row_index + 1) * width];
-            let mut rays = 0;
-            for (x, sum) in row.iter_mut().enumerate() {
-                *sum += camera.pixel_sample(x, y, world, &mut rays);
-                let [r, g, b] = write_color(pixel_samples_scale * *sum);
-                row_rgba[x * 4..x * 4 + 3].copy_from_slice(&[r, g, b]);
-            }
-            shared.pixels.lock().unwrap()[y * width * 4..(y + 1) * width * 4]
-                .copy_from_slice(&row_rgba);
-            shared.version.fetch_add(1, Ordering::Relaxed);
-            shared.rays.fetch_add(rays, Ordering::Relaxed);
-        }
-        shared.worker_samples[worker].store(pass, Ordering::Relaxed);
+        let rgba: Vec<u8> = accumulation
+            .par_iter()
+            .flat_map_iter(|&sum| {
+                let [r, g, b] = write_color(pixel_samples_scale * sum);
+                [r, g, b, 255]
+            })
+            .collect();
+        *shared.pixels.lock().unwrap() = rgba;
+        shared.samples.store(pass, Ordering::Relaxed);
+        shared.version.fetch_add(1, Ordering::Relaxed);
+        shared.rays.fetch_add(rays, Ordering::Relaxed);
     }
-    let mut finished = shared.finished.lock().unwrap();
-    if finished.is_none() && shared.samples() == SAMPLES_PER_PIXEL {
-        *finished = Some(shared.started.elapsed());
-    }
+    *shared.finished.lock().unwrap() = Some(shared.started.elapsed());
 }
 
 fn image_ui(
@@ -203,7 +198,7 @@ fn image_ui(
                             shared.height,
                             elapsed.as_secs_f32(),
                             shared.rays.load(Ordering::Relaxed) as f32 / elapsed.as_secs_f32() / 1e6,
-                            shared.worker_samples.len(),
+                            shared.thread_count,
                         ))
                         .monospace()
                         .color(egui::Color32::WHITE),

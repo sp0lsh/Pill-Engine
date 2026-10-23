@@ -10,6 +10,7 @@ use crate::{
     rtweekend::{degrees_to_radians, random_double},
     vec3::{cross, random_in_unit_disk, unit_vector, Point3, Vec3},
 };
+use rand::RngCore;
 
 pub struct Camera {
     pub aspect_ratio: f64,      // Ratio of image width over height
@@ -95,15 +96,22 @@ impl Camera {
     }
 
     /// One sample of pixel (i, j): the body of the book's per-sample loop.
-    pub fn pixel_sample(&self, i: usize, j: usize, world: &dyn Hittable, rays: &mut u64) -> Color {
-        let r = self.get_ray(i, j);
-        Self::ray_color(&r, self.max_depth, world, rays)
+    pub fn pixel_sample(
+        &self,
+        i: usize,
+        j: usize,
+        world: &dyn Hittable,
+        rng: &mut dyn RngCore,
+        rays: &mut u64,
+    ) -> Color {
+        let r = self.get_ray(i, j, rng);
+        Self::ray_color(&r, self.max_depth, world, rng, rays)
     }
 
     /// Construct a camera ray originating from the defocus disk and directed at a randomly
     /// sampled point around the pixel location i, j.
-    fn get_ray(&self, i: usize, j: usize) -> Ray {
-        let offset = Self::sample_square();
+    fn get_ray(&self, i: usize, j: usize, rng: &mut dyn RngCore) -> Ray {
+        let offset = Self::sample_square(rng);
         let pixel_sample = self.pixel00_loc
             + ((i as f64 + offset.x()) * self.pixel_delta_u)
             + ((j as f64 + offset.y()) * self.pixel_delta_v);
@@ -111,7 +119,7 @@ impl Camera {
         let ray_origin = if self.defocus_angle <= 0.0 {
             self.center
         } else {
-            self.defocus_disk_sample()
+            self.defocus_disk_sample(rng)
         };
         let ray_direction = pixel_sample - ray_origin;
 
@@ -119,17 +127,23 @@ impl Camera {
     }
 
     /// Returns the vector to a random point in the [-.5,-.5]-[+.5,+.5] unit square.
-    fn sample_square() -> Vec3 {
-        Vec3::new(random_double() - 0.5, random_double() - 0.5, 0.0)
+    fn sample_square(rng: &mut dyn RngCore) -> Vec3 {
+        Vec3::new(random_double(rng) - 0.5, random_double(rng) - 0.5, 0.0)
     }
 
     /// Returns a random point in the camera defocus disk.
-    fn defocus_disk_sample(&self) -> Point3 {
-        let p = random_in_unit_disk();
+    fn defocus_disk_sample(&self, rng: &mut dyn RngCore) -> Point3 {
+        let p = random_in_unit_disk(rng);
         self.center + (p.x() * self.defocus_disk_u) + (p.y() * self.defocus_disk_v)
     }
 
-    fn ray_color(r: &Ray, depth: u32, world: &dyn Hittable, rays: &mut u64) -> Color {
+    fn ray_color(
+        r: &Ray,
+        depth: u32,
+        world: &dyn Hittable,
+        rng: &mut dyn RngCore,
+        rays: &mut u64,
+    ) -> Color {
         // If we've exceeded the ray bounce limit, no more light is gathered.
         if depth == 0 {
             return Color::new(0.0, 0.0, 0.0);
@@ -137,8 +151,8 @@ impl Camera {
         *rays += 1;
 
         if let Some(rec) = world.hit(r, Interval::new(0.001, f64::INFINITY)) {
-            if let Some((attenuation, scattered)) = rec.mat.scatter(r, &rec) {
-                return attenuation * Self::ray_color(&scattered, depth - 1, world, rays);
+            if let Some((attenuation, scattered)) = rec.mat.scatter(r, &rec, rng) {
+                return attenuation * Self::ray_color(&scattered, depth - 1, world, rng, rays);
             }
             return Color::new(0.0, 0.0, 0.0);
         }

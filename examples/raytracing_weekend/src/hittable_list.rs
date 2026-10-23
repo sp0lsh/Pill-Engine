@@ -5,16 +5,17 @@ use crate::{
     interval::Interval,
     ray::Ray,
 };
-use std::sync::Arc;
 
+/// Owns its objects; `Send + Sync` is required here, where the list is shared with the render
+/// threads, not on the `Hittable` trait.
 #[derive(Default)]
 pub struct HittableList {
-    pub objects: Vec<Arc<dyn Hittable>>,
+    pub objects: Vec<Box<dyn Hittable + Send + Sync>>,
 }
 
 impl HittableList {
-    pub fn add(&mut self, object: Arc<dyn Hittable>) {
-        self.objects.push(object);
+    pub fn add(&mut self, object: impl Hittable + Send + Sync + 'static) {
+        self.objects.push(Box::new(object));
     }
 }
 

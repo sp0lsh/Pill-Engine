@@ -7,20 +7,20 @@ use crate::{
     ray::Ray,
     vec3::{dot, Point3},
 };
-use std::sync::Arc;
 
+/// Owns its material: no material in the book's scenes is shared between spheres.
 pub struct Sphere {
     center: Point3,
     radius: f64,
-    mat: Arc<dyn Material>,
+    mat: Box<dyn Material + Send + Sync>,
 }
 
 impl Sphere {
-    pub fn new(center: Point3, radius: f64, mat: Arc<dyn Material>) -> Self {
+    pub fn new(center: Point3, radius: f64, mat: impl Material + Send + Sync + 'static) -> Self {
         Self {
             center,
             radius: radius.max(0.0),
-            mat,
+            mat: Box::new(mat),
         }
     }
 }

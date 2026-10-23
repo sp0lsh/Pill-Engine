@@ -7,10 +7,16 @@ use crate::{
     rtweekend::random_double,
     vec3::{dot, random_unit_vector, reflect, refract, unit_vector},
 };
+use rand::RngCore;
 
-pub trait Material: Send + Sync {
+pub trait Material {
     /// Attenuation and scattered ray, or `None` when the ray is absorbed.
-    fn scatter(&self, _r_in: &Ray, _rec: &HitRecord) -> Option<(Color, Ray)> {
+    fn scatter(
+        &self,
+        _r_in: &Ray,
+        _rec: &HitRecord,
+        _rng: &mut dyn RngCore,
+    ) -> Option<(Color, Ray)> {
         None
     }
 }
@@ -26,8 +32,8 @@ impl Lambertian {
 }
 
 impl Material for Lambertian {
-    fn scatter(&self, _r_in: &Ray, rec: &HitRecord) -> Option<(Color, Ray)> {
-        let mut scatter_direction = rec.normal + random_unit_vector();
+    fn scatter(&self, _r_in: &Ray, rec: &HitRecord, rng: &mut dyn RngCore) -> Option<(Color, Ray)> {
+        let mut scatter_direction = rec.normal + random_unit_vector(rng);
 
         // Catch degenerate scatter direction
         if scatter_direction.near_zero() {
@@ -53,9 +59,9 @@ impl Metal {
 }
 
 impl Material for Metal {
-    fn scatter(&self, r_in: &Ray, rec: &HitRecord) -> Option<(Color, Ray)> {
+    fn scatter(&self, r_in: &Ray, rec: &HitRecord, rng: &mut dyn RngCore) -> Option<(Color, Ray)> {
         let reflected = reflect(r_in.direction(), rec.normal);
-        let reflected = unit_vector(reflected) + (self.fuzz * random_unit_vector());
+        let reflected = unit_vector(reflected) + (self.fuzz * random_unit_vector(rng));
         let scattered = Ray::new(rec.p, reflected);
         (dot(scattered.direction(), rec.normal) > 0.0).then_some((self.albedo, scattered))
     }
@@ -81,7 +87,7 @@ impl Dielectric {
 }
 
 impl Material for Dielectric {
-    fn scatter(&self, r_in: &Ray, rec: &HitRecord) -> Option<(Color, Ray)> {
+    fn scatter(&self, r_in: &Ray, rec: &HitRecord, rng: &mut dyn RngCore) -> Option<(Color, Ray)> {
         let attenuation = Color::new(1.0, 1.0, 1.0);
         let ri = if rec.front_face {
             1.0 / self.refraction_index
@@ -94,7 +100,7 @@ impl Material for Dielectric {
         let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
 
         let cannot_refract = ri * sin_theta > 1.0;
-        let direction = if cannot_refract || Self::reflectance(cos_theta, ri) > random_double() {
+        let direction = if cannot_refract || Self::reflectance(cos_theta, ri) > random_double(rng) {
             reflect(unit_direction, rec.normal)
         } else {
             refract(unit_direction, rec.normal, ri)
