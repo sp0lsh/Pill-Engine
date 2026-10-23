@@ -11,8 +11,9 @@ use crate::{
         pass_ibl_bake::PassIblBake,
         pass_lights::LightsFrame,
         shadow::ShadowFrame,
-        Pass, PassLights, PassPBROpaque, PassPunctualShadows, PassShadow, PassTextureHandle,
-        PassTonemap, RendererMaterialHandle, RendererTargetDesc, RendererTextureHandle, TargetSize,
+        Pass, PassLights, PassPBROpaque, PassPunctualShadows, PassShadow, PassSkinning,
+        PassTextureHandle, PassTonemap, RendererMaterialHandle, RendererTargetDesc,
+        RendererTextureHandle, TargetSize,
     },
     renderer::resources::RendererTexture,
     resources::{MaterialHandle, TextureHandle, TextureType},
@@ -20,6 +21,8 @@ use crate::{
 
 #[cfg(feature = "ui")]
 use crate::ecs::egui_system;
+#[cfg(feature = "gltf_loading")]
+use crate::ecs::skeletal_animation_system;
 
 #[cfg(feature = "post_fx")]
 use crate::graphics::{
@@ -94,6 +97,15 @@ pub const DEFERRED_UPDATE_SYSTEM: SystemConfig = SystemConfig {
     update_phase: UpdatePhase::PostGame,
 };
 
+/// After the game systems (which set the animation state), before the deferred updates (the
+/// meshes it assigns) and rendering
+#[cfg(feature = "gltf_loading")]
+pub const SKELETAL_ANIMATION_SYSTEM: SystemConfig = SystemConfig {
+    name: "skeletal_animation_system",
+    system_function: skeletal_animation_system,
+    update_phase: UpdatePhase::PostGame,
+};
+
 pub const RENDERING_SYSTEM: SystemConfig = SystemConfig {
     name: "rendering_system",
     system_function: rendering_system,
@@ -157,6 +169,7 @@ pub const DDGI_TRACE_COMPUTE_SHADER: &str = include_str!("../res/shaders/ddgi_tr
 pub const DDGI_COLOR_COMPUTE_SHADER: &str = include_str!("../res/shaders/ddgi_color_compute.wgsl");
 pub const DDGI_DEPTH_COMPUTE_SHADER: &str = include_str!("../res/shaders/ddgi_depth_compute.wgsl");
 pub const DDGI_RESET_COMPUTE_SHADER: &str = include_str!("../res/shaders/ddgi_reset_compute.wgsl");
+pub const SKINNING_COMPUTE_SHADER: &str = include_str!("../res/shaders/skinning_compute.wgsl");
 pub const DDGI_PROBES_DEBUG_VERTEX_SHADER: &str =
     include_str!("../res/shaders/ddgi_probes_debug_vertex.wgsl");
 pub const DDGI_PROBES_DEBUG_FRAGMENT_SHADER: &str =
@@ -221,7 +234,7 @@ pub const LENS_FRAGMENT_SHADER: &str = include_str!("../res/shaders/lens_fragmen
 pub const MOTION_BLUR_FRAGMENT_SHADER: &str =
     include_str!("../res/shaders/motion_blur_fragment.wgsl");
 
-/// Frame composition: point/spot light lists → point/spot and key-light shadow maps → opaque
+/// Frame composition: GPU skinning → point/spot light lists → point/spot and key-light shadow maps → opaque
 /// PBR → game-defined passes (`Engine::add_render_pass`) → tonemap → UI. Creates the shared HDR
 /// and depth targets and records them in `RenderStateComponent`.
 pub fn default_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
@@ -236,6 +249,8 @@ pub fn default_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
         .with_lights(lights_frame)
         .with_ddgi(ddgi_frame);
     let mut passes: Vec<Box<dyn Pass>> = vec![
+        // Before every pass that draws meshes
+        Box::new(PassSkinning::new()),
         Box::new(ibl_bake),
         Box::new(lights),
         Box::new(punctual_shadows),
@@ -320,6 +335,8 @@ pub fn post_fx_pass_chain(engine: &mut Engine) -> Result<Vec<Box<dyn Pass>>> {
         ssr_active.clone(),
     );
     let mut passes: Vec<Box<dyn Pass>> = vec![
+        // Before every pass that draws meshes
+        Box::new(PassSkinning::new()),
         Box::new(ibl_bake),
         Box::new(lights),
         Box::new(punctual_shadows),

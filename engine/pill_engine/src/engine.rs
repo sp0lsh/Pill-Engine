@@ -8,8 +8,8 @@ use crate::{
 };
 
 use pill_core::{
-    debug, error, get_game_error_message, get_type_name, info, EngineError, LogContext,
-    PillSlotMapKey, PillStyle, PillTypeMap, Timer, Vector2f,
+    debug, error, get_game_error_message, get_type_name, info, EngineError, LogContext, Matrix4f,
+    PillError, PillSlotMapKey, PillStyle, PillTypeMap, Timer, Vector2f,
 };
 
 use pill_core::{ErrorContext, Result};
@@ -259,6 +259,7 @@ impl Engine {
         // Register global components
         self.add_global_component(TimeComponent::new())?;
         self.add_global_component(DeferredUpdateComponent::new())?;
+        self.add_global_component(GpuSkinningComponent::default())?;
         #[cfg(feature = "ui")]
         {
             self.add_global_component(EguiComponent::new())?;
@@ -297,6 +298,12 @@ impl Engine {
             TIME_SYSTEM.name,
             TIME_SYSTEM.system_function,
             TIME_SYSTEM.update_phase,
+        )?;
+        #[cfg(feature = "gltf_loading")]
+        self.system_manager.add_system(
+            SKELETAL_ANIMATION_SYSTEM.name,
+            SKELETAL_ANIMATION_SYSTEM.system_function,
+            SKELETAL_ANIMATION_SYSTEM.update_phase,
         )?;
         self.system_manager.add_system(
             DEFERRED_UPDATE_SYSTEM.name,
@@ -1290,6 +1297,70 @@ impl Engine {
         T: Resource<Storage = ResourceStorage<T>>,
     {
         self.resource_manager.get_resource_by_name_mut::<T>(name)
+    }
+
+    /// Adds a skinned glTF model (`parse_gltf_skinned`) for `SkeletalAnimationComponent`s to play.
+    /// Every skinned primitive is uploaded once and shared by all entities that show it.
+    #[cfg(feature = "gltf_loading")]
+    pub fn add_skeletal_model(
+        &mut self,
+        data: pill_assets::gltf_skin::GltfSkinnedData,
+    ) -> Result<SkeletalModelHandle> {
+        let mut sources = Vec::with_capacity(data.primitives.len());
+        for primitive in &data.primitives {
+            let skin = data
+                .skins
+                .get(primitive.skin)
+                .ok_or_else(|| PillError::from("Skeletal model: primitive skin out of range"))?;
+            let source = crate::graphics::pass_skinning::skin_source(primitive, skin)?;
+            let skinning = self.get_global_component_mut::<GpuSkinningComponent>()?;
+            skinning.sources.push(source);
+            sources.push(SkinSourceId(skinning.sources.len() - 1));
+        }
+        let skinning = self.get_global_component_mut::<GpuSkinningComponent>()?;
+        skinning.models.push(SkeletalModel { data, sources });
+        Ok(SkeletalModelHandle(skinning.models.len() - 1))
+    }
+
+    /// The nodes, skins, primitives and animations (names, durations) of a skeletal model.
+    #[cfg(feature = "gltf_loading")]
+    pub fn get_skeletal_model(
+        &self,
+        model: SkeletalModelHandle,
+    ) -> Result<&pill_assets::gltf_skin::GltfSkinnedData> {
+        self.get_global_component::<GpuSkinningComponent>()?
+            .models
+            .get(model.0)
+            .map(|model| &model.data)
+            .ok_or_else(|| PillError::from("Skeletal model: unknown handle"))
+    }
+
+    /// CPU time of the last frame's skeletal animation update (posing all entities), ms.
+    pub fn get_skeletal_animation_cpu_ms(&self) -> Result<f32> {
+        Ok(self.get_global_component::<GpuSkinningComponent>()?.cpu_ms)
+    }
+
+    /// Overwrites a mesh's GPU vertices in place (same vertex count, indices unchanged), e.g. for
+    /// CPU skinning; culling bounds follow. The CPU-side `Mesh::data` keeps the original vertices.
+    pub fn update_mesh_vertices(
+        &mut self,
+        mesh_handle: &MeshHandle,
+        vertices: &[MeshVertex],
+    ) -> Result<()> {
+        #[cfg(not(feature = "headless"))]
+        {
+            let name = self
+                .resource_manager
+                .get_resource::<Mesh>(mesh_handle)?
+                .name
+                .clone();
+            self.resource_manager
+                .get_resource_by_name_mut::<RendererMesh>(&name)?
+                .update_vertices(self.renderer.get_queue(), vertices)?;
+        }
+        #[cfg(feature = "headless")]
+        let _ = (mesh_handle, vertices);
+        Ok(())
     }
 
     // Removes resource associated with resource handle from the engine

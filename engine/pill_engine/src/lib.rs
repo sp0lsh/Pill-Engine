@@ -66,14 +66,15 @@ pub mod game {
             DepthOfField, DirectionalLight, EntityHandle, GamepadAxis, GamepadButton, Gi,
             GlobalComponent, GlobalComponentStorage, InputComponent, Lens, LightComponent,
             LightType, MeshRenderingComponent, PassChain, PlayerId, PunctualLights,
-            RenderStateComponent, SceneHandle, Shadow, Ssao, Ssr, TimeComponent, Tonemap,
-            TransformComponent, UpdatePhase,
+            RenderStateComponent, SceneHandle, Shadow, SkeletalAnimationComponent,
+            SkeletalModelHandle, Ssao, Ssr, TimeComponent, Tonemap, TransformComponent,
+            UpdatePhase,
         },
         engine::{Engine, KeyboardKey, MouseButton, PillGame},
         graphics::PassTextureHandle,
         resources::{
-            BlendMode, Material, MaterialHandle, Mesh, MeshHandle, Resource, ResourceLoader,
-            ResourceStorage, Texture, TextureHandle, TextureType,
+            BlendMode, Material, MaterialHandle, Mesh, MeshData, MeshHandle, MeshVertex, Resource,
+            ResourceLoader, ResourceStorage, Texture, TextureHandle, TextureType,
         },
     };
 
@@ -110,6 +111,12 @@ pub mod game {
     pub use crate::resources::{
         gltf_image_kinds, gltf_resource_uris, parse_gltf_scene, CookedImages, GltfAlphaMode,
         GltfMaterialData, GltfMeshData, GltfResourceUris, GltfSceneData, GltfTextureData,
+    };
+    // CPU skeletal skinning (glTF skins + animations), the correctness baseline
+    #[cfg(feature = "gltf_loading")]
+    pub use pill_assets::{
+        gltf_skin::{parse_gltf_skinned, GltfSkinnedData},
+        skinning,
     };
     // IBL bake, shared with the build-time cooker (lives in pill_assets, surfaced here for games).
     #[cfg(feature = "ibl_bake")]

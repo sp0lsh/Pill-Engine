@@ -238,7 +238,7 @@ pub fn rtex_hdr_mip_bytes(width: u32, height: u32, mips: &[Vec<f32>]) -> Vec<u8>
 }
 
 /// Smooth per-vertex normals from area-weighted face normals, for primitives without NORMAL.
-fn face_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
+pub(crate) fn face_normals(positions: &[[f32; 3]], indices: &[u32]) -> Vec<[f32; 3]> {
     let mut normals = vec![[0.0f32; 3]; positions.len()];
     for triangle in indices.chunks(3) {
         let [a, b, c] = [triangle[0], triangle[1], triangle[2]].map(|index| index as usize);

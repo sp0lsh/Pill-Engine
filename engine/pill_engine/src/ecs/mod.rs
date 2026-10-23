@@ -30,6 +30,15 @@ pub use components::audio_source_component::AudioSourceComponent;
 #[cfg(feature = "ui")]
 pub use components::egui_component::EguiComponent;
 
+#[cfg(feature = "gltf_loading")]
+pub(crate) use components::gpu_skinning_component::SkeletalModel;
+pub(crate) use components::gpu_skinning_component::{
+    GpuSkinningComponent, SkinInstance, SkinInstanceId, SkinSource, SkinSourceId,
+};
+pub use components::skeletal_animation_component::{
+    SkeletalAnimationComponent, SkeletalModelHandle,
+};
+
 pub use components::render_state_component::{
     Bloom, DebugView, DepthOfField, DirectionalLight, Gi, Lens, PassChain, PunctualLights,
     RenderStateComponent, Shadow, Ssao, Ssr, Tonemap,
@@ -85,6 +94,8 @@ pub use components::network_state_component::{NetworkEntityState, NetworkStateCo
 pub use systems::{SystemFunction, SystemManager, UpdatePhase};
 
 pub use systems::rendering_system::rendering_system;
+#[cfg(feature = "gltf_loading")]
+pub(crate) use systems::skeletal_animation_system::skeletal_animation_system;
 
 #[cfg(feature = "ui")]
 pub use systems::egui_system::egui_system;

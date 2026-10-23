@@ -263,6 +263,46 @@ pub struct ComputePipeline {
     pub bind_group_layouts: Vec<wgpu::BindGroupLayout>,
 }
 
+/// The layouts, module and pipeline of `desc` on `device`; `PillRenderer::create_compute_pipeline`
+/// adds validation error reporting around it.
+pub(crate) fn build_compute_pipeline(
+    device: &wgpu::Device,
+    desc: &ComputePipelineDesc,
+) -> ComputePipeline {
+    let bind_group_layouts: Vec<wgpu::BindGroupLayout> = desc
+        .bind_groups
+        .iter()
+        .map(|entries| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries,
+            })
+        })
+        .collect();
+    let bind_group_layout_refs: Vec<&wgpu::BindGroupLayout> = bind_group_layouts.iter().collect();
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: desc.label,
+        bind_group_layouts: &bind_group_layout_refs,
+        push_constant_ranges: &[],
+    });
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(desc.cs.entry_func),
+        source: wgpu::ShaderSource::Wgsl(desc.cs.source.into()),
+    });
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: desc.label,
+        layout: Some(&pipeline_layout),
+        module: &module,
+        entry_point: Some(desc.cs.entry_func),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    ComputePipeline {
+        pipeline,
+        bind_group_layouts,
+    }
+}
+
 /// Swapchain image of the current frame, as two views of the same texture.
 pub struct FrameTarget {
     /// View in the surface format (what egui and other UI passes expect).

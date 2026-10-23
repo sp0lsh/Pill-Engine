@@ -280,46 +280,7 @@ impl PillRenderer for Renderer {
             .device
             .push_error_scope(wgpu::ErrorFilter::Validation);
 
-        let bind_group_layouts: Vec<wgpu::BindGroupLayout> = desc
-            .bind_groups
-            .iter()
-            .map(|entries| {
-                self.state
-                    .device
-                    .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                        label: None,
-                        entries,
-                    })
-            })
-            .collect();
-        let bind_group_layout_refs: Vec<&wgpu::BindGroupLayout> =
-            bind_group_layouts.iter().collect();
-        let pipeline_layout =
-            self.state
-                .device
-                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                    label: desc.label,
-                    bind_group_layouts: &bind_group_layout_refs,
-                    push_constant_ranges: &[],
-                });
-        let module = self
-            .state
-            .device
-            .create_shader_module(wgpu::ShaderModuleDescriptor {
-                label: Some(desc.cs.entry_func),
-                source: wgpu::ShaderSource::Wgsl(desc.cs.source.into()),
-            });
-        let pipeline =
-            self.state
-                .device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: desc.label,
-                    layout: Some(&pipeline_layout),
-                    module: &module,
-                    entry_point: Some(desc.cs.entry_func),
-                    compilation_options: Default::default(),
-                    cache: None,
-                });
+        let pipeline = crate::graphics::build_compute_pipeline(&self.state.device, &desc);
 
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(error) = pollster::block_on(self.state.device.pop_error_scope()) {
@@ -330,10 +291,7 @@ impl PillRenderer for Renderer {
             )
             .into());
         }
-        Ok(ComputePipeline {
-            pipeline,
-            bind_group_layouts,
-        })
+        Ok(pipeline)
     }
 
     fn create_pipeline(&mut self, desc: PipelineDesc) -> Result<Pipeline> {

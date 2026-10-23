@@ -326,6 +326,22 @@ fn pack_unit_vector(vector: Vector3f, alpha: u32) -> u32 {
     unorm10(vector.x) | (unorm10(vector.y) << 10) | (unorm10(vector.z) << 20) | (alpha << 30)
 }
 
+/// Axis-aligned bounds `(min, max)` of the vertex positions; zero size when empty.
+pub(crate) fn vertex_bounds(vertices: &[MeshVertex]) -> (pill_core::Vector3f, pill_core::Vector3f) {
+    let mut min = pill_core::Vector3f::splat(f32::INFINITY);
+    let mut max = pill_core::Vector3f::splat(f32::NEG_INFINITY);
+    for vertex in vertices {
+        let position = pill_core::Vector3f::from_array(vertex.position);
+        min = min.min(position);
+        max = max.max(position);
+    }
+    if vertices.is_empty() {
+        (pill_core::Vector3f::ZERO, pill_core::Vector3f::ZERO)
+    } else {
+        (min, max)
+    }
+}
+
 pub struct MeshData {
     pub vertices: Vec<MeshVertex>,
     pub indices: Vec<u32>,
@@ -342,18 +358,7 @@ pub struct TraceLod {
 impl MeshData {
     /// Axis-aligned bounds `(min, max)` of the vertex positions; zero size for an empty mesh.
     pub(crate) fn bounds(&self) -> (pill_core::Vector3f, pill_core::Vector3f) {
-        let mut min = pill_core::Vector3f::splat(f32::INFINITY);
-        let mut max = pill_core::Vector3f::splat(f32::NEG_INFINITY);
-        for vertex in &self.vertices {
-            let position = pill_core::Vector3f::from_array(vertex.position);
-            min = min.min(position);
-            max = max.max(position);
-        }
-        if self.vertices.is_empty() {
-            (pill_core::Vector3f::ZERO, pill_core::Vector3f::ZERO)
-        } else {
-            (min, max)
-        }
+        vertex_bounds(&self.vertices)
     }
 
     #[cfg(feature = "obj_loading")]

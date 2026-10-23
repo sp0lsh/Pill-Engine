@@ -19,6 +19,8 @@ pub mod convert;
 // `gltf_to_cooked_scene` rule and by `pill_engine`'s runtime `gltf_loading`
 #[cfg(feature = "gltf_scene")]
 pub mod gltf_scene;
+#[cfg(feature = "gltf_scene")]
+pub mod gltf_skin;
 pub mod ibl;
 // Trace LODs (meshoptimizer, native only)
 #[cfg(feature = "ktx2")]
@@ -28,6 +30,8 @@ pub mod mesh_lod;
 // Asset pack (PPAK): reader + decoders are wasm-safe; the writer needs feature `encode`.
 pub mod pak_codec;
 pub mod ppak;
+#[cfg(feature = "gltf_scene")]
+pub mod skinning;
 mod texture_type;
 pub use texture_type::TextureType;
 

@@ -17,7 +17,7 @@ use goth_gltf::{ComponentType, NodeTransform, PrimitiveMode};
 use crate::convert::{self, PrimitiveAttributes};
 use crate::TextureType;
 
-type Doc = goth_gltf::Gltf<Extensions>;
+pub(crate) type Doc = goth_gltf::Gltf<Extensions>;
 
 /// goth-gltf's default extensions, with the material extensions it lacks (`KHR_materials_clearcoat`)
 #[derive(Debug, Default, Clone, Copy, nanoserde::DeJson, nanoserde::SerJson)]
@@ -206,29 +206,12 @@ pub fn parse_gltf_scene(
     external_images: &mut [Vec<u8>],
     cooked: &mut CookedImages,
 ) -> Result<GltfSceneData> {
-    use std::borrow::Cow;
     use std::collections::{HashMap, HashSet};
 
     let (doc, blob) =
         Doc::from_bytes(gltf_bytes).map_err(|e| Error::msg(format!("parse glTF: {e:?}")))?;
 
-    // Resolve every buffer: embedded BIN blob, data: URI, or caller-supplied external bytes.
-    let mut buffers: Vec<Cow<[u8]>> = Vec::with_capacity(doc.buffers.len());
-    for (i, buffer) in doc.buffers.iter().enumerate() {
-        let bytes = match &buffer.uri {
-            Some(uri) if uri.starts_with("data:") => Cow::Owned(decode_data_uri(uri)?),
-            Some(_) => Cow::Borrowed(
-                external_buffers
-                    .get(i)
-                    .map(|v| v.as_slice())
-                    .ok_or_else(|| Error::msg(format!("missing fetched bytes for buffer {i}")))?,
-            ),
-            None => Cow::Borrowed(blob.ok_or_else(|| {
-                Error::msg("glTF has an embedded buffer but no blob".to_string())
-            })?),
-        };
-        buffers.push(bytes);
-    }
+    let buffers = resolve_buffers(&doc, blob, external_buffers)?;
     let buffers: Vec<&[u8]> = buffers.iter().map(|b| b.as_ref()).collect();
 
     // Image index per material texture slot (`source`, else `KHR_texture_basisu`)
@@ -422,36 +405,9 @@ pub fn parse_gltf_scene(
                 }
                 None => default_material,
             };
-            let attributes = &prim.attributes;
-            let positions = to_vec3(read_floats(&doc, &buffers, attributes.position)?);
-            let normals = match attributes.normal {
-                Some(acc) => Some(to_vec3(read_floats_at(&doc, &buffers, acc)?)),
-                None => None,
-            };
-            let texture_coordinates = match attributes.texcoord_0 {
-                Some(acc) => Some(to_vec2(read_floats_at(&doc, &buffers, acc)?)),
-                None => None,
-            };
-            let tangents = match attributes.tangent {
-                Some(acc) => to_vec4(read_floats_at(&doc, &buffers, acc)?),
-                None => Vec::new(),
-            };
-            let indices = match prim.indices {
-                Some(acc) => Some(read_indices(&doc, &buffers, acc)?),
-                None => None,
-            };
-
-            let (vertices, indices) = convert::build_primitive(
-                PrimitiveAttributes {
-                    positions,
-                    normals,
-                    texture_coordinates,
-                    tangents,
-                    indices,
-                },
-                world,
-            )
-            .map_err(|e| Error::msg(format!("glTF mesh {mesh_idx}: {e}")))?;
+            let (vertices, indices) =
+                convert::build_primitive(read_primitive_attributes(&doc, &buffers, prim)?, world)
+                    .map_err(|e| Error::msg(format!("glTF mesh {mesh_idx}: {e}")))?;
             if indices.is_empty() {
                 continue;
             }
@@ -471,7 +427,7 @@ pub fn parse_gltf_scene(
 }
 
 /// `slice[index]`, or an error naming what was referenced out of range.
-fn get<'a, T>(slice: &'a [T], index: usize, what: &str) -> Result<&'a T> {
+pub(crate) fn get<'a, T>(slice: &'a [T], index: usize, what: &str) -> Result<&'a T> {
     slice.get(index).ok_or_else(|| {
         Error::msg(format!(
             "glTF {what} {index} out of range ({} defined)",
@@ -537,6 +493,32 @@ fn decode_data_uri(uri: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Every buffer's bytes: embedded BIN blob, data: URI, or caller-supplied external bytes.
+pub(crate) fn resolve_buffers<'a>(
+    doc: &Doc,
+    blob: Option<&'a [u8]>,
+    external_buffers: &'a [Vec<u8>],
+) -> Result<Vec<std::borrow::Cow<'a, [u8]>>> {
+    use std::borrow::Cow;
+    let mut buffers = Vec::with_capacity(doc.buffers.len());
+    for (i, buffer) in doc.buffers.iter().enumerate() {
+        let bytes = match &buffer.uri {
+            Some(uri) if uri.starts_with("data:") => Cow::Owned(decode_data_uri(uri)?),
+            Some(_) => Cow::Borrowed(
+                external_buffers
+                    .get(i)
+                    .map(|v| v.as_slice())
+                    .ok_or_else(|| Error::msg(format!("missing fetched bytes for buffer {i}")))?,
+            ),
+            None => Cow::Borrowed(blob.ok_or_else(|| {
+                Error::msg("glTF has an embedded buffer but no blob".to_string())
+            })?),
+        };
+        buffers.push(bytes);
+    }
+    Ok(buffers)
+}
+
 // --- Accessor reading (goth-gltf is low-level; we read the typed arrays out of the buffers) ---
 
 /// Reads a required float-attribute accessor (POSITION) as a flat `Vec<f32>`.
@@ -546,7 +528,39 @@ fn read_floats(doc: &Doc, buffers: &[&[u8]], accessor: Option<usize>) -> Result<
     read_floats_at(doc, buffers, accessor)
 }
 
-fn read_floats_at(doc: &Doc, buffers: &[&[u8]], accessor_idx: usize) -> Result<Vec<f32>> {
+/// Reads POSITION, NORMAL, TEXCOORD_0, TANGENT and indices of a primitive.
+pub(crate) fn read_primitive_attributes(
+    doc: &Doc,
+    buffers: &[&[u8]],
+    prim: &goth_gltf::Primitive<Extensions>,
+) -> Result<PrimitiveAttributes> {
+    let attributes = &prim.attributes;
+    Ok(PrimitiveAttributes {
+        positions: to_vec3(read_floats(doc, buffers, attributes.position)?),
+        normals: match attributes.normal {
+            Some(acc) => Some(to_vec3(read_floats_at(doc, buffers, acc)?)),
+            None => None,
+        },
+        texture_coordinates: match attributes.texcoord_0 {
+            Some(acc) => Some(to_vec2(read_floats_at(doc, buffers, acc)?)),
+            None => None,
+        },
+        tangents: match attributes.tangent {
+            Some(acc) => to_vec4(read_floats_at(doc, buffers, acc)?),
+            None => Vec::new(),
+        },
+        indices: match prim.indices {
+            Some(acc) => Some(read_indices(doc, buffers, acc)?),
+            None => None,
+        },
+    })
+}
+
+pub(crate) fn read_floats_at(
+    doc: &Doc,
+    buffers: &[&[u8]],
+    accessor_idx: usize,
+) -> Result<Vec<f32>> {
     let acc = get(&doc.accessors, accessor_idx, "accessor")?;
     let components = acc.accessor_type.num_components();
     let (buf, base, stride, comp_size) = accessor_layout(doc, buffers, accessor_idx)?;
@@ -580,7 +594,7 @@ fn read_floats_at(doc: &Doc, buffers: &[&[u8]], accessor_idx: usize) -> Result<V
 }
 
 /// Reads an index accessor as `u32` (glTF allows u8/u16/u32 indices).
-fn read_indices(doc: &Doc, buffers: &[&[u8]], accessor_idx: usize) -> Result<Vec<u32>> {
+pub(crate) fn read_indices(doc: &Doc, buffers: &[&[u8]], accessor_idx: usize) -> Result<Vec<u32>> {
     let acc = get(&doc.accessors, accessor_idx, "accessor")?;
     let (buf, base, stride, _) = accessor_layout(doc, buffers, accessor_idx)?;
     let mut out = Vec::with_capacity(acc.count);
@@ -605,7 +619,7 @@ fn read_indices(doc: &Doc, buffers: &[&[u8]], accessor_idx: usize) -> Result<Vec
 
 /// Resolves (buffer slice, byte base offset, element stride, component byte size) for an accessor.
 /// Checks that every element lies inside the buffer, so callers can index without bounds checks.
-fn accessor_layout<'a>(
+pub(crate) fn accessor_layout<'a>(
     doc: &Doc,
     buffers: &[&'a [u8]],
     accessor_idx: usize,
@@ -654,13 +668,13 @@ fn norm_s(v: f32, max: f32, normalized: bool) -> f32 {
     }
 }
 
-fn to_vec3(flat: Vec<f32>) -> Vec<[f32; 3]> {
+pub(crate) fn to_vec3(flat: Vec<f32>) -> Vec<[f32; 3]> {
     flat.as_chunks().0.to_vec()
 }
-fn to_vec2(flat: Vec<f32>) -> Vec<[f32; 2]> {
+pub(crate) fn to_vec2(flat: Vec<f32>) -> Vec<[f32; 2]> {
     flat.as_chunks().0.to_vec()
 }
-fn to_vec4(flat: Vec<f32>) -> Vec<[f32; 4]> {
+pub(crate) fn to_vec4(flat: Vec<f32>) -> Vec<[f32; 4]> {
     flat.as_chunks().0.to_vec()
 }
 

@@ -13,6 +13,8 @@ pub(crate) mod networking_system;
 #[cfg(feature = "physics")]
 pub(crate) mod physics_system;
 pub(crate) mod rendering_system;
+#[cfg(feature = "gltf_loading")]
+pub(crate) mod skeletal_animation_system;
 mod system_manager;
 pub(crate) mod time_system;
 

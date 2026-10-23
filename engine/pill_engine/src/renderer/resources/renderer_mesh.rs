@@ -1,5 +1,7 @@
 use crate::graphics::RendererMeshHandle;
-use crate::resources::{MeshData, MeshVertex, PackedVertexAttributes, Resource, ResourceStorage};
+use crate::resources::{
+    vertex_bounds, MeshData, MeshVertex, PackedVertexAttributes, Resource, ResourceStorage,
+};
 
 use pill_core::{PillTypeMapKey, Result, Vector3f};
 use wgpu::util::DeviceExt;
@@ -29,28 +31,33 @@ pub struct RendererMesh {
     pub local_bounds: (Vector3f, Vector3f),
 }
 
+/// Splits vertices into the position stream (slot 0) and the packed attribute stream (slot 1).
+fn vertex_streams(vertices: &[MeshVertex]) -> (Vec<[f32; 3]>, Vec<PackedVertexAttributes>) {
+    (
+        vertices.iter().map(MeshVertex::position).collect(),
+        vertices.iter().map(MeshVertex::packed_attributes).collect(),
+    )
+}
+
 impl RendererMesh {
     pub fn new(device: &wgpu::Device, name: &str, mesh_data: &MeshData) -> Result<Self> {
-        let positions: Vec<[f32; 3]> = mesh_data
-            .vertices
-            .iter()
-            .map(MeshVertex::position)
-            .collect();
+        let (positions, attributes) = vertex_streams(&mesh_data.vertices);
         let position_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(&format!("{:?}_position_buffer", name)),
             contents: bytemuck::cast_slice(&positions),
-            usage: wgpu::BufferUsages::VERTEX,
+            // STORAGE: written by the GPU skin cache (pass_skinning.rs)
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::STORAGE,
         });
 
-        let attributes: Vec<PackedVertexAttributes> = mesh_data
-            .vertices
-            .iter()
-            .map(MeshVertex::packed_attributes)
-            .collect();
         let attribute_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some(&format!("{:?}_attribute_buffer", name)),
             contents: bytemuck::cast_slice(&attributes),
-            usage: wgpu::BufferUsages::VERTEX,
+            // STORAGE: written by the GPU skin cache (pass_skinning.rs)
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::STORAGE,
         });
 
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -67,6 +74,25 @@ impl RendererMesh {
             index_count: mesh_data.indices.len() as u32,
             local_bounds: mesh_data.bounds(),
         })
+    }
+
+    /// Overwrites both vertex streams in place (indices unchanged) and refits `local_bounds`;
+    /// `vertices` must have the mesh's vertex count.
+    pub fn update_vertices(&mut self, queue: &wgpu::Queue, vertices: &[MeshVertex]) -> Result<()> {
+        let vertex_count = self.position_buffer.size() as usize / std::mem::size_of::<[f32; 3]>();
+        if vertices.len() != vertex_count {
+            return Err(format!(
+                "Mesh {:?}: {} vertices given, it has {vertex_count}",
+                self.name,
+                vertices.len()
+            )
+            .into());
+        }
+        let (positions, attributes) = vertex_streams(vertices);
+        queue.write_buffer(&self.position_buffer, 0, bytemuck::cast_slice(&positions));
+        queue.write_buffer(&self.attribute_buffer, 0, bytemuck::cast_slice(&attributes));
+        self.local_bounds = vertex_bounds(vertices);
+        Ok(())
     }
 
     /// Binds both streams (slots 0 and 1) for pipelines built with `data_layout_descriptors`.

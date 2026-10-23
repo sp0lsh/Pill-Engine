@@ -25,6 +25,7 @@ mod pass_punctual_shadows;
 mod pass_shadow;
 #[cfg(feature = "post_fx")]
 mod pass_sharpen;
+pub(crate) mod pass_skinning;
 #[cfg(feature = "post_fx")]
 mod pass_ssao;
 #[cfg(feature = "post_fx")]
@@ -42,7 +43,7 @@ mod shadow_casters;
 
 // --- Use ---
 
-pub(crate) use renderer::mip_copy_layout;
+pub(crate) use renderer::{build_compute_pipeline, mip_copy_layout};
 pub use renderer::{
     camera_forward, camera_view_projection, BufferDesc, ComputePipeline, ComputePipelineDesc,
     FrameTarget, Pass, PassTextureHandle, PillRenderer, Pipeline, PipelineDesc, Renderer,
@@ -72,6 +73,7 @@ pub(crate) use pass_punctual_shadows::PassPunctualShadows;
 pub(crate) use pass_shadow::PassShadow;
 #[cfg(feature = "post_fx")]
 pub use pass_sharpen::PassSharpen;
+pub use pass_skinning::PassSkinning;
 #[cfg(feature = "post_fx")]
 pub use pass_ssao::PassSsao;
 #[cfg(feature = "post_fx")]
