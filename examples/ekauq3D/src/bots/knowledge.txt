@@ -1,0 +1,6 @@
+# Written by ekauq_tune (examples/ekauq_tune.rs); measured with the weapons of this hash
+weapons 36d8da210975630f
+calibration axe 16.0 7.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0
+calibration shotgun 38.0 33.6 32.2 34.2 25.6 26.0 24.0 18.4 13.2 4.0 2.4 0.0
+genome 1.045 22.610 1.365 1.470 0.066 0.216 0.108 62.797 95.666 9.535 0.892 2.696 1.172 0.930 1.500 0.653
+# generation 120 of 120, best score 0.21, maps lqdm1 lqdm2 lqdm3 lqdm6 lqdm7 lqdm9

@@ -12,6 +12,9 @@ crate-type = ["cdylib", "rlib"]
 # into this build; the example only fetches the files and spawns the result.
 pill_engine = { path = "../../engine/pill_engine", features = ["game", "internal", "quake_map_loading", "ibl_bake", "post_fx", "ui"] }
 log = "0.4"
+# Session recordings and network messages
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2"
@@ -23,3 +26,5 @@ web-sys = { version = "0.3", features = ["Window", "Request", "RequestInit", "Re
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ureq = "2"
 pollster = "0.2"
+# Network play: the engine's renet (UDP) server and client
+pill_core = { path = "../../engine/pill_core" }

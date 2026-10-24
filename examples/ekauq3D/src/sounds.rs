@@ -13,6 +13,8 @@ pub enum Sfx {
     Land,
     AxeSwing,
     AxeHit,
+    /// A bot's shot, where it is.
+    BotFire,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -41,7 +43,7 @@ mod native {
     });
 
     /// (sound, files, sources, volume, positional)
-    const BANK: [(Sfx, &[&str], usize, f32, bool); 7] = [
+    const BANK: [(Sfx, &[&str], usize, f32, bool); 8] = [
         (Sfx::Fire, &["guncock"], 3, 0.9, false),
         (Sfx::Ricochet, &["ric1", "ric2", "ric3"], 6, 0.8, true),
         (
@@ -53,13 +55,14 @@ mod native {
                 "footstep4.cooked",
             ],
             4,
-            0.35,
+            0.2,
             false,
         ),
         (Sfx::Jump, &["plyrjmp8"], 2, 0.7, false),
         (Sfx::Land, &["land"], 2, 0.9, false),
         (Sfx::AxeSwing, &["ax1"], 2, 0.8, false),
         (Sfx::AxeHit, &["axhit2"], 2, 0.9, false),
+        (Sfx::BotFire, &["guncock"], 4, 0.9, true),
     ];
 
     pub fn spawn_sounds(engine: &mut Engine, scene: SceneHandle) -> Result<()> {

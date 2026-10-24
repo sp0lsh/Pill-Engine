@@ -1,8 +1,10 @@
 {
   "seed": 2,
-  "heel_cutoff": 420,
+  "heel_cutoff": 315,
   "heel_decay": 0.032,
   "knock_frequency": 72,
   "toe_delay": 0.05,
-  "toe_level": 0.45
+  "toe_level": 0.22,
+  "toe_cutoff": 1700,
+  "peak": 0.45
 }

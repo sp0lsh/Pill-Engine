@@ -9,9 +9,11 @@ use pill_engine::{
 };
 
 use crate::{
+    deathmatch::{self, BotModel, Deathmatch},
     loader::{self, LoadedLevel},
     player::{self, Mode, PlayerRig},
     sounds::{self, Sfx},
+    tour,
     weapon::{self, Flash, MuzzleFlash, Particle, ViewModel, Weapon},
 };
 
@@ -39,8 +41,8 @@ pub struct TextureAnimation {
 #[derive(Clone, Copy)]
 pub struct CameraSpot {
     pub position: Vector3f,
-    yaw: f32,
-    pitch: f32,
+    pub(crate) yaw: f32,
+    pub(crate) pitch: f32,
 }
 
 /// Native screenshot run (`EKAUQ_CAPTURE=<dir>`): each of the first spawns is captured once GI
@@ -51,6 +53,9 @@ pub struct Capture {
     frames: u32,
     // `EKAUQ_CAPTURE_PLAYER=1`: a scripted player run (run, shoot) instead of the spawn views
     player_script: bool,
+    // `EKAUQ_CAPTURE_TOUR=1`: the camera flies through the level, every 2nd frame captured
+    tour: bool,
+    tour_path: Vec<CameraSpot>,
 }
 
 define_global_component!(LevelState {
@@ -64,6 +69,8 @@ define_global_component!(LevelState {
     capture: Option<Capture>,
     // Solid brushes of the level (player movement, shots)
     collision: Option<QuakeCollision>,
+    // The player and the bots, once the level is loaded
+    deathmatch: Option<Deathmatch>,
 });
 
 pub struct Game {}
@@ -80,6 +87,8 @@ const FLY_FAST_MULTIPLIER: f32 = 3.0;
 const LOOK_SENSITIVITY: f32 = 0.2;
 /// Quake `_sunlight` units → directional light intensity.
 const SUN_SCALE: f32 = 0.02;
+/// Scales the map's fog density.
+const FOG_SCALE: f32 = 0.5;
 /// Animated textures change frame 5 times per second (Quake).
 const TEXTURE_FRAMES_PER_SECOND: f32 = 5.0;
 /// Capture run: frames each view renders before its screenshot (GI and SSR settle), and the
@@ -278,6 +287,9 @@ fn capture_system(engine: &mut Engine) -> Result<()> {
         if capture.player_script {
             return capture_player_script(engine);
         }
+        if capture.tour {
+            return capture_tour(engine);
+        }
         capture.frames += 1;
         let path = (capture.frames == CAPTURE_SETTLE_FRAMES)
             .then(|| format!("{}/{map}_{}.png", capture.directory, capture.shot));
@@ -303,6 +315,83 @@ fn capture_system(engine: &mut Engine) -> Result<()> {
     }
     if let Some(index) = next {
         move_camera_to_spawn(engine, index)?;
+    }
+    Ok(())
+}
+
+/// Camera tour for frame-to-frame comparisons (shadow popping): a collision-free fly-through
+/// from spawn 0 past the level's lights (`tour::fly_through`), one path step per frame (not per second) so runs
+/// match; every `EKAUQ_TOUR_STRIDE`-th frame (default 2) is captured as `{map}_tour_{frame}.png`.
+/// `EKAUQ_TOUR_STEP`: path step per frame in Quake units (default 4, ≈ 4 m/s at 60 fps).
+fn capture_tour(engine: &mut Engine) -> Result<()> {
+    const SETTLE_FRAMES: u32 = 120;
+    const LIGHTS_VISITED: usize = 16;
+    const MAX_FRAMES: usize = 6000;
+    let env_number = |name: &str, default: f32| {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse::<f32>().ok())
+            .unwrap_or(default)
+    };
+    let step = env_number("EKAUQ_TOUR_STEP", 4.0).max(0.1);
+    let stride = env_number("EKAUQ_TOUR_STRIDE", 2.0).max(1.0) as u32;
+    let (spot, path) = {
+        let lights: Vec<Vector3f> = engine
+            .iterate_two_components::<TransformComponent, LightComponent>()?
+            .map(|(_, transform, _)| transform.position)
+            .collect();
+        let state = engine.get_global_component_mut::<LevelState>()?;
+        let map = state.map.clone();
+        if state
+            .capture
+            .as_ref()
+            .is_some_and(|capture| capture.tour_path.is_empty())
+        {
+            let start = state
+                .spawns
+                .first()
+                .map_or(Vector3f::ZERO, |spawn| spawn.position);
+            let waypoints = tour::light_waypoints(start, &lights, LIGHTS_VISITED);
+            let mut path = state
+                .collision
+                .as_ref()
+                .map(|collision| tour::fly_through(collision, start, &waypoints, step))
+                .unwrap_or_default();
+            path.truncate(MAX_FRAMES);
+            log::info!("ekauq3D: tour of {} frames", path.len());
+            if path.is_empty() {
+                std::process::exit(0);
+            }
+            if let Some(capture) = state.capture.as_mut() {
+                capture.tour_path = path;
+            }
+        }
+        let Some(capture) = state.capture.as_mut() else {
+            return Ok(());
+        };
+        capture.frames += 1;
+        let frame = capture.frames;
+        let index = frame.saturating_sub(SETTLE_FRAMES) as usize;
+        if index >= capture.tour_path.len() + 3 {
+            log::info!("ekauq3D: tour done");
+            std::process::exit(0);
+        }
+        let spot = capture.tour_path[index.min(capture.tour_path.len() - 1)];
+        let path = (frame > SETTLE_FRAMES && frame % stride == 0)
+            .then(|| format!("{}/{map}_tour_{frame:05}.png", capture.directory));
+        (spot, path)
+    };
+    for (_, transform, fly) in
+        engine.iterate_two_components_mut::<TransformComponent, FlyCamera>()?
+    {
+        transform.set_position(spot.position);
+        fly.yaw = spot.yaw;
+        fly.pitch = spot.pitch;
+    }
+    if let Some(path) = path {
+        engine
+            .get_global_component_mut::<RenderStateComponent>()?
+            .capture = Some(path);
     }
     Ok(())
 }
@@ -407,12 +496,16 @@ fn player_sounds_system(engine: &mut Engine) -> Result<()> {
     } else if events.landed_speed > 0.0 {
         sounds::play(engine, Sfx::Footstep, None)?;
     }
+    if events.head_landed {
+        sounds::play(engine, Sfx::Land, None)?;
+    }
     Ok(())
 }
 
-/// Watermark, and the crosshair in player mode.
+/// Watermark, the deathmatch HUD, and the crosshair in player mode.
 fn overlay(ctx: &egui::Context) {
     watermark(ctx);
+    deathmatch::hud(ctx);
     if player::CROSSHAIR.load(std::sync::atomic::Ordering::Relaxed) {
         player::crosshair(ctx);
     }
@@ -489,10 +582,27 @@ fn level_drain_system(engine: &mut Engine) -> Result<()> {
             collision,
             axe,
             shotgun,
+            arena,
+            nav,
+            knowledge,
+            player,
         })) => {
             let scene = engine.get_active_scene_handle()?;
             engine.get_global_component_mut::<LevelState>()?.collision = Some(collision);
             weapon::spawn_weapons(engine, scene, axe, shotgun)?;
+            let map = engine.get_global_component::<LevelState>()?.map.clone();
+            let deathmatch = deathmatch::spawn_deathmatch(
+                engine,
+                scene,
+                &map,
+                arena,
+                nav,
+                knowledge,
+                player,
+                loader::requested_bots(),
+                loader::requested_network(),
+            )?;
+            engine.get_global_component_mut::<LevelState>()?.deathmatch = Some(deathmatch);
             spawn_level(engine, scene, level)
         }
         Some(Err(error)) => {
@@ -526,7 +636,7 @@ fn spawn_level(engine: &mut Engine, scene: SceneHandle, level: QuakeLevel) -> Re
         let render_state = engine.get_global_component_mut::<RenderStateComponent>()?;
         render_state.background = sky;
         render_state.environment = Some(dome);
-        render_state.ibl_intensity = 1.0;
+        render_state.ibl_intensity = 0.5;
         if let Some(sun) = &level.sun {
             render_state.lights[0] = DirectionalLight {
                 direction: sun.direction,
@@ -537,7 +647,7 @@ fn spawn_level(engine: &mut Engine, scene: SceneHandle, level: QuakeLevel) -> Re
         }
         if let Some(fog) = &level.fog {
             render_state.fog_color = fog.color;
-            render_state.fog_density = fog.density;
+            render_state.fog_density = fog.density * FOG_SCALE;
         }
     }
 
@@ -662,7 +772,10 @@ fn spawn_level(engine: &mut Engine, scene: SceneHandle, level: QuakeLevel) -> Re
         let state = engine.get_global_component_mut::<LevelState>()?;
         state.animations = animations;
         state.spawns = spawns;
-        state.fog_density = level.fog.as_ref().map_or(0.0, |fog| fog.density);
+        state.fog_density = level
+            .fog
+            .as_ref()
+            .map_or(0.0, |fog| fog.density * FOG_SCALE);
         state.loaded = true;
     }
     move_camera_to_spawn(engine, 0)?;
@@ -715,8 +828,6 @@ impl PillGame for Game {
             render_state.gi.cascade_spacings[1] = 6.0;
             render_state.gi.rays_per_probe = 4;
             render_state.gi.blend_speed = 1.0 / 512.0;
-            // Shadows for the lights nearest the camera (point: 6 maps, spot: 1)
-            render_state.punctual_lights.max_shadow_maps = 64;
         }
 
         engine
@@ -733,6 +844,7 @@ impl PillGame for Game {
         engine.register_component::<Particle>(scene)?;
         engine.register_component::<Flash>(scene)?;
         engine.register_component::<MuzzleFlash>(scene)?;
+        engine.register_component::<BotModel>(scene)?;
         engine.add_global_component(PlayerRig::new())?;
         engine.add_global_component(Weapon::new())?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -752,6 +864,8 @@ impl PillGame for Game {
                 frames: 0,
                 player_script: std::env::var("EKAUQ_CAPTURE_PLAYER")
                     .is_ok_and(|value| value == "1"),
+                tour: std::env::var("EKAUQ_CAPTURE_TOUR").is_ok_and(|value| value == "1"),
+                tour_path: Vec::new(),
             }
         });
         #[cfg(target_arch = "wasm32")]
@@ -765,6 +879,7 @@ impl PillGame for Game {
             animations: Vec::new(),
             capture,
             collision: None,
+            deathmatch: None,
         })?;
 
         // Build the camera up front so the window renders while the level downloads
@@ -794,9 +909,12 @@ impl PillGame for Game {
         let _ = camera;
 
         engine.add_system("controls", controls_system)?;
-        engine.add_system("player", player::player_system)?;
+        engine.add_system("player_input", player::player_input_system)?;
+        engine.add_system("deathmatch", deathmatch::deathmatch_system)?;
+        engine.add_system("player_view", player::player_view_system)?;
         engine.add_system("fly_camera", fly_camera_system)?;
         engine.add_system("weapon", weapon::weapon_system)?;
+        engine.add_system("bot_render", deathmatch::bot_render_system)?;
         engine.add_system("effects", weapon::effects_system)?;
         engine.add_system("player_sounds", player_sounds_system)?;
         engine.add_system("light_styles", light_style_system)?;

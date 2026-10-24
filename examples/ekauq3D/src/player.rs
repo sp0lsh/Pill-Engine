@@ -1,6 +1,7 @@
-//! FPS player: Quake movement (engine `quake_player`) against the level's brush collision, mouse
-//! look with a locked cursor, and the view feel: head bob, strafe roll, landing dip and weapon
-//! punch. N toggles between this and the free-fly spectator camera.
+//! FPS player: mouse look with a locked cursor and movement keys (the deathmatch moves the player,
+//! Quake movement against the level's brushes, at its fixed tick), and the view feel: head bob,
+//! strafe roll, landing dip and weapon punch. N toggles between this and the free-fly spectator
+//! camera.
 //!
 //! Bob shape after Quake's documented view variables (cl_bob 0.02, cl_bobcycle 0.6, cl_bobup
 //! 0.5) and roll (cl_rollangle 2, cl_rollspeed 200); written fresh, no GPL code.
@@ -8,22 +9,19 @@
 use pill_engine::{
     define_global_component,
     game::{
-        quake_map::{engine_to_quake, quake_direction_to_engine, quake_to_engine, QuakeCollision},
-        quake_player::{
-            player_move, trace_player, MoveSettings, PlayerInput, PlayerState, EYE_HEIGHT,
-        },
+        quake_map::{engine_to_quake, quake_direction_to_engine, quake_to_engine},
+        quake_player::{MoveEvents, PlayerInput, PlayerState, EYE_HEIGHT},
         *,
     },
 };
 
-use crate::game::{FlyCamera, LevelState};
+use crate::{
+    game::{FlyCamera, LevelState},
+    sim::{arena::drop_to_floor, combat::MAX_PITCH, view_basis},
+};
 
 /// Degrees of view rotation per pixel of mouse movement.
 const MOUSE_SENSITIVITY: f32 = 0.12;
-/// Quake's look limits.
-const MAX_PITCH: f32 = 80.0;
-/// Longest movement step (stable stepping and landing at low frame rates).
-const MAX_MOVE_STEP: f32 = 1.0 / 72.0;
 const BOB_AMOUNT: f32 = 0.02;
 const BOB_CYCLE: f32 = 0.6;
 const BOB_UP: f32 = 0.5;
@@ -39,6 +37,30 @@ const DIP_IMPULSE: f32 = 0.35;
 pub const HARD_LANDING_SPEED: f32 = 300.0;
 /// Footsteps only above this ground speed (units/s).
 const FOOTSTEP_MIN_SPEED: f32 = 100.0;
+/// The view when dead: the head knocked up by the shot (units, seconds), falling to rest this
+/// far below the origin (about 8 above the floor) at `DEATH_LAND_TIME`, rebounding off the
+/// floor; turning toward where the killer goes (at most `DEATH_MAX_TURN` degrees from the view
+/// at death, rate per second), pitched and rolled over (Quake's dead view rolls 80°). The hit
+/// tumbles the head (degrees per axis, a damped spring: rad/s, damping ratio); landing shakes
+/// it along the view's own up axis (units, degrees of nod, Hz, decay seconds), so the shake is
+/// vertical on screen however the head lies.
+const DEATH_KNOCK: f32 = 4.0;
+const DEATH_KNOCK_TIME: f32 = 0.1;
+const DEATH_REST_HEIGHT: f32 = -16.0;
+const DEATH_LAND_TIME: f32 = 0.7;
+const DEATH_REBOUND: f32 = 3.0;
+const DEATH_REBOUND_TIME: f32 = 0.25;
+const DEATH_TUMBLE: [f32; 3] = [25.0, 18.0, 22.0];
+const DEATH_TUMBLE_RATE: f32 = 11.0;
+const DEATH_TUMBLE_DAMPING: f32 = 0.45;
+const DEATH_SHAKE_LIFT: f32 = 2.5;
+const DEATH_SHAKE_NOD: f32 = 4.0;
+const DEATH_SHAKE_RATE: f32 = 14.0;
+const DEATH_SHAKE_DECAY: f32 = 0.25;
+const DEATH_MAX_TURN: f32 = 90.0;
+const DEATH_TURN_RATE: f32 = 4.0;
+const DEATH_PITCH: f32 = -10.0;
+const DEATH_ROLL: f32 = 80.0;
 
 /// Shows the crosshair (the egui overlay has no engine access): set in player mode.
 pub static CROSSHAIR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -66,6 +88,113 @@ pub struct PlayerEvents {
     pub footstep: bool,
     pub jumped: bool,
     pub landed_speed: f32,
+    /// The dead player's head hit the floor.
+    pub head_landed: bool,
+}
+
+/// The dead player's view: seconds since the death, the view then, the killer and the yaw
+/// the head turns toward, the yaw turned so far.
+#[derive(Clone, Copy)]
+pub struct DeathView {
+    time: f32,
+    yaw: f32,
+    pitch: f32,
+    pub killer: Option<usize>,
+    target_yaw: f32,
+    turned: f32,
+    /// Tumble directions.
+    seed: f32,
+}
+
+impl DeathView {
+    pub fn new(yaw: f32, pitch: f32, killer: Option<usize>, seed: f32) -> Self {
+        Self {
+            time: 0.0,
+            yaw,
+            pitch,
+            killer,
+            target_yaw: yaw,
+            turned: yaw,
+            seed,
+        }
+    }
+
+    /// Turns the head toward `yaw` (degrees), at most `DEATH_MAX_TURN` from the view at death.
+    pub fn look_toward(&mut self, yaw: f32) {
+        let turn = wrap_degrees(yaw - self.yaw).clamp(-DEATH_MAX_TURN, DEATH_MAX_TURN);
+        self.target_yaw = self.yaw + turn;
+    }
+
+    /// Eye height over the origin, yaw, pitch and roll at `time`.
+    fn pose(&self) -> (f32, f32, f32, f32) {
+        let smooth = |x: f32| {
+            let x = x.clamp(0.0, 1.0);
+            x * x * (3.0 - 2.0 * x)
+        };
+        let time = self.time;
+        let height = if time < DEATH_KNOCK_TIME {
+            EYE_HEIGHT + DEATH_KNOCK * (std::f32::consts::FRAC_PI_2 * time / DEATH_KNOCK_TIME).sin()
+        } else if time < DEATH_LAND_TIME {
+            // Falling: gravity-like, from the knock's top to the rest height
+            let fall = (time - DEATH_KNOCK_TIME) / (DEATH_LAND_TIME - DEATH_KNOCK_TIME);
+            let top = EYE_HEIGHT + DEATH_KNOCK;
+            top + (DEATH_REST_HEIGHT - top) * fall * fall
+        } else {
+            let rebound = (time - DEATH_LAND_TIME) / DEATH_REBOUND_TIME;
+            DEATH_REST_HEIGHT
+                + if rebound < 1.0 {
+                    DEATH_REBOUND * (std::f32::consts::PI * rebound).sin()
+                } else {
+                    0.0
+                }
+        };
+        // The hit's tumble: each axis swings to its offset and overshoots a little (step
+        // response of a damped spring), directions from the seed
+        let damped = DEATH_TUMBLE_RATE * (1.0 - DEATH_TUMBLE_DAMPING.powi(2)).sqrt();
+        let response = 1.0
+            - (-DEATH_TUMBLE_DAMPING * DEATH_TUMBLE_RATE * time).exp()
+                * ((damped * time).cos()
+                    + DEATH_TUMBLE_DAMPING * DEATH_TUMBLE_RATE / damped * (damped * time).sin());
+        let tumble: [f32; 3] = std::array::from_fn(|axis| {
+            let sign = (self.seed * (axis as f32 + 1.7)).sin().signum();
+            sign * DEATH_TUMBLE[axis] * response
+        });
+        let over = smooth(time / DEATH_LAND_TIME);
+        (
+            height,
+            self.turned + tumble[0],
+            self.pitch + (DEATH_PITCH - self.pitch) * over + tumble[1],
+            DEATH_ROLL * over + tumble[2],
+        )
+    }
+
+    /// After the head hits the floor: lift along the view's up axis (units) and nod about its
+    /// right axis (degrees), decaying.
+    fn shake(&self) -> (f32, f32) {
+        let since = self.time - DEATH_LAND_TIME;
+        if since < 0.0 {
+            return (0.0, 0.0);
+        }
+        let decay = (-since / DEATH_SHAKE_DECAY).exp();
+        let phase = std::f32::consts::TAU * DEATH_SHAKE_RATE * since;
+        (
+            DEATH_SHAKE_LIFT * decay * phase.sin(),
+            DEATH_SHAKE_NOD * decay * (phase + 0.6).sin(),
+        )
+    }
+}
+
+/// `degrees` in −180..180.
+fn wrap_degrees(degrees: f32) -> f32 {
+    (degrees + 180.0).rem_euclid(360.0) - 180.0
+}
+
+impl PlayerEvents {
+    /// Adds a movement step's jump and landing.
+    pub fn merge(&mut self, moved: &MoveEvents) {
+        self.jumped |= moved.jumped;
+        self.landed_speed = self.landed_speed.max(moved.landed_speed);
+    }
 }
 
 define_global_component!(PlayerRig {
@@ -82,6 +211,14 @@ define_global_component!(PlayerRig {
     events: PlayerEvents,
     // Scripted input instead of the devices (capture runs)
     scripted: Option<PlayerInput>,
+    // Killed in the deathmatch, until it respawns the player
+    dead: bool,
+    // The view while dead (from the death until the respawn)
+    death: Option<DeathView>,
+    // This frame's movement keys and view yaw, for the deathmatch
+    input: PlayerInput,
+    // Where the player is drawn: between the deathmatch's last two ticks
+    origin: [f32; 3],
 });
 
 impl PlayerRig {
@@ -98,6 +235,10 @@ impl PlayerRig {
             view: ViewPose::default(),
             events: PlayerEvents::default(),
             scripted: None,
+            dead: false,
+            death: None,
+            input: PlayerInput::default(),
+            origin: [0.0; 3],
         }
     }
 
@@ -110,23 +251,6 @@ impl PlayerRig {
 /// `FlyCamera` yaw of a Quake yaw: FlyCamera yaw 0 looks down −Z, Quake yaw 0 down +X (engine +X).
 pub fn fly_yaw_from_quake(yaw: f32) -> f32 {
     yaw - 90.0
-}
-
-/// Quake view basis from yaw and pitch (degrees, pitch up positive): forward, right, up.
-fn view_basis(yaw: f32, pitch: f32) -> ([f32; 3], [f32; 3], [f32; 3]) {
-    let (yaw, pitch) = (yaw.to_radians(), pitch.to_radians());
-    let forward = [
-        pitch.cos() * yaw.cos(),
-        pitch.cos() * yaw.sin(),
-        pitch.sin(),
-    ];
-    let right = [yaw.sin(), -yaw.cos(), 0.0];
-    let up = [
-        -pitch.sin() * yaw.cos(),
-        -pitch.sin() * yaw.sin(),
-        pitch.cos(),
-    ];
-    (forward, right, up)
 }
 
 /// `TransformComponent::rotation` (degrees; Rx·Ry·Rz) of a rotation matrix given by its columns.
@@ -206,6 +330,7 @@ pub fn toggle_mode(engine: &mut Engine) -> Result<()> {
                 origin,
                 ..PlayerState::default()
             };
+            rig.origin = origin;
             rig.yaw = fly_yaw + 90.0; // inverse of fly_yaw_from_quake
             rig.pitch = fly_pitch.clamp(-MAX_PITCH, MAX_PITCH);
             rig.dip = 0.0;
@@ -222,25 +347,11 @@ pub fn toggle_mode(engine: &mut Engine) -> Result<()> {
     Ok(())
 }
 
-/// The box at `origin` moved down onto the floor below it, if it isn't stuck in a wall.
-fn drop_to_floor(collision: &QuakeCollision, origin: [f32; 3]) -> Option<[f32; 3]> {
-    let down = trace_player(
-        collision,
-        origin,
-        [origin[0], origin[1], origin[2] - 4096.0],
-    );
-    (!down.start_solid && down.fraction < 1.0).then_some(down.end)
-}
-
-/// Mouse look, movement and the view of the player (player mode only).
-pub fn player_system(engine: &mut Engine) -> Result<()> {
+/// Mouse look and movement keys of the player (player mode only), for the deathmatch.
+pub fn player_input_system(engine: &mut Engine) -> Result<()> {
     if engine.get_global_component::<PlayerRig>()?.mode != Mode::Player {
         return Ok(());
     }
-    let delta_time = engine
-        .get_global_component::<TimeComponent>()?
-        .delta_time
-        .clamp(0.0, 0.1);
 
     // --- Input: Esc frees the cursor, a click takes it back ---
     let (mouse_delta, keys, jump, locked) = {
@@ -271,14 +382,13 @@ pub fn player_system(engine: &mut Engine) -> Result<()> {
         .get_global_component_mut::<InputComponent>()?
         .set_cursor_locked(locked);
 
-    let state = engine.get_global_component::<LevelState>()?;
-    let Some(collision) = state.collision.as_ref() else {
-        return Ok(());
-    };
-    let rig = engine.get_global_component::<PlayerRig>()?;
-    let mut rig_state = rig.state;
+    let rig = engine.get_global_component_mut::<PlayerRig>()?;
     let (mut yaw, mut pitch) = (rig.yaw, rig.pitch);
     let input = match rig.scripted {
+        _ if rig.dead => PlayerInput {
+            yaw,
+            ..PlayerInput::default()
+        },
         Some(scripted) => {
             yaw = scripted.yaw;
             scripted
@@ -296,22 +406,30 @@ pub fn player_system(engine: &mut Engine) -> Result<()> {
             }
         }
     };
-
-    let settings = MoveSettings::default();
-    let steps = (delta_time / MAX_MOVE_STEP).ceil().max(1.0);
-    let step = delta_time / steps;
-    let mut events = PlayerEvents::default();
-    for _ in 0..steps as usize {
-        let moved = player_move(&mut rig_state, &input, step, collision, &settings);
-        events.jumped |= moved.jumped;
-        events.landed_speed = events.landed_speed.max(moved.landed_speed);
-    }
-
-    // --- View feel ---
-    let rig = engine.get_global_component_mut::<PlayerRig>()?;
-    rig.state = rig_state;
     rig.yaw = yaw.rem_euclid(360.0);
     rig.pitch = pitch;
+    rig.input = PlayerInput {
+        yaw: rig.yaw,
+        ..input
+    };
+    Ok(())
+}
+
+/// The player's view (player mode only) after the deathmatch moved them: bob, roll, landing
+/// dip, punch, the camera at the eye.
+pub fn player_view_system(engine: &mut Engine) -> Result<()> {
+    if engine.get_global_component::<PlayerRig>()?.mode != Mode::Player {
+        return Ok(());
+    }
+    let delta_time = engine
+        .get_global_component::<TimeComponent>()?
+        .delta_time
+        .clamp(0.0, 0.1);
+    let rig = engine.get_global_component_mut::<PlayerRig>()?;
+    let rig_state = rig.state;
+    let mut events = rig.events;
+
+    // --- View feel ---
     let velocity = rig_state.velocity;
     let ground_speed = (velocity[0] * velocity[0] + velocity[1] * velocity[1]).sqrt();
 
@@ -354,13 +472,34 @@ pub fn player_system(engine: &mut Engine) -> Result<()> {
     let side = velocity[0] * right[0] + velocity[1] * right[1];
     let roll = side.signum() * side.abs().min(ROLL_SPEED) / ROLL_SPEED * ROLL_ANGLE;
 
-    let origin = rig_state.origin;
-    let eye = [origin[0], origin[1], origin[2] + EYE_HEIGHT + bob + rig.dip];
-    let (forward, right, up) = view_basis(rig.yaw, rig.pitch + rig.punch);
-    let (right, up) = (
+    let origin = rig.origin;
+    let mut eye = [origin[0], origin[1], origin[2] + EYE_HEIGHT + bob + rig.dip];
+    let (mut yaw, mut pitch, mut roll) = (rig.yaw, rig.pitch + rig.punch, roll);
+    // Dead: the head knocked, falling to the floor, turning after the killer
+    events.head_landed = false;
+    if let Some(death) = rig.death.as_mut() {
+        let before = death.time;
+        death.time += delta_time;
+        events.head_landed = before < DEATH_LAND_TIME && death.time >= DEATH_LAND_TIME;
+        let turn = wrap_degrees(death.target_yaw - death.turned);
+        death.turned += turn * (1.0 - (-DEATH_TURN_RATE * delta_time).exp());
+        let (height, death_yaw, death_pitch, death_roll) = death.pose();
+        eye = [origin[0], origin[1], origin[2] + height];
+        (yaw, pitch, roll) = (death_yaw, death_pitch, death_roll);
+    }
+    let (forward, right, up) = view_basis(yaw, pitch);
+    let (right, mut up) = (
         rotate_about(right, forward, roll),
         rotate_about(up, forward, roll),
     );
+    let mut forward = forward;
+    // The dead head's landing shake, in the view's own frame: vertical on screen
+    if let Some(death) = rig.death.as_ref() {
+        let (lift, nod) = death.shake();
+        eye = std::array::from_fn(|axis| eye[axis] + up[axis] * lift);
+        forward = rotate_about(forward, right, nod);
+        up = rotate_about(up, right, nod);
+    }
     rig.view = ViewPose {
         eye,
         forward,

@@ -1,20 +1,23 @@
-//! The player's weapons, Quake's slots 1 and 2: the axe (melee) and the shotgun, LibreQuake's
-//! `v_axe.mdl` / `v_shot.mdl` view models (BSD-3) following the view. Shotgun: Quake's numbers
-//! (6 pellets, spread 0.04 × 0.04, 0.5 s refire, 2048 units range; quakewiki), hitscan against the
-//! level's brushes, recoil animation and view punch, muzzle light and flash, impact sparks or dust
-//! with a flash of light. Axe: 64 units reach, 0.5 s refire, two alternating swings, a dust puff
-//! where it hits a wall. Sounds are native only.
+//! What the player's weapons look like, Quake's slots 1 and 2: the axe and the shotgun,
+//! LibreQuake's `v_axe.mdl` / `v_shot.mdl` view models (BSD-3) following the view; recoil
+//! animation and view punch, muzzle light and flash, two alternating axe swings; impact sparks,
+//! dust, blood or explosions with a flash of light, for every fighter's shots. The rules (refire,
+//! pellets, reach, damage) are the deathmatch's (`sim::combat`, numbers in `sim::weapons`).
+//! Sounds are native only.
 
 use pill_engine::{
     define_component, define_global_component,
     game::{
-        quake_map::{quake_direction_to_engine, quake_to_engine, QuakeCollision},
+        quake_map::{quake_direction_to_engine, quake_to_engine},
         quake_mdl::QuakeModel,
         *,
     },
 };
 
-use crate::player::{euler_from_columns, Mode, PlayerRig};
+use crate::{
+    player::{euler_from_columns, Mode, PlayerRig},
+    sim::{add, combat::ImpactKind, scale, Rng},
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WeaponKind {
@@ -23,32 +26,33 @@ pub enum WeaponKind {
 }
 
 impl WeaponKind {
-    fn slot(self) -> usize {
+    /// The weapon's slot in `sim::weapons::WEAPONS`.
+    pub fn slot(self) -> usize {
         match self {
             WeaponKind::Axe => 0,
             WeaponKind::Shotgun => 1,
         }
     }
+
+    pub fn from_slot(slot: usize) -> Self {
+        if slot == 0 {
+            WeaponKind::Axe
+        } else {
+            WeaponKind::Shotgun
+        }
+    }
 }
 
-const PELLETS: usize = 6;
-const SPREAD: [f32; 2] = [0.04, 0.04];
-const RANGE: f32 = 2048.0;
-const REFIRE: f32 = 0.5;
 /// View punch per shot, degrees up.
 const PUNCH: f32 = 2.0;
 /// Recoil animation: model frames 1..=6 at 10 frames per second, then frame 0 (rest).
 const FIRE_FRAMES: usize = 6;
 const FRAME_TIME: f32 = 0.1;
-const AXE_RANGE: f32 = 64.0;
-const AXE_REFIRE: f32 = 0.5;
-/// The axe connects this far into its swing.
-const AXE_HIT_TIME: f32 = 0.2;
 /// Swing animations: frames 1..=4 and 5..=8, alternating, at 10 frames per second.
 const AXE_SWING_FRAMES: usize = 4;
 const AXE_PUNCH: f32 = 1.0;
-/// Lowering the weapon away, then raising the new one, each this long (seconds).
-const SWITCH_TIME: f32 = 0.15;
+/// Lowering the weapon away, then raising the new one: each half the deathmatch's switch.
+const SWITCH_TIME: f32 = crate::sim::combat::SWITCH_TIME * 0.5;
 /// How far the weapon drops while switching (units).
 const SWITCH_DROP: f32 = 24.0;
 /// View models are drawn this much smaller, scaled about the eye: the same on screen (perspective
@@ -71,10 +75,10 @@ define_component!(ViewModel {
     frame: usize,
 });
 
-/// A weapon's uploaded view model: a mesh per frame and its material.
+/// An uploaded model: a mesh per frame and its material.
 pub struct WeaponModel {
-    frames: Vec<MeshHandle>,
-    material: MaterialHandle,
+    pub frames: Vec<MeshHandle>,
+    pub material: MaterialHandle,
 }
 
 // One pooled particle (hidden while `life` ≤ 0); engine space, meters.
@@ -108,19 +112,22 @@ define_global_component!(Weapon {
     switch_time: f32,
     spark_material: Option<MaterialHandle>,
     dust_material: Option<MaterialHandle>,
-    refire: f32,
+    blood_material: Option<MaterialHandle>,
     // Seconds since the last attack, while its animation runs
     animation: Option<f32>,
-    // Axe: the second swing animation next; the hit of the current swing is still to check
+    // Axe: the second swing animation next
     alternate_swing: bool,
-    axe_hit_pending: bool,
+    // From the deathmatch this frame: the player attacked, switched, the axe connected
+    fired: Option<WeaponKind>,
+    switched: Option<WeaponKind>,
+    axe_hit: bool,
     // Seconds until the muzzle light and all effects are over: their per-frame work stops then
     muzzle_left: f32,
     effects_left: f32,
     // Requested by a script (capture runs)
     scripted_fire: bool,
     scripted_select: Option<WeaponKind>,
-    random: u32,
+    random: Rng,
 });
 
 impl Weapon {
@@ -132,15 +139,17 @@ impl Weapon {
             switch_time: 0.0,
             spark_material: None,
             dust_material: None,
-            refire: 0.0,
+            blood_material: None,
             animation: None,
             alternate_swing: false,
-            axe_hit_pending: false,
+            fired: None,
+            switched: None,
+            axe_hit: false,
             muzzle_left: 0.0,
             effects_left: 0.0,
             scripted_fire: false,
             scripted_select: None,
-            random: 0x9E37_79B9,
+            random: Rng::new(1),
         }
     }
 
@@ -148,33 +157,25 @@ impl Weapon {
         self.models[kind.slot()].as_ref()
     }
 
-    /// Uniform in −1..1 (xorshift).
-    fn random_signed(&mut self) -> f32 {
-        self.random ^= self.random << 13;
-        self.random ^= self.random >> 17;
-        self.random ^= self.random << 5;
-        (self.random as f32 / u32::MAX as f32) * 2.0 - 1.0
+    /// The player's attack, switch and axe hit of this frame (from the deathmatch's events).
+    pub fn player_fired(&mut self, slot: usize) {
+        self.fired = Some(WeaponKind::from_slot(slot));
     }
 
-    fn random_range(&mut self, low: f32, high: f32) -> f32 {
-        low + (self.random_signed() * 0.5 + 0.5) * (high - low)
+    pub fn player_switched(&mut self, slot: usize) {
+        self.switched = Some(WeaponKind::from_slot(slot));
     }
-}
 
-fn add(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
+    pub fn player_axe_hit(&mut self) {
+        self.axe_hit = true;
+    }
 
-fn scale(a: [f32; 3], factor: f32) -> [f32; 3] {
-    [a[0] * factor, a[1] * factor, a[2] * factor]
-}
-
-fn normalize(a: [f32; 3]) -> [f32; 3] {
-    let length = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
-    if length > 0.0 {
-        scale(a, 1.0 / length)
-    } else {
-        a
+    /// Fire and weapon choice requested by a capture script, taken once.
+    pub fn take_script(&mut self) -> (bool, Option<usize>) {
+        (
+            std::mem::take(&mut self.scripted_fire),
+            self.scripted_select.take().map(WeaponKind::slot),
+        )
     }
 }
 
@@ -186,7 +187,7 @@ fn park(transform: &mut TransformComponent) {
     transform.set_scale(Vector3f::ZERO);
 }
 
-fn upload_model(engine: &mut Engine, prefix: &str, model: QuakeModel) -> Result<WeaponModel> {
+pub fn upload_model(engine: &mut Engine, prefix: &str, model: QuakeModel) -> Result<WeaponModel> {
     let QuakeModel {
         texture,
         material,
@@ -271,6 +272,12 @@ pub fn spawn_weapons(
             .roughness(1.0)
             .opacity(0.4),
     )?;
+    let blood_material = engine.add_resource(
+        Material::new("ekauq3d_blood")
+            .albedo(Color::new(0.45, 0.02, 0.02))
+            .roughness(0.6)
+            .opacity(0.8),
+    )?;
     let flash_material = engine.add_resource(
         Material::new("ekauq3d_muzzle_flash")
             .albedo(Color::new(0.0, 0.0, 0.0))
@@ -351,27 +358,20 @@ pub fn spawn_weapons(
     weapon.current = current;
     weapon.spark_material = Some(spark_material);
     weapon.dust_material = Some(dust_material);
+    weapon.blood_material = Some(blood_material);
     Ok(())
 }
 
-/// View model placement, firing, recoil animation (player mode).
+/// View model placement, attack and switch animations (player mode), from the deathmatch's
+/// events of this frame.
 pub fn weapon_system(engine: &mut Engine) -> Result<()> {
     let delta_time = engine
         .get_global_component::<TimeComponent>()?
         .delta_time
         .clamp(0.0, 0.1);
-    let (mode, view, locked_fire, select) = {
+    let (mode, view) = {
         let rig = engine.get_global_component::<PlayerRig>()?;
-        let input = engine.get_global_component::<InputComponent>()?;
-        let fire = input.cursor_locked() && input.get_mouse_button(MouseButton::Left);
-        let select = if input.get_key_pressed(KeyboardKey::Digit1) {
-            Some(WeaponKind::Axe)
-        } else if input.get_key_pressed(KeyboardKey::Digit2) {
-            Some(WeaponKind::Shotgun)
-        } else {
-            None
-        };
-        (rig.mode, rig.view, fire, select)
+        (rig.mode, rig.view)
     };
     if engine
         .get_global_component::<Weapon>()?
@@ -390,19 +390,17 @@ pub fn weapon_system(engine: &mut Engine) -> Result<()> {
         return Ok(());
     }
 
-    // --- Switching: 1 = axe, 2 = shotgun; lower the weapon, swap, raise the new one ---
-    let drop = {
+    // --- Switching: lower the weapon, swap, raise the new one (the deathmatch's switch time) ---
+    let (drop, attacked, axe_hit) = {
         let weapon = engine.get_global_component_mut::<Weapon>()?;
-        let select = select.or(weapon.scripted_select.take());
-        if let Some(kind) = select {
-            let available = weapon.model(kind).is_some();
-            if available && weapon.switching_to.is_none() && kind != weapon.current {
+        if let Some(kind) = weapon.switched.take() {
+            if kind != weapon.current {
                 weapon.switching_to = Some(kind);
                 weapon.switch_time = 0.0;
                 weapon.animation = None;
             }
         }
-        match weapon.switching_to {
+        let drop = match weapon.switching_to {
             Some(kind) => {
                 weapon.switch_time += delta_time;
                 if weapon.switch_time >= SWITCH_TIME && weapon.current != kind {
@@ -416,31 +414,21 @@ pub fn weapon_system(engine: &mut Engine) -> Result<()> {
                 }
             }
             None => 0.0,
-        }
-    };
-
-    let mut attacked = None;
-    {
-        let weapon = engine.get_global_component_mut::<Weapon>()?;
-        weapon.refire = (weapon.refire - delta_time).max(0.0);
-        let trigger = locked_fire || std::mem::take(&mut weapon.scripted_fire);
-        if trigger && weapon.refire <= 0.0 && weapon.switching_to.is_none() {
-            weapon.refire = match weapon.current {
-                WeaponKind::Axe => AXE_REFIRE,
-                WeaponKind::Shotgun => REFIRE,
-            };
+        };
+        let attacked = weapon.fired.take();
+        if let Some(kind) = attacked {
+            weapon.current = kind;
+            weapon.switching_to = None;
             weapon.animation = Some(0.0);
-            if weapon.current == WeaponKind::Axe {
+            if kind == WeaponKind::Axe {
                 weapon.alternate_swing = !weapon.alternate_swing;
-                weapon.axe_hit_pending = true;
             }
-            attacked = Some(weapon.current);
         }
-    }
+        (drop, attacked, std::mem::take(&mut weapon.axe_hit))
+    };
     match attacked {
         Some(WeaponKind::Shotgun) => {
             engine.get_global_component_mut::<PlayerRig>()?.punch(PUNCH);
-            fire_pellets(engine, &view)?;
             set_off_muzzle(engine)?;
             crate::sounds::play(engine, crate::sounds::Sfx::Fire, None)?;
         }
@@ -449,12 +437,17 @@ pub fn weapon_system(engine: &mut Engine) -> Result<()> {
         }
         None => {}
     }
+    if axe_hit {
+        engine
+            .get_global_component_mut::<PlayerRig>()?
+            .punch(AXE_PUNCH);
+        crate::sounds::play(engine, crate::sounds::Sfx::AxeHit, None)?;
+    }
 
-    // --- Animation frame; the axe connects partway through its swing ---
-    let (kind, frame, frame_mesh, material, axe_hit) = {
+    // --- Animation frame ---
+    let (kind, frame, frame_mesh, material) = {
         let weapon = engine.get_global_component_mut::<Weapon>()?;
         let kind = weapon.current;
-        let mut axe_hit = false;
         let frame = match weapon.animation.as_mut() {
             Some(time) => {
                 *time += delta_time;
@@ -464,10 +457,6 @@ pub fn weapon_system(engine: &mut Engine) -> Result<()> {
                     WeaponKind::Axe if weapon.alternate_swing => (1, AXE_SWING_FRAMES),
                     WeaponKind::Axe => (1 + AXE_SWING_FRAMES, AXE_SWING_FRAMES),
                 };
-                if kind == WeaponKind::Axe && weapon.axe_hit_pending && elapsed >= AXE_HIT_TIME {
-                    weapon.axe_hit_pending = false;
-                    axe_hit = true;
-                }
                 let step = (elapsed / FRAME_TIME) as usize;
                 if step < count {
                     first + step
@@ -484,12 +473,8 @@ pub fn weapon_system(engine: &mut Engine) -> Result<()> {
             frame,
             model.and_then(|model| model.frames.get(frame).cloned()),
             model.map(|model| model.material.clone()),
-            axe_hit,
         )
     };
-    if axe_hit {
-        swing_axe(engine, &view)?;
-    }
 
     // --- Placement: at the eye along the view, bobbing forward with the head, dropped while
     // switching; offsets scaled with the model ---
@@ -607,142 +592,70 @@ fn set_off_muzzle(engine: &mut Engine) -> Result<()> {
     Ok(())
 }
 
-struct Impact {
-    point: [f32; 3],
-    normal: [f32; 3],
-    metal: bool,
-    // Axe: a small puff, no light and no ricochet
-    melee: bool,
+/// Where a shot hit, for its effect.
+pub struct Impact {
+    pub point: [f32; 3],
+    pub normal: [f32; 3],
+    pub metal: bool,
+    pub kind: ImpactKind,
 }
 
-fn is_metal(texture: &str) -> bool {
+pub fn is_metal(texture: &str) -> bool {
     ["met", "tech", "tek", "steel", "iron"]
         .iter()
         .any(|word| texture.contains(word))
 }
 
-/// What a trace from `from` to `to` hits, if anything.
-fn trace_impact(
-    collision: &QuakeCollision,
-    from: [f32; 3],
-    to: [f32; 3],
-    melee: bool,
-) -> Option<Impact> {
-    let trace = collision.trace_ray(from, to);
-    if trace.fraction >= 1.0 || trace.start_solid {
-        return None;
-    }
-    let texture = trace
-        .texture
-        .map(|id| collision.texture_name(id))
-        .unwrap_or("");
-    Some(Impact {
-        point: trace.end,
-        normal: trace.normal,
-        metal: is_metal(texture),
-        melee,
-    })
-}
-
-/// The axe's hit: a short trace ahead of the eye; a puff, a thud and a small punch on a wall.
-fn swing_axe(engine: &mut Engine, view: &crate::player::ViewPose) -> Result<()> {
-    let impact = {
-        let state = engine.get_global_component::<crate::game::LevelState>()?;
-        let Some(collision) = state.collision.as_ref() else {
-            return Ok(());
-        };
-        let reach = add(view.eye, scale(view.forward, AXE_RANGE));
-        let Some(impact) = trace_impact(collision, view.eye, reach, true) else {
-            return Ok(());
-        };
-        impact
-    };
-    spawn_impact(engine, &impact)?;
-    engine
-        .get_global_component_mut::<PlayerRig>()?
-        .punch(AXE_PUNCH);
-    crate::sounds::play(engine, crate::sounds::Sfx::AxeHit, None)
-}
-
-/// Six pellets from the eye, spread over the view's right and up axes; effects where they hit.
-fn fire_pellets(engine: &mut Engine, view: &crate::player::ViewPose) -> Result<()> {
-    let mut impacts = Vec::with_capacity(PELLETS);
-    {
-        let directions: Vec<[f32; 3]> = {
-            let weapon = engine.get_global_component_mut::<Weapon>()?;
-            (0..PELLETS)
-                .map(|_| {
-                    let spread_right = weapon.random_signed() * SPREAD[0];
-                    let spread_up = weapon.random_signed() * SPREAD[1];
-                    normalize(add(
-                        view.forward,
-                        add(scale(view.right, spread_right), scale(view.up, spread_up)),
-                    ))
-                })
-                .collect()
-        };
-        let state = engine.get_global_component::<crate::game::LevelState>()?;
-        let Some(collision) = state.collision.as_ref() else {
-            return Ok(());
-        };
-        impacts.extend(directions.into_iter().filter_map(|direction| {
-            trace_impact(
-                collision,
-                view.eye,
-                add(view.eye, scale(direction, RANGE)),
-                false,
-            )
-        }));
-    }
-    for impact in &impacts {
-        spawn_impact(engine, impact)?;
-    }
-    Ok(())
-}
-
-/// Sparks (metal) or dust, a short flash of light and maybe a ricochet sound.
-fn spawn_impact(engine: &mut Engine, impact: &Impact) -> Result<()> {
+/// Sparks (metal) or dust, blood on a fighter, a burst for an explosion; a short flash of light
+/// and maybe a ricochet sound.
+pub fn spawn_impact(engine: &mut Engine, impact: &Impact) -> Result<()> {
     let point = Vector3f::from_array(quake_to_engine(impact.point));
     let normal = Vector3f::from_array(quake_direction_to_engine(impact.normal));
-    let (sparks, dust) = match (impact.melee, impact.metal) {
-        (true, true) => (4, 2),
-        (true, false) => (0, 5),
-        (false, true) => (7, 3),
-        (false, false) => (3, 6),
+    let melee = impact.kind == ImpactKind::Melee;
+    let flesh = impact.kind == ImpactKind::Flesh;
+    let (sparks, dust) = match (impact.kind, impact.metal) {
+        (ImpactKind::Melee, true) => (4, 2),
+        (ImpactKind::Melee, false) => (0, 5),
+        (ImpactKind::Flesh, _) => (0, 6),
+        (ImpactKind::Explosion, _) => (24, 14),
+        (ImpactKind::Wall, true) => (7, 3),
+        (ImpactKind::Wall, false) => (3, 6),
     };
 
     // Particle parameters first (the random state lives in Weapon)
     let mut emitted = Vec::with_capacity(sparks + dust);
     let (spark_material, dust_material, ricochet) = {
+        let explosion = impact.kind == ImpactKind::Explosion;
         let weapon = engine.get_global_component_mut::<Weapon>()?;
         for index in 0..sparks + dust {
             let is_dust = index >= sparks;
             let random = Vector3f::new(
-                weapon.random_signed(),
-                weapon.random_signed(),
-                weapon.random_signed(),
+                weapon.random.signed(),
+                weapon.random.signed(),
+                weapon.random.signed(),
             );
+            let burst = if explosion { 3.0 } else { 1.0 };
             let (speed, spread, life, size, end_size, gravity) = if is_dust {
                 (
-                    weapon.random_range(0.3, 0.9),
+                    weapon.random.range(0.3, 0.9),
                     0.5,
-                    weapon.random_range(0.4, 0.7),
+                    weapon.random.range(0.4, 0.7),
                     0.02,
-                    weapon.random_range(0.05, 0.08),
+                    weapon.random.range(0.05, 0.08),
                     1.0,
                 )
             } else {
                 (
-                    weapon.random_range(1.5, 4.0),
+                    weapon.random.range(1.5, 4.0),
                     2.0,
-                    weapon.random_range(0.2, 0.45),
-                    weapon.random_range(0.008, 0.016),
+                    weapon.random.range(0.2, 0.45),
+                    weapon.random.range(0.008, 0.016),
                     0.0,
                     PARTICLE_GRAVITY,
                 )
             };
             emitted.push(Particle {
-                velocity: normal * speed + random * spread,
+                velocity: (normal * speed + random * spread) * burst,
                 life,
                 max_life: life,
                 size,
@@ -751,16 +664,17 @@ fn spawn_impact(engine: &mut Engine, impact: &Impact) -> Result<()> {
                 dust: is_dust,
             });
         }
-        let ricochet = !impact.melee && weapon.random_signed() > 0.33;
+        let ricochet = impact.kind == ImpactKind::Wall && weapon.random.signed() > 0.33;
         let longest = emitted
             .iter()
             .fold(0.0f32, |longest, particle| longest.max(particle.life));
         weapon.effects_left = weapon.effects_left.max(longest + 0.1);
-        (
-            weapon.spark_material.clone(),
-            weapon.dust_material.clone(),
-            ricochet,
-        )
+        let dust_material = if flesh {
+            weapon.blood_material.clone()
+        } else {
+            weapon.dust_material.clone()
+        };
+        (weapon.spark_material.clone(), dust_material, ricochet)
     };
 
     let mut queue = emitted.into_iter();
@@ -787,7 +701,7 @@ fn spawn_impact(engine: &mut Engine, impact: &Impact) -> Result<()> {
         transform.set_scale(Vector3f::splat(particle.size));
     }
 
-    if impact.melee {
+    if melee || flesh {
         return Ok(());
     }
     // The oldest impact light

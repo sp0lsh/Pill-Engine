@@ -10,7 +10,14 @@ use pill_engine::game::{
     quake_mdl::{self, QuakeModel},
 };
 
-use crate::fetch;
+use crate::{
+    bots::{
+        genome::{Knowledge, KNOWLEDGE},
+        nav::NavGraph,
+    },
+    fetch,
+    sim::{arena::Arena, weapons::WEAPONS},
+};
 
 /// LibreQuake at commit dd4d5bf: every path in [`FILES`] is relative to it.
 const LIBRE_QUAKE_BASE: &str =
@@ -26,6 +33,9 @@ const AXE_MODEL_PATH: &str = "lq1/progs/v_axe.mdl";
 const AXE_SKIN_PATH: &str = "lq1/progs/src/textures/v_axe.mdl.0.png";
 const SHOTGUN_MODEL_PATH: &str = "lq1/progs/v_shot.mdl";
 const SHOTGUN_SKIN_PATH: &str = "lq1/progs/src/textures/v_shot.mdl.0.png";
+/// The bots' model.
+const PLAYER_MODEL_PATH: &str = "lq1/progs/player.mdl";
+const PLAYER_SKIN_PATH: &str = "lq1/progs/src/textures/player.mdl.0.png";
 
 /// What the loader hands to the game: the level, its collision and the player's weapons.
 pub struct LoadedLevel {
@@ -35,29 +45,91 @@ pub struct LoadedLevel {
     /// the whole load.
     pub axe: Option<QuakeModel>,
     pub shotgun: Option<QuakeModel>,
+    /// Spawns and items.
+    pub arena: Arena,
+    /// The bots' navigation graph.
+    pub nav: NavGraph,
+    /// The bots' tactics and the weapons' measured damage (re-measured here if they changed).
+    pub knowledge: Knowledge,
+    pub player: Option<QuakeModel>,
 }
 
 const DEFAULT_MAP: &str = "lqdm1";
 
 /// Quake light units → `LightComponent::intensity` (see `quake_map::QuakeLight`).
-const LIGHT_SCALE: f32 = 4.0;
+const LIGHT_SCALE: f32 = 1.0;
+
+const DEFAULT_BOTS: usize = 1;
+
+/// A setting: environment variable `variable` natively, `?key=` in the browser.
+fn setting(variable: &str, key: &str) -> Option<String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let requested = {
+        let _ = key;
+        std::env::var(variable).ok()
+    };
+    #[cfg(target_arch = "wasm32")]
+    let requested = {
+        let _ = variable;
+        let prefix = format!("{key}=");
+        web_sys::window()
+            .and_then(|window| window.location().search().ok())
+            .and_then(|query| {
+                query
+                    .trim_start_matches('?')
+                    .split('&')
+                    .find_map(|pair| pair.strip_prefix(prefix.as_str()).map(str::to_string))
+            })
+    };
+    requested.filter(|value| !value.is_empty())
+}
 
 /// The map to load: `EKAUQ_MAP` natively, `?map=` in the browser, else `lqdm1`.
 pub fn requested_map() -> String {
+    setting("EKAUQ_MAP", "map").unwrap_or_else(|| DEFAULT_MAP.to_string())
+}
+
+/// How many bots: `EKAUQ_BOTS` natively, `?bots=` in the browser, else 1.
+pub fn requested_bots() -> usize {
+    setting("EKAUQ_BOTS", "bots")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(DEFAULT_BOTS)
+}
+
+/// Network play: `EKAUQ_HOST=<port>` (or `1` for the default port) hosts a listen server,
+/// `EKAUQ_CONNECT=<ip:port>` joins one (native only).
+pub fn requested_network() -> crate::deathmatch::Network {
+    use crate::deathmatch::Network;
     #[cfg(not(target_arch = "wasm32"))]
-    let requested = std::env::var("EKAUQ_MAP").ok();
-    #[cfg(target_arch = "wasm32")]
-    let requested = web_sys::window()
-        .and_then(|window| window.location().search().ok())
-        .and_then(|query| {
-            query
-                .trim_start_matches('?')
-                .split('&')
-                .find_map(|pair| pair.strip_prefix("map=").map(str::to_string))
-        });
-    requested
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| DEFAULT_MAP.to_string())
+    {
+        if let Some(address) = setting("EKAUQ_CONNECT", "connect") {
+            let address = if address.contains(':') {
+                address
+            } else {
+                format!("{address}:{}", crate::net::protocol::PORT)
+            };
+            return Network::Connect(address);
+        }
+        if let Some(port) = setting("EKAUQ_HOST", "host") {
+            let port = port
+                .parse::<u16>()
+                .ok()
+                .filter(|&port| port > 1)
+                .unwrap_or(crate::net::protocol::PORT);
+            return Network::Host(port);
+        }
+    }
+    Network::Local
+}
+
+/// The compiled-in bot knowledge; the weapons are measured again if they changed since.
+pub fn bot_knowledge() -> Knowledge {
+    let mut knowledge = Knowledge::parse(KNOWLEDGE);
+    if !knowledge.matches(&WEAPONS) {
+        log::warn!("ekauq3D: weapons changed since the bots measured them: measuring again");
+        knowledge.recalibrate(&WEAPONS);
+    }
+    knowledge
 }
 
 /// (file stem, repository path) of every map.
@@ -119,15 +191,42 @@ fn url(path: &str) -> String {
     format!("{LIBRE_QUAKE_BASE}{path}")
 }
 
-/// Fetches map `name` (a file stem, e.g. `lqdm1`), its textures, the palette and the weapons;
-/// builds the level, its collision and the weapon models.
-pub async fn load(name: &str) -> Result<LoadedLevel, String> {
-    let (_, map_path) = map_paths()
+/// Repository path of map `name` (a file stem, e.g. `lqdm1`).
+fn map_path(name: &str) -> Result<&'static str, String> {
+    map_paths()
         .find(|(stem, _)| stem.eq_ignore_ascii_case(name))
+        .map(|(_, path)| path)
         .ok_or_else(|| {
             let names: Vec<&str> = map_paths().map(|(stem, _)| stem).collect();
             format!("no map `{name}`; maps: {}", names.join(" "))
-        })?;
+        })
+}
+
+/// The deathmatch arena of a map, its collision and the bots' navigation, without textures:
+/// tests, the dedicated server and the tuner.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn load_arena(name: &str) -> Result<(QuakeCollision, Arena, NavGraph), String> {
+    let path = map_path(name)?;
+    let bytes = pollster::block_on(fetch::get_all(&[url(path)]))?
+        .pop()
+        .unwrap_or_default();
+    let map = quake_map::parse_map(&String::from_utf8_lossy(&bytes))
+        .map_err(|e| format!("{path}: {e}"))?;
+    Ok(build_arena(&map))
+}
+
+/// A map's collision, deathmatch arena and the bots' navigation.
+fn build_arena(map: &quake_map::QuakeMap) -> (QuakeCollision, Arena, NavGraph) {
+    let collision = QuakeCollision::from_map(map);
+    let arena = Arena::build(map, &collision);
+    let nav = NavGraph::of(&collision, &arena);
+    (collision, arena, nav)
+}
+
+/// Fetches map `name` (a file stem, e.g. `lqdm1`), its textures, the palette and the weapons;
+/// builds the level, its collision and the weapon models.
+pub async fn load(name: &str) -> Result<LoadedLevel, String> {
+    let map_path = map_path(name)?;
     let mut fetched = fetch::get_all(&[
         url(map_path),
         url(PALETTE_PATH),
@@ -135,6 +234,8 @@ pub async fn load(name: &str) -> Result<LoadedLevel, String> {
         url(AXE_SKIN_PATH),
         url(SHOTGUN_MODEL_PATH),
         url(SHOTGUN_SKIN_PATH),
+        url(PLAYER_MODEL_PATH),
+        url(PLAYER_SKIN_PATH),
     ])
     .await?
     .into_iter();
@@ -144,6 +245,8 @@ pub async fn load(name: &str) -> Result<LoadedLevel, String> {
     let axe_skin = fetched.next().unwrap_or_default();
     let shotgun_model = fetched.next().unwrap_or_default();
     let shotgun_skin = fetched.next().unwrap_or_default();
+    let player_model = fetched.next().unwrap_or_default();
+    let player_skin = fetched.next().unwrap_or_default();
     let map = quake_map::parse_map(&text).map_err(|e| format!("{map_path}: {e}"))?;
 
     // Every drawn texture and the frames of the animated ones, resolved to repository files
@@ -194,7 +297,19 @@ pub async fn load(name: &str) -> Result<LoadedLevel, String> {
             level.missing_textures.join(" ")
         );
     }
-    let collision = QuakeCollision::from_map(&map);
+    let (collision, arena, nav) = build_arena(&map);
+    let stats = &nav.stats;
+    log::info!(
+        "ekauq3D: {name}: {} spawns, {} health; navigation {} nodes, {} edges ({} jumps of {} \
+         tried), {} traces",
+        arena.spawns.len(),
+        arena.health.len(),
+        stats.nodes,
+        stats.edges,
+        stats.jumps,
+        stats.jump_sims,
+        stats.traces,
+    );
     let model = |name: &str, path: &str, bytes: &[u8], skin: &[u8]| {
         quake_mdl::build_quake_model(name, bytes, Some(skin), Some(&palette))
             .inspect_err(|error| log::warn!("ekauq3D: {path}: {error}"))
@@ -205,5 +320,9 @@ pub async fn load(name: &str) -> Result<LoadedLevel, String> {
         collision,
         axe: model("v_axe", AXE_MODEL_PATH, &axe_model, &axe_skin),
         shotgun: model("v_shot", SHOTGUN_MODEL_PATH, &shotgun_model, &shotgun_skin),
+        arena,
+        nav,
+        knowledge: bot_knowledge(),
+        player: model("player", PLAYER_MODEL_PATH, &player_model, &player_skin),
     })
 }
