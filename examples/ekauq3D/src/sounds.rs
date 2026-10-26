@@ -1,6 +1,7 @@
 //! One-shot sounds (`res/audio`): from LibreQuake (BSD-3) the shotgun, ricochets, axe swing and
-//! hit, jump and land; footsteps are synthesized by the asset pipeline (`ProceduralFootstep`: the
-//! `footstep*.procedural_footstep` JSON specs cook to `.cooked.wav`; LibreQuake has none). A
+//! hit, jump, land, pain and death; footsteps and the hit-confirm tick are synthesized by the
+//! asset pipeline (`ProceduralFootstep`: the `*.procedural_footstep` JSON specs cook to
+//! `.cooked.wav`; LibreQuake has none). A
 //! source plays one sound at a time, so each sound has a few pooled sources used oldest-first.
 //! The engine has no audio on wasm: there `play` does nothing.
 
@@ -15,6 +16,14 @@ pub enum Sfx {
     AxeHit,
     /// A bot's shot, where it is.
     BotFire,
+    /// Your shot hit someone: a quiet tick.
+    HitConfirm,
+    /// You were hit; someone else was hit (where they are).
+    Pain,
+    OtherPain,
+    /// Someone died, where they are; torn apart by a heavy last hit.
+    Death,
+    Gib,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -43,7 +52,7 @@ mod native {
     });
 
     /// (sound, files, sources, volume, positional)
-    const BANK: [(Sfx, &[&str], usize, f32, bool); 8] = [
+    const BANK: [(Sfx, &[&str], usize, f32, bool); 13] = [
         (Sfx::Fire, &["guncock"], 3, 0.9, false),
         (Sfx::Ricochet, &["ric1", "ric2", "ric3"], 6, 0.8, true),
         (
@@ -63,6 +72,11 @@ mod native {
         (Sfx::AxeSwing, &["ax1"], 2, 0.8, false),
         (Sfx::AxeHit, &["axhit2"], 2, 0.9, false),
         (Sfx::BotFire, &["guncock"], 4, 0.9, true),
+        (Sfx::HitConfirm, &["hit.cooked"], 2, 0.8, false),
+        (Sfx::Pain, &["pain1", "pain2", "pain4"], 1, 0.5, false),
+        (Sfx::OtherPain, &["pain1", "pain2", "pain4"], 2, 0.8, true),
+        (Sfx::Death, &["death1", "death3"], 2, 0.9, true),
+        (Sfx::Gib, &["udeath"], 1, 0.9, true),
     ];
 
     pub fn spawn_sounds(engine: &mut Engine, scene: SceneHandle) -> Result<()> {

@@ -31,7 +31,7 @@ impl<'a> EntityBuilder<'a> {
 // --- Entity ---
 
 pub struct Entity {
-    pub(crate) bitmask: u16,
+    pub(crate) bitmask: pill_core::ComponentMask,
     pub(crate) scene_handle: SceneHandle,
 }
 

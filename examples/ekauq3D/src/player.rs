@@ -33,6 +33,9 @@ const PUNCH_DECAY: f32 = 10.0;
 const DIP_STIFFNESS: f32 = 80.0;
 const DIP_DAMPING: f32 = 14.0;
 const DIP_IMPULSE: f32 = 0.35;
+/// Hit kick: a spring (stiffness, damping) on pitch and roll, kicked by damage and blasts.
+const KICK_STIFFNESS: f32 = 160.0;
+const KICK_DAMPING: f32 = 14.0;
 /// Landings faster than this (units/s; a hop lands at about 270) dip the view and sound heavy.
 pub const HARD_LANDING_SPEED: f32 = 300.0;
 /// Footsteps only above this ground speed (units/s).
@@ -207,6 +210,9 @@ define_global_component!(PlayerRig {
     dip: f32,
     dip_velocity: f32,
     punch: f32,
+    // Hit kick, degrees of pitch and roll, and their velocity
+    kick: [f32; 2],
+    kick_velocity: [f32; 2],
     view: ViewPose,
     events: PlayerEvents,
     // Scripted input instead of the devices (capture runs)
@@ -232,6 +238,8 @@ impl PlayerRig {
             dip: 0.0,
             dip_velocity: 0.0,
             punch: 0.0,
+            kick: [0.0; 2],
+            kick_velocity: [0.0; 2],
             view: ViewPose::default(),
             events: PlayerEvents::default(),
             scripted: None,
@@ -245,6 +253,12 @@ impl PlayerRig {
     /// Kicks the view up by `degrees` (weapon recoil).
     pub fn punch(&mut self, degrees: f32) {
         self.punch = degrees;
+    }
+
+    /// Jolts the view (degrees per second of pitch and roll): a hit, a blast nearby.
+    pub fn kick(&mut self, pitch: f32, roll: f32) {
+        self.kick_velocity[0] += pitch;
+        self.kick_velocity[1] += roll;
     }
 }
 
@@ -461,6 +475,13 @@ pub fn player_view_system(engine: &mut Engine) -> Result<()> {
     rig.dip_velocity += (-rig.dip * DIP_STIFFNESS - rig.dip_velocity * DIP_DAMPING) * delta_time;
     rig.dip += rig.dip_velocity * delta_time;
 
+    for axis in 0..2 {
+        rig.kick_velocity[axis] += (-rig.kick[axis] * KICK_STIFFNESS
+            - rig.kick_velocity[axis] * KICK_DAMPING)
+            * delta_time;
+        rig.kick[axis] += rig.kick_velocity[axis] * delta_time;
+    }
+
     rig.punch = if rig.punch > 0.0 {
         (rig.punch - PUNCH_DECAY * delta_time).max(0.0)
     } else {
@@ -474,7 +495,11 @@ pub fn player_view_system(engine: &mut Engine) -> Result<()> {
 
     let origin = rig.origin;
     let mut eye = [origin[0], origin[1], origin[2] + EYE_HEIGHT + bob + rig.dip];
-    let (mut yaw, mut pitch, mut roll) = (rig.yaw, rig.pitch + rig.punch, roll);
+    let (mut yaw, mut pitch, mut roll) = (
+        rig.yaw,
+        rig.pitch + rig.punch + rig.kick[0],
+        roll + rig.kick[1],
+    );
     // Dead: the head knocked, falling to the floor, turning after the killer
     events.head_landed = false;
     if let Some(death) = rig.death.as_mut() {

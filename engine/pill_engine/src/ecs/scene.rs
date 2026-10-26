@@ -4,14 +4,14 @@ use crate::ecs::{
 };
 
 use pill_core::{
-    create_bitmask_with_one, get_indices_of_set_elements, get_type_name, EngineError, PillSlotMap,
-    PillTypeMap,
+    create_bitmask_with_one, get_indices_of_set_elements, get_type_name, ComponentMask,
+    EngineError, PillSlotMap, PillTypeMap,
 };
 
 use pill_core::Result;
 use std::{any::TypeId, collections::HashMap};
 
-pub const NEW_COMPONENT_BIT: u16 = 0b0000_0000_0000_0001;
+pub const NEW_COMPONENT_BIT: ComponentMask = 1;
 
 // --- Scene ---
 
@@ -20,8 +20,8 @@ pub struct Scene {
     pub entities: PillSlotMap<EntityHandle, Entity>,
     pub components: PillTypeMap,
 
-    pub scene_bitmask: u16, // Total bitmask of all components registered in scene
-    pub component_bitmasks: HashMap<TypeId, u16>, // TypeId → bitmask, for fast lookup
+    pub scene_bitmask: ComponentMask, // Total bitmask of all components registered in scene
+    pub component_bitmasks: HashMap<TypeId, ComponentMask>, // TypeId → bitmask, for fast lookup
     pub component_type_order: Vec<TypeId>, // bit-index → TypeId, for bitmask decomposition
 
     pub component_destroyers: HashMap<TypeId, Box<dyn ComponentDestroyer>>,
@@ -34,7 +34,7 @@ impl Scene {
             entities: PillSlotMap::<EntityHandle, Entity>::with_key(),
             components: PillTypeMap::new(),
 
-            scene_bitmask: 0b0000_0000_0000_0000,
+            scene_bitmask: 0,
             component_bitmasks: HashMap::new(),
             component_type_order: Vec::new(),
 
@@ -121,7 +121,7 @@ impl Scene {
         if !self.is_component_registered::<T>() {
             // Add new component bitmask
             let component_index = self.component_type_order.len();
-            let component_bitmask = create_bitmask_with_one(component_index as u16);
+            let component_bitmask = create_bitmask_with_one(component_index);
             self.component_type_order.push(TypeId::of::<T>());
             self.component_bitmasks
                 .insert(TypeId::of::<T>(), component_bitmask);
@@ -131,7 +131,7 @@ impl Scene {
         }
     }
 
-    pub fn get_component_bitmask<T>(&self) -> Result<u16>
+    pub fn get_component_bitmask<T>(&self) -> Result<ComponentMask>
     where
         T: Component<Storage = ComponentStorage<T>>,
     {
@@ -145,7 +145,7 @@ impl Scene {
         }
     }
 
-    pub fn get_components_typeids_from_bitmask(&self, bitmask: u16) -> Vec<TypeId> {
+    pub fn get_components_typeids_from_bitmask(&self, bitmask: ComponentMask) -> Vec<TypeId> {
         // Iterate through each entry in bitmask and get typeid of component related to it
         let mut component_typeids = Vec::<TypeId>::new();
         let component_indices = get_indices_of_set_elements(bitmask);

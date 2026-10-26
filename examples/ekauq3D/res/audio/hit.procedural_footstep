@@ -1,0 +1,10 @@
+{
+  "seed": 7,
+  "length": 0.07,
+  "heel_cutoff": 7000,
+  "heel_decay": 0.01,
+  "knock_frequency": 2200,
+  "knock_level": 0.8,
+  "toe_level": 0,
+  "peak": 0.9
+}

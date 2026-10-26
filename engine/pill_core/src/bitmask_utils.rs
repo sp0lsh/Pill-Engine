@@ -34,34 +34,46 @@ where
     }
 }
 
-// From 0 to 15 (16 in total)
-// Where range order is: from MSB to LSB
-// e.g. create_bitmask_with_one(3);
-// will return mask: 0001_0000_0000_0000
-pub fn create_bitmask_with_one(index: u16) -> u16 {
-    pub const FIRST_BIT: u16 = 0b1000_0000_0000_0000;
-    let mut mask: u16 = 0b0000_0000_0000_0000;
-    if (0_u16..=15_u16).contains(&index) {
-        mask |= FIRST_BIT;
-        for _ in 0..index {
-            mask >>= 1;
-        }
-    }
-    mask
+/// A set of component types (one bit per type registered in a scene).
+pub type ComponentMask = u64;
+
+/// Component types a scene can register: the bits of [`ComponentMask`].
+pub const MAX_COMPONENT_TYPES: usize = ComponentMask::BITS as usize;
+
+// From 0 to MAX_COMPONENT_TYPES - 1, from MSB to LSB
+// e.g. create_bitmask_with_one(3) sets the fourth highest bit
+pub fn create_bitmask_with_one(index: usize) -> ComponentMask {
+    assert!(
+        index < MAX_COMPONENT_TYPES,
+        "component type {index} exceeds the {MAX_COMPONENT_TYPES} a scene can register"
+    );
+    (1 as ComponentMask) << (MAX_COMPONENT_TYPES - 1 - index)
 }
 
-// From 0 to 15 (16 in total)
-// Where range order is: from MSB to LSB
-// e.g. get_indices_of_set_elements(0b0001_0000_0100_0001);
-// will return vector: [0, 3, 9, 15]
-pub fn get_indices_of_set_elements(bitmask: u16) -> Vec<usize> {
-    let mut test_mask: u16 = 0b1000_0000_0000_0000;
-    let mut indices = Vec::<usize>::new();
-    for i in 0..=15 {
-        if bitmask & test_mask > 0 {
-            indices.push(i);
-        }
-        test_mask >>= 1;
+// Indices of the set bits, from MSB to LSB (the inverse of create_bitmask_with_one)
+// e.g. bits 0, 3 and 9 set → [0, 3, 9]
+pub fn get_indices_of_set_elements(bitmask: ComponentMask) -> Vec<usize> {
+    (0..MAX_COMPONENT_TYPES)
+        .filter(|&index| bitmask & create_bitmask_with_one(index) != 0)
+        .collect()
+}
+
+#[cfg(test)]
+mod component_mask_tests {
+    use super::*;
+
+    #[test]
+    fn component_bits_round_trip_past_sixteen_types() {
+        let indices = [0, 3, 15, 16, 40, MAX_COMPONENT_TYPES - 1];
+        let mask = indices
+            .iter()
+            .fold(0, |mask, &index| mask | create_bitmask_with_one(index));
+        assert_eq!(get_indices_of_set_elements(mask), indices);
     }
-    indices
+
+    #[test]
+    #[should_panic(expected = "exceeds")]
+    fn component_type_past_the_mask_panics() {
+        create_bitmask_with_one(MAX_COMPONENT_TYPES);
+    }
 }

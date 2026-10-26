@@ -22,8 +22,9 @@ use crate::{
     sim::{
         arena::Arena,
         combat::{Command, Event, ImpactKind},
-        distance, horizontal_distance,
+        distance, dot, horizontal_distance,
         session::{Session, TIME_LIMIT},
+        sub, view_basis,
         weapons::{Kind, WEAPONS},
         STEP,
     },
@@ -46,6 +47,23 @@ const ANIMATION_RATE: f32 = 10.0;
 /// Seconds a body without death frames takes to tip over.
 const TIP_OVER_TIME: f32 = 0.3;
 const MESSAGE_TIME: f32 = 6.0;
+/// Corpses left lying (the oldest is reused), seconds before one sinks away, sinking time.
+const MAX_CORPSES: usize = 16;
+const CORPSE_TIME: f32 = 30.0;
+const CORPSE_SINK_TIME: f32 = 1.0;
+/// Pain sounds at most this often; the hit tick this long after your hit (seconds).
+const HIT_TICK_DELAY: f32 = 0.08;
+const PAIN_INTERVAL: f32 = 0.4;
+/// The view kick per point of damage (degrees per second).
+const HIT_KICK: f32 = 3.0;
+/// Blasts closer than this shake the view (units); kick at the blast (degrees per second).
+const BLAST_SHAKE_RADIUS: f32 = 400.0;
+const BLAST_KICK: f32 = 150.0;
+/// A killing hit this strong tears the victim apart (gib sound).
+const GIB_DAMAGE: f32 = 40.0;
+/// Kill feed: lines kept, seconds shown.
+const FEED_LINES: usize = 4;
+const FEED_TIME: f32 = 4.0;
 /// The health number: five times the HUD's text.
 const HEALTH_FONT_SIZE: f32 = 80.0;
 
@@ -61,6 +79,13 @@ pub struct Hud {
     pub time_left: f32,
     pub level: f32,
     pub message: Option<String>,
+    /// Seconds the message has been shown (it slides in).
+    pub message_age: f32,
+    /// 0..1, just hurt / just fragged someone: the health and score pop, the screen reddens.
+    pub damage_pulse: f32,
+    pub frag_pulse: f32,
+    /// Kill feed: text, involving the player, seconds shown.
+    pub feed: Vec<(String, bool, f32)>,
 }
 
 pub static HUD: Mutex<Option<Hud>> = Mutex::new(None);
@@ -73,7 +98,15 @@ define_component!(BotModel {
     dead: bool,
     deaths: usize,
     frame: usize,
+    // Where it died (its corpse stays there after the respawn)
+    died_at: [f32; 3],
+    died_yaw: f32,
+    // A corpse (`index` is `CORPSE`): seconds lying, `None` while unused
+    corpse: Option<f32>,
 });
+
+/// `BotModel::index` of corpses: bodies left lying where fighters died, after their respawn.
+const CORPSE: usize = usize::MAX;
 
 /// The player model's frames by animation (indices into its uploaded meshes).
 #[derive(Default)]
@@ -82,6 +115,7 @@ struct Animations {
     stand: Vec<usize>,
     shoot: Vec<usize>,
     swing: Vec<usize>,
+    pain: Vec<usize>,
     /// Several deaths, all ending lying on the ground.
     deaths: Vec<Vec<usize>>,
 }
@@ -92,6 +126,7 @@ const RUN_FRAMES: Range<usize> = 6..12;
 const STAND_FRAMES: Range<usize> = 12..17;
 const SHOOT_FRAMES: Range<usize> = 113..119;
 const SWING_FRAMES: Range<usize> = 119..125;
+const PAIN_FRAMES: Range<usize> = 35..41;
 const DEATH_FRAMES: [Range<usize>; 5] = [50..61, 61..70, 70..85, 85..94, 94..103];
 const DEATH_PREFIXES: [&str; 6] = ["deatha", "deathb", "deathc", "deathd", "deathe", "axdeth"];
 
@@ -146,6 +181,7 @@ impl Animations {
             stand: named(&["stand", "axstnd"], STAND_FRAMES),
             shoot: named(&["shotatt", "nailatt", "attack"], SHOOT_FRAMES),
             swing: named(&["axatt", "axattb"], SWING_FRAMES),
+            pain: named(&["pain", "axpain"], PAIN_FRAMES),
             deaths,
         }
     }
@@ -163,6 +199,14 @@ pub struct Deathmatch {
     model: Option<(WeaponModel, Animations)>,
     /// The local player's fighter.
     me: usize,
+    /// Per fighter, seconds since it was last hit (flinch, pain sounds).
+    since_hit: Vec<f32>,
+    damage_pulse: f32,
+    frag_pulse: f32,
+    message_age: f32,
+    feed: Vec<(String, bool, f32)>,
+    /// Seconds until the hit tick of your last hit plays (after the shot's own sound).
+    hit_tick_in: Option<f32>,
     #[cfg(not(target_arch = "wasm32"))]
     recorder: Option<Recorder<std::io::BufWriter<std::fs::File>>>,
     /// Listen server: remote players join this match.
@@ -171,6 +215,30 @@ pub struct Deathmatch {
     /// Client: the match is the server's, this shows it.
     #[cfg(not(target_arch = "wasm32"))]
     connection: Option<Connection>,
+}
+
+/// An effect of this frame's events, positions resolved (Quake space).
+enum Juice {
+    /// Your shot hit someone.
+    HitConfirm,
+    /// Someone was hurt: you (`None`) or someone there.
+    Pain(Option<[f32; 3]>),
+    /// Your view jolts (degrees per second of pitch and roll).
+    Kick {
+        pitch: f32,
+        roll: f32,
+    },
+    Death {
+        at: [f32; 3],
+        gib: bool,
+    },
+    Burst([f32; 3]),
+    /// Your pellets' streaks to these points.
+    Tracers(Vec<[f32; 3]>),
+    Mark {
+        point: [f32; 3],
+        normal: [f32; 3],
+    },
 }
 
 /// Where the match runs.
@@ -245,6 +313,7 @@ fn upload_player(engine: &mut Engine, model: QuakeModel) -> Result<(WeaponModel,
         &animations.stand,
         &animations.shoot,
         &animations.swing,
+        &animations.pain,
     ]
     .into_iter()
     .chain(&animations.deaths)
@@ -264,6 +333,7 @@ fn upload_player(engine: &mut Engine, model: QuakeModel) -> Result<(WeaponModel,
         stand: remap(&animations.stand),
         shoot: remap(&animations.shoot),
         swing: remap(&animations.swing),
+        pain: remap(&animations.pain),
         deaths: animations.deaths.iter().map(remap).collect(),
     };
     let model = QuakeModel {
@@ -354,6 +424,31 @@ pub fn spawn_deathmatch(
                     dead: false,
                     deaths: 0,
                     frame: 0,
+                    died_at: [0.0; 3],
+                    died_yaw: 0.0,
+                    corpse: None,
+                })
+                .build();
+        }
+        for _ in 0..MAX_CORPSES {
+            engine
+                .build_entity(scene)
+                .with_component(TransformComponent::builder().scale(Vector3f::ZERO).build())
+                .with_component(
+                    MeshRenderingComponent::builder()
+                        .mesh(&model.frames[0])
+                        .material(&model.material)
+                        .build(),
+                )
+                .with_component(BotModel {
+                    index: CORPSE,
+                    time: 0.0,
+                    dead: false,
+                    deaths: 0,
+                    frame: 0,
+                    died_at: [0.0; 3],
+                    died_yaw: 0.0,
+                    corpse: None,
                 })
                 .build();
         }
@@ -374,6 +469,12 @@ pub fn spawn_deathmatch(
         message: None,
         model,
         me: 0,
+        since_hit: Vec::new(),
+        damage_pulse: 0.0,
+        frag_pulse: 0.0,
+        message_age: 0.0,
+        feed: Vec::new(),
+        hit_tick_in: None,
         #[cfg(not(target_arch = "wasm32"))]
         recorder: recorder.flatten(),
         #[cfg(not(target_arch = "wasm32"))]
@@ -519,6 +620,7 @@ impl Deathmatch {
                     host.announce(&text);
                 }
                 self.message = Some((text, MESSAGE_TIME));
+                self.message_age = 0.0;
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -544,9 +646,11 @@ impl Deathmatch {
         connection.receive(dt, collision);
         if let Some(reason) = connection.refused.take() {
             self.message = Some((format!("Refused: {reason}"), MESSAGE_TIME * 3.0));
+            self.message_age = 0.0;
         }
         for text in connection.messages.drain(..) {
             self.message = Some((text, MESSAGE_TIME));
+            self.message_age = 0.0;
         }
         let Some(welcome) = connection.welcome.as_ref() else {
             connection.flush();
@@ -589,6 +693,137 @@ impl Deathmatch {
         })
     }
 
+    /// The effects of this frame's events; ages the hit timers, pulses and kill feed.
+    fn juice(&mut self, events: &[Event], dt: f32) -> Vec<Juice> {
+        let count = self.session.fight.fighters.len();
+        self.since_hit.resize(count, f32::MAX);
+        for since in &mut self.since_hit {
+            *since += dt;
+        }
+        self.damage_pulse = (self.damage_pulse - 1.5 * dt).max(0.0);
+        self.frag_pulse = (self.frag_pulse - 2.0 * dt).max(0.0);
+        self.message_age += dt;
+        for line in &mut self.feed {
+            line.2 += dt;
+        }
+        self.feed.retain(|line| line.2 < FEED_TIME);
+
+        let me = self.me;
+        let fighters = &self.session.fight.fighters;
+        let my_eye = fighters[me].eye();
+        let mut juice = Vec::new();
+        // Per fighter: damage taken this frame, by whom last
+        let mut damage = vec![(0.0f32, None); count];
+        let mut hit_confirm = false;
+        let mut tracer_hits = Vec::new();
+        let mut kills = Vec::new();
+        for event in events {
+            match *event {
+                Event::Hit {
+                    attacker,
+                    target,
+                    damage: dealt,
+                } => {
+                    if let Some(taken) = damage.get_mut(target) {
+                        *taken = (taken.0 + dealt, Some(attacker));
+                    }
+                    hit_confirm |= attacker == me && target != me;
+                }
+                Event::Impact {
+                    by,
+                    point,
+                    normal,
+                    kind,
+                    ..
+                } => {
+                    if by == me && matches!(kind, ImpactKind::Wall | ImpactKind::Flesh) {
+                        tracer_hits.push(point);
+                    }
+                    if kind == ImpactKind::Wall {
+                        juice.push(Juice::Mark { point, normal });
+                    }
+                    let near = 1.0 - distance(point, my_eye) / BLAST_SHAKE_RADIUS;
+                    if kind == ImpactKind::Explosion && near > 0.0 {
+                        juice.push(Juice::Kick {
+                            pitch: BLAST_KICK * near,
+                            roll: BLAST_KICK * near * 0.5,
+                        });
+                    }
+                }
+                Event::Killed { attacker, target } => kills.push((attacker, target)),
+                _ => {}
+            }
+        }
+        // The tick after the shot's own sound, which would drown it
+        if hit_confirm && self.hit_tick_in.is_none() {
+            self.hit_tick_in = Some(HIT_TICK_DELAY);
+        }
+        if let Some(left) = self.hit_tick_in.as_mut() {
+            *left -= dt;
+            if *left <= 0.0 {
+                self.hit_tick_in = None;
+                juice.push(Juice::HitConfirm);
+            }
+        }
+        for (target, &(dealt, attacker)) in damage.iter().enumerate() {
+            if dealt <= 0.0 {
+                continue;
+            }
+            if self.since_hit[target] >= PAIN_INTERVAL && fighters[target].alive {
+                let at = (target != me).then(|| fighters[target].center());
+                juice.push(Juice::Pain(at));
+            }
+            self.since_hit[target] = 0.0;
+            if target == me {
+                self.damage_pulse = (self.damage_pulse + dealt / 40.0).min(1.0);
+                // Pitched up, rolled away from the side the shot came from
+                let (_, right, _) = view_basis(fighters[me].yaw, 0.0);
+                let side = attacker
+                    .filter(|&attacker| attacker != me)
+                    .map_or(0.0, |attacker| {
+                        let to = sub(fighters[attacker].state.origin, fighters[me].state.origin);
+                        dot(to, right).signum()
+                    });
+                juice.push(Juice::Kick {
+                    pitch: dealt * HIT_KICK,
+                    roll: -side * dealt * HIT_KICK,
+                });
+            }
+        }
+        for (attacker, target) in kills {
+            let at = fighters[target].center();
+            juice.push(Juice::Death {
+                at,
+                gib: damage
+                    .get(target)
+                    .is_some_and(|taken| taken.0 >= GIB_DAMAGE),
+            });
+            juice.push(Juice::Burst(at));
+            let victim = fighter_name(&self.session, target, me);
+            let text = match attacker.filter(|&attacker| attacker != target) {
+                Some(attacker) => {
+                    format!(
+                        "{} fragged {victim}",
+                        fighter_name(&self.session, attacker, me)
+                    )
+                }
+                None => format!("{victim} died"),
+            };
+            if attacker == Some(me) && target != me {
+                self.frag_pulse = 1.0;
+            }
+            self.feed
+                .push((text, attacker == Some(me) || target == me, 0.0));
+            if self.feed.len() > FEED_LINES {
+                self.feed.remove(0);
+            }
+        }
+        if !tracer_hits.is_empty() && WEAPONS[fighters[me].weapon].kind == Kind::Hitscan {
+            juice.push(Juice::Tracers(tracer_hits));
+        }
+        juice
+    }
+
     fn hud(&self, playing: bool) -> Hud {
         let session = &self.session;
         let human = &session.fight.fighters[self.me];
@@ -614,6 +849,10 @@ impl Deathmatch {
                 .as_ref()
                 .filter(|(_, left)| *left > 0.0)
                 .map(|(text, _)| text.clone()),
+            message_age: self.message_age,
+            damage_pulse: self.damage_pulse,
+            frag_pulse: self.frag_pulse,
+            feed: self.feed.clone(),
         }
     }
 }
@@ -642,7 +881,7 @@ pub fn deathmatch_system(engine: &mut Engine) -> Result<()> {
         .get_global_component::<PlayerRig>()?
         .death
         .and_then(|death| death.killer);
-    let (events, moved, impacts, hud, human, origin, me, killer) = {
+    let (events, moved, impacts, hud, human, origin, me, killer, juice) = {
         let state = engine.get_global_component_mut::<LevelState>()?;
         let LevelState {
             collision,
@@ -653,6 +892,7 @@ pub fn deathmatch_system(engine: &mut Engine) -> Result<()> {
             return Ok(());
         };
         let (events, moved) = deathmatch.update(collision, &player, delta_time);
+        let juice = deathmatch.juice(&events, delta_time);
         let impacts: Vec<Impact> = events
             .iter()
             .filter_map(|event| match *event {
@@ -687,6 +927,7 @@ pub fn deathmatch_system(engine: &mut Engine) -> Result<()> {
             deathmatch.player_origin(),
             me,
             killer,
+            juice,
         )
     };
 
@@ -763,8 +1004,38 @@ pub fn deathmatch_system(engine: &mut Engine) -> Result<()> {
     for impact in &impacts {
         weapon::spawn_impact(engine, impact)?;
     }
+    play_juice(engine, juice, player.playing)?;
     if let Ok(mut shown) = HUD.lock() {
         *shown = Some(hud);
+    }
+    Ok(())
+}
+
+/// Sounds, view kicks, bursts, tracers and marks of this frame's events.
+fn play_juice(engine: &mut Engine, juice: Vec<Juice>, playing: bool) -> Result<()> {
+    let at = |point: [f32; 3]| Some(Vector3f::from_array(quake_to_engine(point)));
+    for effect in juice {
+        match effect {
+            Juice::HitConfirm => sounds::play(engine, Sfx::HitConfirm, None)?,
+            Juice::Pain(None) => sounds::play(engine, Sfx::Pain, None)?,
+            Juice::Pain(Some(point)) => sounds::play(engine, Sfx::OtherPain, at(point))?,
+            Juice::Kick { pitch, roll } if playing => {
+                engine
+                    .get_global_component_mut::<PlayerRig>()?
+                    .kick(pitch, roll);
+            }
+            Juice::Kick { .. } => {}
+            Juice::Death { at: point, gib } => {
+                let sound = if gib { Sfx::Gib } else { Sfx::Death };
+                sounds::play(engine, sound, at(point))?;
+            }
+            Juice::Burst(point) => weapon::spawn_kill_burst(engine, point)?,
+            Juice::Tracers(points) => {
+                let view = engine.get_global_component::<PlayerRig>()?.view;
+                weapon::spawn_tracers(engine, &view, &points)?;
+            }
+            Juice::Mark { point, normal } => weapon::spawn_decal(engine, point, normal)?,
+        }
     }
     Ok(())
 }
@@ -778,16 +1049,32 @@ struct Pose {
     yaw: f32,
     speed: f32,
     since_attack: f32,
+    since_hit: f32,
     melee: bool,
 }
 
-/// Places, turns and animates the bots' bodies.
+/// A body's rotation (degrees) facing `yaw`, tipped over backward by `tip` (0..1).
+fn body_rotation(yaw: f32, tip: f32) -> Vector3f {
+    let (sin, cos) = yaw.to_radians().sin_cos();
+    let (tip_sin, tip_cos) = (tip * std::f32::consts::FRAC_PI_2).sin_cos();
+    let forward = [cos * tip_cos, sin * tip_cos, tip_sin];
+    let up = [-cos * tip_sin, -sin * tip_sin, tip_cos];
+    // Mesh axes: +X the model's forward, +Y up, +Z its right (engine-converted Quake)
+    euler_from_columns([
+        quake_direction_to_engine(forward),
+        quake_direction_to_engine(up),
+        quake_direction_to_engine([sin, -cos, 0.0]),
+    ])
+}
+
+/// Places, turns and animates the fighters' bodies: running, standing, attacking, flinching and
+/// when hit, dying; a respawn leaves a corpse where the body lay.
 pub fn bot_render_system(engine: &mut Engine) -> Result<()> {
     let delta_time = engine
         .get_global_component::<TimeComponent>()?
         .delta_time
         .clamp(0.0, 0.1);
-    let (poses, meshes, [run, stand, shoot, swing], deaths) = {
+    let (poses, meshes, [run, stand, shoot, swing, pain], deaths) = {
         let state = engine.get_global_component::<LevelState>()?;
         let Some(deathmatch) = state.deathmatch.as_ref() else {
             return Ok(());
@@ -810,6 +1097,7 @@ pub fn bot_render_system(engine: &mut Engine) -> Result<()> {
                 yaw: fighter.yaw,
                 speed: horizontal_distance(fighter.state.velocity, [0.0; 3]),
                 since_attack,
+                since_hit: deathmatch.since_hit.get(index).copied().unwrap_or(f32::MAX),
                 melee: WEAPONS[fighter.weapon].kind == Kind::Melee,
             })
             .collect();
@@ -821,71 +1109,124 @@ pub fn bot_render_system(engine: &mut Engine) -> Result<()> {
                 animations.stand.clone(),
                 animations.shoot.clone(),
                 animations.swing.clone(),
+                animations.pain.clone(),
             ],
             animations.deaths.clone(),
         )
     };
+    // (where, yaw, death animation) of bodies that just respawned
+    let mut left_behind = Vec::new();
     for (_, transform, rendering, body) in engine
         .iterate_three_components_mut::<TransformComponent, MeshRenderingComponent, BotModel>()?
     {
-        let Some(&Pose {
-            shown: true,
-            alive,
-            origin,
-            yaw,
-            speed,
-            since_attack,
-            melee,
-        }) = poses.get(body.index)
-        else {
+        if body.index == CORPSE {
+            continue;
+        }
+        let Some(pose) = poses.get(body.index).copied() else {
             transform.set_scale(Vector3f::ZERO);
             continue;
         };
-        if body.dead == alive {
-            body.dead = !alive;
+        let death = (body.index + body.deaths) % deaths.len();
+        if body.dead == pose.alive {
+            body.dead = !pose.alive;
             body.time = 0.0;
-            if alive {
+            if pose.alive {
+                left_behind.push((body.died_at, body.died_yaw, death));
                 body.deaths += 1;
+            } else {
+                body.died_at = pose.origin;
+                body.died_yaw = pose.yaw;
             }
         }
         body.time += delta_time;
+        if !pose.shown {
+            transform.set_scale(Vector3f::ZERO);
+            continue;
+        }
         let step = (body.time * ANIMATION_RATE) as usize;
-        let attack = if melee { &swing } else { &shoot };
-        let attack_step = (since_attack * ANIMATION_RATE) as usize;
+        let attack = if pose.melee { &swing } else { &shoot };
+        let attack_step = (pose.since_attack * ANIMATION_RATE) as usize;
+        let pain_step = (pose.since_hit * ANIMATION_RATE) as usize;
         // Dead: a death (varying per body and death), then lying on its last frame until respawn
-        let death = &deaths[(body.index + body.deaths) % deaths.len()];
-        let frame = if !alive {
-            death[step.min(death.len() - 1)]
+        let dying = &deaths[death];
+        let frame = if !pose.alive {
+            dying[step.min(dying.len() - 1)]
         } else if attack_step < attack.len() {
             attack[attack_step]
-        } else if speed > 40.0 {
+        } else if pain_step < pain.len() {
+            pain[pain_step]
+        } else if pose.speed > 40.0 {
             run[step % run.len()]
         } else {
             stand[step % stand.len()]
         };
-        let (sin, cos) = yaw.to_radians().sin_cos();
         // A model without death frames tips over backward about its right axis instead
-        let tip = if !alive && death.len() == 1 {
-            (body.time / TIP_OVER_TIME).min(1.0) * std::f32::consts::FRAC_PI_2
+        let tip = if !pose.alive && dying.len() == 1 {
+            (body.time / TIP_OVER_TIME).min(1.0)
         } else {
             0.0
         };
-        let (tip_sin, tip_cos) = tip.sin_cos();
-        let forward = [cos * tip_cos, sin * tip_cos, tip_sin];
-        let up = [-cos * tip_sin, -sin * tip_sin, tip_cos];
-        transform.set_position(Vector3f::from_array(quake_to_engine(origin)));
-        // Mesh axes: +X the model's forward, +Y up, +Z its right (engine-converted Quake)
-        transform.set_rotation(euler_from_columns([
-            quake_direction_to_engine(forward),
-            quake_direction_to_engine(up),
-            quake_direction_to_engine([sin, -cos, 0.0]),
-        ]));
+        transform.set_position(Vector3f::from_array(quake_to_engine(pose.origin)));
+        transform.set_rotation(body_rotation(pose.yaw, tip));
         transform.set_scale(Vector3f::ONE);
         if frame != body.frame {
             if let Some(mesh) = meshes.get(frame) {
                 rendering.set_mesh(mesh);
             }
             body.frame = frame;
+        }
+    }
+
+    // Corpses: new ones replace free or the oldest; they lie, then sink away
+    for (origin, yaw, death) in left_behind {
+        let mut chosen = None;
+        let mut oldest = f32::MIN;
+        for (entity, corpse) in engine.iterate_one_component::<BotModel>()? {
+            if corpse.index != CORPSE {
+                continue;
+            }
+            let age = corpse.corpse.unwrap_or(f32::MAX);
+            if age > oldest {
+                oldest = age;
+                chosen = Some(entity);
+            }
+        }
+        for (entity, transform, rendering, corpse) in engine
+            .iterate_three_components_mut::<TransformComponent, MeshRenderingComponent, BotModel>(
+            )?
+        {
+            if Some(entity) != chosen {
+                continue;
+            }
+            // Lying as the body lay: the death's last frame, or tipped over without one
+            let dying = &deaths[death];
+            corpse.corpse = Some(0.0);
+            if let Some(mesh) = meshes.get(dying[dying.len() - 1]) {
+                rendering.set_mesh(mesh);
+            }
+            let tip = if dying.len() == 1 { 1.0 } else { 0.0 };
+            transform.set_position(Vector3f::from_array(quake_to_engine(origin)));
+            transform.set_rotation(body_rotation(yaw, tip));
+            transform.set_scale(Vector3f::ONE);
+        }
+    }
+    for (_, transform, corpse) in
+        engine.iterate_two_components_mut::<TransformComponent, BotModel>()?
+    {
+        let Some(age) = corpse.corpse.as_mut() else {
+            continue;
+        };
+        *age += delta_time;
+        let sunk = (*age - CORPSE_TIME) / CORPSE_SINK_TIME;
+        if sunk >= 1.0 {
+            corpse.corpse = None;
+            transform.set_scale(Vector3f::ZERO);
+            continue;
+        }
+        if sunk > 0.0 {
+            // 24 units (0.75 m) down into the floor
+            let sink = Vector3f::Y * (0.75 * delta_time / CORPSE_SINK_TIME);
+            transform.set_position(transform.position - sink);
         }
     }
     Ok(())
@@ -903,7 +1244,28 @@ pub fn hud(ctx: &egui::Context) {
     let screen = ctx.screen_rect();
     let font = egui::FontId::monospace(16.0);
     let color = egui::Color32::from_rgb(235, 225, 200);
+    let hurt = egui::Color32::from_rgb(230, 40, 30);
+    let ease_out = |x: f32| 1.0 - (1.0 - x.clamp(0.0, 1.0)).powi(3);
     if hud.playing {
+        // Damage: the screen's edges redden, more when hurt badly
+        let low = if hud.dead {
+            0.0
+        } else {
+            (1.0 - hud.health / 25.0).clamp(0.0, 1.0) * 0.5
+        };
+        let red = hud.damage_pulse.max(low);
+        if red > 0.0 {
+            for ring in 0..12 {
+                let inset = ring as f32 * 6.0;
+                let alpha = (red * 110.0 * (1.0 - ring as f32 / 12.0)) as u8;
+                painter.rect_stroke(
+                    screen.shrink(inset + 3.0),
+                    0.0,
+                    egui::Stroke::new(6.0, egui::Color32::from_rgba_unmultiplied(200, 0, 0, alpha)),
+                    egui::StrokeKind::Middle,
+                );
+            }
+        }
         let status = if hud.dead { "dead" } else { hud.weapon };
         painter.text(
             screen.left_bottom() + egui::vec2(16.0, -16.0),
@@ -916,7 +1278,9 @@ pub fn hud(ctx: &egui::Context) {
         // (egui's default fonts have no bold face)
         let health = format!("{}", hud.health.ceil() as i32);
         let at = screen.center_bottom() + egui::vec2(0.0, -16.0);
-        let big = egui::FontId::monospace(HEALTH_FONT_SIZE);
+        // Hurt: the number swells and reddens, easing back
+        let big = egui::FontId::monospace(HEALTH_FONT_SIZE * (1.0 + 0.35 * hud.damage_pulse));
+        let color = lerp_color(color, hurt, hud.damage_pulse);
         for dx in -2..=2 {
             for dy in -2..=2 {
                 painter.text(
@@ -929,31 +1293,68 @@ pub fn hud(ctx: &egui::Context) {
             }
         }
     }
-    let mut lines = vec![format!(
-        "{}:{:02}  difficulty {:.2}",
-        hud.time_left as i32 / 60,
-        hud.time_left as i32 % 60,
-        hud.level
-    )];
-    lines.extend(
-        hud.scores
-            .iter()
-            .map(|(name, frags)| format!("{name:<6} {frags:>3}")),
-    );
-    painter.text(
-        screen.right_top() + egui::vec2(-16.0, 40.0),
-        egui::Align2::RIGHT_TOP,
-        lines.join("\n"),
-        font.clone(),
+    // Time and scores top right; your line pops when you frag someone
+    let mut y = 40.0;
+    let mut line = |text: String, size: f32, color: egui::Color32| {
+        painter.text(
+            screen.right_top() + egui::vec2(-16.0, y),
+            egui::Align2::RIGHT_TOP,
+            text,
+            egui::FontId::monospace(size),
+            color,
+        );
+        y += size * 1.25;
+    };
+    line(
+        format!(
+            "{}:{:02}  difficulty {:.2}",
+            hud.time_left as i32 / 60,
+            hud.time_left as i32 % 60,
+            hud.level
+        ),
+        16.0,
         color,
     );
-    if let Some(message) = hud.message {
+    let bright = egui::Color32::from_rgb(255, 230, 120);
+    for (name, frags) in &hud.scores {
+        let (size, shade) = if name == "you" {
+            (
+                16.0 * (1.0 + 0.5 * hud.frag_pulse),
+                lerp_color(color, bright, hud.frag_pulse),
+            )
+        } else {
+            (16.0, color)
+        };
+        line(format!("{name:<6} {frags:>3}"), size, shade);
+    }
+    // Kill feed top left, under the engine panels; yours bright, fading out at the end
+    for (index, (text, mine, age)) in hud.feed.iter().enumerate() {
+        let fade = (1.0 - (age - (FEED_TIME - 0.5)).max(0.0) / 0.5).clamp(0.0, 1.0);
+        let base = if *mine { bright } else { color };
         painter.text(
-            screen.center() - egui::vec2(0.0, 80.0),
+            screen.left_top() + egui::vec2(16.0, 190.0 + index as f32 * 20.0),
+            egui::Align2::LEFT_TOP,
+            text,
+            font.clone(),
+            base.gamma_multiply(fade),
+        );
+    }
+    if let Some(message) = hud.message {
+        // Slides down into place
+        let slide = 60.0 * (1.0 - ease_out(hud.message_age / 0.35));
+        painter.text(
+            screen.center() - egui::vec2(0.0, 80.0 + slide),
             egui::Align2::CENTER_CENTER,
             message,
             egui::FontId::proportional(22.0),
             color,
         );
     }
+}
+
+/// `a` toward `b` by `t` (0..1).
+fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
+    egui::Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
 }

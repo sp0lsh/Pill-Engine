@@ -65,7 +65,14 @@ const MUZZLE_FLASH_TIME: f32 = 0.06;
 /// The muzzle light sits this far ahead of the eye (units): it lights the room in front, not the
 /// view model a hand's width away.
 const MUZZLE_LIGHT_AHEAD: f32 = 48.0;
-const PARTICLES: usize = 192;
+const PARTICLES: usize = 400;
+/// Tracer streak and impact mark lifetimes (seconds); marks shrink away over the last second.
+const TRACER_TIME: f32 = 0.05;
+const DECAL_TIME: f32 = 12.0;
+/// View-model recoil: a spring (stiffness, damping) kicked back by each shot (units/s).
+const RECOIL_STIFFNESS: f32 = 260.0;
+const RECOIL_DAMPING: f32 = 16.0;
+const RECOIL_KICK: f32 = 90.0;
 const IMPACT_LIGHTS: usize = 6;
 const PARTICLE_GRAVITY: f32 = 9.81;
 
@@ -83,14 +90,27 @@ pub struct WeaponModel {
 
 // One pooled particle (hidden while `life` ≤ 0); engine space, meters.
 define_component!(Particle {
+    // Motion (sparks, dust), or the direction a streak runs or a mark faces
     velocity: Vector3f,
     life: f32,
     max_life: f32,
+    // Sparks and dust: size growing or shrinking to `end_size`; a streak's width and length, a
+    // mark's size
     size: f32,
     end_size: f32,
     gravity: f32,
-    dust: bool,
+    kind: ParticleKind,
 });
+
+/// What a pooled particle is: flying sparks or dust (dust slows faster), a tracer streak, a mark
+/// on a wall.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ParticleKind {
+    Spark,
+    Dust,
+    Streak,
+    Mark,
+}
 
 // A light that fades out over `time` seconds after being set off.
 define_component!(Flash {
@@ -113,6 +133,13 @@ define_global_component!(Weapon {
     spark_material: Option<MaterialHandle>,
     dust_material: Option<MaterialHandle>,
     blood_material: Option<MaterialHandle>,
+    brass_material: Option<MaterialHandle>,
+    gore_material: Option<MaterialHandle>,
+    tracer_material: Option<MaterialHandle>,
+    mark_material: Option<MaterialHandle>,
+    // View-model recoil (units back along the view) and its velocity
+    recoil: f32,
+    recoil_velocity: f32,
     // Seconds since the last attack, while its animation runs
     animation: Option<f32>,
     // Axe: the second swing animation next
@@ -140,6 +167,12 @@ impl Weapon {
             spark_material: None,
             dust_material: None,
             blood_material: None,
+            brass_material: None,
+            gore_material: None,
+            tracer_material: None,
+            mark_material: None,
+            recoil: 0.0,
+            recoil_velocity: 0.0,
             animation: None,
             alternate_swing: false,
             fired: None,
@@ -278,6 +311,30 @@ pub fn spawn_weapons(
             .roughness(0.6)
             .opacity(0.8),
     )?;
+    let brass_material = engine.add_resource(
+        Material::new("ekauq3d_brass")
+            .albedo(Color::new(0.75, 0.55, 0.2))
+            .metallic(0.9)
+            .roughness(0.35),
+    )?;
+    let gore_material = engine.add_resource(
+        Material::new("ekauq3d_gore")
+            .albedo(Color::new(0.3, 0.02, 0.02))
+            .roughness(0.5),
+    )?;
+    let tracer_material = engine.add_resource(
+        Material::new("ekauq3d_tracer")
+            .albedo(Color::new(0.0, 0.0, 0.0))
+            .emissive(Color::new(6.0, 4.0, 1.6))
+            .blend_mode(BlendMode::Additive),
+    )?;
+    let decal_material = engine.add_resource(
+        // Black: no diffuse, no reflection (opaque; the translucent pass loses thin quads)
+        Material::new("ekauq3d_impact_mark")
+            .albedo(Color::new(0.0, 0.0, 0.0))
+            .metallic(1.0)
+            .roughness(1.0),
+    )?;
     let flash_material = engine.add_resource(
         Material::new("ekauq3d_muzzle_flash")
             .albedo(Color::new(0.0, 0.0, 0.0))
@@ -307,7 +364,7 @@ pub fn spawn_weapons(
                 size: 0.0,
                 end_size: 0.0,
                 gravity: 0.0,
-                dust: false,
+                kind: ParticleKind::Spark,
             })
             .build();
     }
@@ -359,6 +416,10 @@ pub fn spawn_weapons(
     weapon.spark_material = Some(spark_material);
     weapon.dust_material = Some(dust_material);
     weapon.blood_material = Some(blood_material);
+    weapon.brass_material = Some(brass_material);
+    weapon.gore_material = Some(gore_material);
+    weapon.tracer_material = Some(tracer_material);
+    weapon.mark_material = Some(decal_material);
     Ok(())
 }
 
@@ -410,7 +471,8 @@ pub fn weapon_system(engine: &mut Engine) -> Result<()> {
                     weapon.switching_to = None;
                     0.0
                 } else {
-                    1.0 - (weapon.switch_time / SWITCH_TIME - 1.0).abs()
+                    let linear = 1.0 - (weapon.switch_time / SWITCH_TIME - 1.0).abs();
+                    linear * linear * (3.0 - 2.0 * linear)
                 }
             }
             None => 0.0,
@@ -429,6 +491,8 @@ pub fn weapon_system(engine: &mut Engine) -> Result<()> {
     match attacked {
         Some(WeaponKind::Shotgun) => {
             engine.get_global_component_mut::<PlayerRig>()?.punch(PUNCH);
+            engine.get_global_component_mut::<Weapon>()?.recoil_velocity -= RECOIL_KICK;
+            eject_shell(engine, &view)?;
             set_off_muzzle(engine)?;
             crate::sounds::play(engine, crate::sounds::Sfx::Fire, None)?;
         }
@@ -478,12 +542,21 @@ pub fn weapon_system(engine: &mut Engine) -> Result<()> {
 
     // --- Placement: at the eye along the view, bobbing forward with the head, dropped while
     // switching; offsets scaled with the model ---
+    let recoil = {
+        let weapon = engine.get_global_component_mut::<Weapon>()?;
+        weapon.recoil_velocity += (-weapon.recoil * RECOIL_STIFFNESS
+            - weapon.recoil_velocity * RECOIL_DAMPING)
+            * delta_time;
+        weapon.recoil += weapon.recoil_velocity * delta_time;
+        weapon.recoil
+    };
+    // Recoil: back along the view and a little up (`recoil` is negative while kicked)
     let position = add(
         view.eye,
         scale(
             add(
-                scale(view.forward, view.bob * 0.4),
-                scale(view.up, -drop * SWITCH_DROP),
+                scale(view.forward, view.bob * 0.4 + recoil),
+                scale(view.up, -drop * SWITCH_DROP - recoil * 0.4),
             ),
             VIEW_MODEL_SCALE,
         ),
@@ -515,17 +588,7 @@ pub fn weapon_system(engine: &mut Engine) -> Result<()> {
     }
 
     // --- Muzzle flash quad, facing the view ---
-    let muzzle = add(
-        view.eye,
-        scale(
-            add(
-                scale(view.forward, MUZZLE[0]),
-                add(scale(view.right, MUZZLE[1]), scale(view.up, MUZZLE[2])),
-            ),
-            VIEW_MODEL_SCALE,
-        ),
-    );
-    let muzzle = Vector3f::from_array(quake_to_engine(muzzle));
+    let muzzle = Vector3f::from_array(quake_to_engine(muzzle_point(&view)));
     let flash_rotation = euler_from_columns([
         quake_direction_to_engine(view.right),
         quake_direction_to_engine(view.up),
@@ -661,14 +724,14 @@ pub fn spawn_impact(engine: &mut Engine, impact: &Impact) -> Result<()> {
                 size,
                 end_size,
                 gravity,
-                dust: is_dust,
+                kind: if is_dust {
+                    ParticleKind::Dust
+                } else {
+                    ParticleKind::Spark
+                },
             });
         }
         let ricochet = impact.kind == ImpactKind::Wall && weapon.random.signed() > 0.33;
-        let longest = emitted
-            .iter()
-            .fold(0.0f32, |longest, particle| longest.max(particle.life));
-        weapon.effects_left = weapon.effects_left.max(longest + 0.1);
         let dust_material = if flesh {
             weapon.blood_material.clone()
         } else {
@@ -677,29 +740,18 @@ pub fn spawn_impact(engine: &mut Engine, impact: &Impact) -> Result<()> {
         (weapon.spark_material.clone(), dust_material, ricochet)
     };
 
-    let mut queue = emitted.into_iter();
-    for (_, transform, rendering, particle) in engine
-        .iterate_three_components_mut::<TransformComponent, MeshRenderingComponent, Particle>()?
-    {
-        if particle.life > 0.0 {
-            continue;
-        }
-        let Some(next) = queue.next() else {
-            break;
-        };
-        let material = if next.dust {
-            dust_material.as_ref()
-        } else {
-            spark_material.as_ref()
-        };
-        if let Some(material) = material.filter(|m| rendering.material_handle.as_ref() != Some(*m))
-        {
-            rendering.set_material(material);
-        }
-        *particle = next;
-        transform.set_position(point);
-        transform.set_scale(Vector3f::splat(particle.size));
-    }
+    let emitted = emitted
+        .into_iter()
+        .map(|particle| {
+            let material = if particle.kind == ParticleKind::Dust {
+                dust_material.clone()
+            } else {
+                spark_material.clone()
+            };
+            (particle, material)
+        })
+        .collect();
+    emit(engine, point, emitted)?;
 
     if melee || flesh {
         return Ok(());
@@ -729,6 +781,213 @@ pub fn spawn_impact(engine: &mut Engine, impact: &Impact) -> Result<()> {
     Ok(())
 }
 
+/// Starts pooled particles at `point` (engine space), each with its material.
+fn emit(
+    engine: &mut Engine,
+    point: Vector3f,
+    particles: Vec<(Particle, Option<MaterialHandle>)>,
+) -> Result<()> {
+    {
+        let weapon = engine.get_global_component_mut::<Weapon>()?;
+        let longest = particles
+            .iter()
+            .fold(0.0f32, |longest, (particle, _)| longest.max(particle.life));
+        weapon.effects_left = weapon.effects_left.max(longest + 0.1);
+    }
+    let mut queue = particles.into_iter();
+    for (_, transform, rendering, particle) in engine
+        .iterate_three_components_mut::<TransformComponent, MeshRenderingComponent, Particle>()?
+    {
+        if particle.life > 0.0 {
+            continue;
+        }
+        let Some((next, material)) = queue.next() else {
+            break;
+        };
+        if let Some(material) = material.filter(|m| rendering.material_handle.as_ref() != Some(m)) {
+            rendering.set_material(&material);
+        }
+        *particle = next;
+        transform.set_position(point);
+        match particle.kind {
+            ParticleKind::Spark | ParticleKind::Dust => {
+                transform.set_scale(Vector3f::splat(particle.size));
+            }
+            ParticleKind::Streak => {
+                transform.set_rotation(along(particle.velocity));
+                transform.set_scale(Vector3f::new(
+                    particle.end_size,
+                    particle.size,
+                    particle.size,
+                ));
+            }
+            ParticleKind::Mark => {
+                transform.set_rotation(along(particle.velocity));
+                transform.set_scale(Vector3f::new(0.002, particle.size, particle.size));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The muzzle in Quake space: the barrel's end, scaled with the view model.
+fn muzzle_point(view: &crate::player::ViewPose) -> [f32; 3] {
+    add(
+        view.eye,
+        scale(
+            add(
+                scale(view.forward, MUZZLE[0]),
+                add(scale(view.right, MUZZLE[1]), scale(view.up, MUZZLE[2])),
+            ),
+            VIEW_MODEL_SCALE,
+        ),
+    )
+}
+
+/// A spent shell flung to the right of the player's shotgun.
+fn eject_shell(engine: &mut Engine, view: &crate::player::ViewPose) -> Result<()> {
+    let (particle, material) = {
+        let weapon = engine.get_global_component_mut::<Weapon>()?;
+        let right = Vector3f::from_array(quake_direction_to_engine(view.right));
+        let up = Vector3f::from_array(quake_direction_to_engine(view.up));
+        let life = 0.8;
+        let particle = Particle {
+            velocity: right * weapon.random.range(1.5, 2.2) + up * weapon.random.range(1.0, 1.6),
+            life,
+            max_life: life,
+            size: 0.012,
+            end_size: 0.012,
+            gravity: PARTICLE_GRAVITY,
+            kind: ParticleKind::Spark,
+        };
+        (particle, weapon.brass_material.clone())
+    };
+    let start = add(
+        muzzle_point(view),
+        scale(view.forward, -12.0 * VIEW_MODEL_SCALE),
+    );
+    emit(
+        engine,
+        Vector3f::from_array(quake_to_engine(start)),
+        vec![(particle, material)],
+    )
+}
+
+/// A killed fighter bursts: a blood cloud and dark chunks thrown up and falling (Quake space).
+pub fn spawn_kill_burst(engine: &mut Engine, point: [f32; 3]) -> Result<()> {
+    let particles = {
+        let weapon = engine.get_global_component_mut::<Weapon>()?;
+        let mut particles = Vec::with_capacity(22);
+        for index in 0..22 {
+            let chunk = index >= 14;
+            let random = Vector3f::new(
+                weapon.random.signed(),
+                weapon.random.signed().abs() + 0.3,
+                weapon.random.signed(),
+            );
+            let life = if chunk {
+                weapon.random.range(0.8, 1.3)
+            } else {
+                weapon.random.range(0.5, 0.9)
+            };
+            let particle = Particle {
+                velocity: random * if chunk { 3.0 } else { 1.2 },
+                life,
+                max_life: life,
+                size: if chunk {
+                    weapon.random.range(0.025, 0.045)
+                } else {
+                    0.04
+                },
+                end_size: if chunk { 0.02 } else { 0.12 },
+                gravity: if chunk { PARTICLE_GRAVITY } else { 1.0 },
+                kind: if chunk {
+                    ParticleKind::Spark
+                } else {
+                    ParticleKind::Dust
+                },
+            };
+            let material = if chunk {
+                weapon.gore_material.clone()
+            } else {
+                weapon.blood_material.clone()
+            };
+            particles.push((particle, material));
+        }
+        particles
+    };
+    emit(
+        engine,
+        Vector3f::from_array(quake_to_engine(point)),
+        particles,
+    )
+}
+
+/// Rotation (degrees) turning the unit cube's X axis along `direction` (engine space).
+fn along(direction: Vector3f) -> Vector3f {
+    let x = direction.normalize_or_zero();
+    let helper = if x.y.abs() > 0.9 {
+        Vector3f::X
+    } else {
+        Vector3f::Y
+    };
+    let z = x.cross(helper).normalize_or_zero();
+    let y = z.cross(x);
+    euler_from_columns([x.to_array(), y.to_array(), z.to_array()])
+}
+
+/// Streaks from the player's muzzle to where the pellets hit (Quake space).
+pub fn spawn_tracers(
+    engine: &mut Engine,
+    view: &crate::player::ViewPose,
+    hits: &[[f32; 3]],
+) -> Result<()> {
+    let start = Vector3f::from_array(quake_to_engine(muzzle_point(view)));
+    let material = engine
+        .get_global_component::<Weapon>()?
+        .tracer_material
+        .clone();
+    for hit in hits {
+        let end = Vector3f::from_array(quake_to_engine(*hit));
+        let span = end - start;
+        // The far part of the shot: a streak, not a beam out of the barrel
+        let streak = Particle {
+            velocity: span,
+            life: TRACER_TIME,
+            max_life: TRACER_TIME,
+            size: 0.006,
+            end_size: span.length() * 0.6,
+            gravity: 0.0,
+            kind: ParticleKind::Streak,
+        };
+        emit(engine, end - span * 0.3, vec![(streak, material.clone())])?;
+    }
+    Ok(())
+}
+
+/// A dark mark on the wall where a shot hit (Quake space).
+pub fn spawn_decal(engine: &mut Engine, point: [f32; 3], normal: [f32; 3]) -> Result<()> {
+    let (size, material) = {
+        let weapon = engine.get_global_component_mut::<Weapon>()?;
+        (
+            weapon.random.range(0.08, 0.12),
+            weapon.mark_material.clone(),
+        )
+    };
+    let normal = Vector3f::from_array(quake_direction_to_engine(normal));
+    let mark = Particle {
+        velocity: normal,
+        life: DECAL_TIME,
+        max_life: DECAL_TIME,
+        size,
+        end_size: size,
+        gravity: 0.0,
+        kind: ParticleKind::Mark,
+    };
+    let point = Vector3f::from_array(quake_to_engine(point)) + normal * 0.004;
+    emit(engine, point, vec![(mark, material)])
+}
+
 /// Moves, shrinks or grows, and retires particles; fades the flash lights (both modes).
 pub fn effects_system(engine: &mut Engine) -> Result<()> {
     let delta_time = engine
@@ -753,8 +1012,28 @@ pub fn effects_system(engine: &mut Engine) -> Result<()> {
             park(transform);
             continue;
         }
+        match particle.kind {
+            ParticleKind::Streak => {
+                let width = particle.size * particle.life / particle.max_life;
+                transform.set_scale(Vector3f::new(particle.end_size, width, width));
+                continue;
+            }
+            ParticleKind::Mark => {
+                if particle.life < 1.0 {
+                    let size = particle.size * particle.life;
+                    transform.set_scale(Vector3f::new(0.002, size, size));
+                }
+                continue;
+            }
+            ParticleKind::Spark | ParticleKind::Dust => {}
+        }
         particle.velocity.y -= particle.gravity * delta_time;
-        particle.velocity *= 1.0 - (if particle.dust { 2.5 } else { 0.8 }) * delta_time;
+        let drag = if particle.kind == ParticleKind::Dust {
+            2.5
+        } else {
+            0.8
+        };
+        particle.velocity *= 1.0 - drag * delta_time;
         transform.set_position(transform.position + particle.velocity * delta_time);
         let age = 1.0 - particle.life / particle.max_life;
         let size = particle.size + (particle.end_size - particle.size) * age;

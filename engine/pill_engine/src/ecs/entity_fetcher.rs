@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 pub struct EntityFetcher<'a> {
     pub scene_manager: &'a SceneManager,
     pub scene_handle: SceneHandle,
-    pub filter_bitmask: u16
+    pub filter_bitmask: pill_core::ComponentMask
 }
 
 impl<'a> EntityFetcher<'a> {
