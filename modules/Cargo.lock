@@ -1296,15 +1296,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "host_project_native"
+name = "host_project_pills_rust"
 version = "0.1.0"
 dependencies = [
+ "glam 0.33.7",
  "pill_core",
  "pill_engine",
  "pill_master_renderer_data",
- "pill_spline",
+ "pill_project_ui",
  "serde",
- "tracing",
 ]
 
 [[package]]
