@@ -98,6 +98,8 @@ pub mod drain;
 /// The editor's own state documents on disk, all written the same safe way and
 /// reported through one error type.
 pub mod editor_files;
+/// The editor's applied world edits as portable ops, and ops applied from outside.
+pub mod edit_stream;
 /// The editor's snapshots of the engine and the commands it applies to it.
 pub mod editor_state;
 /// The Entities tab's shared actions: the create and delete commands, queued

@@ -56,6 +56,9 @@ pub enum FieldEditCause {
     /// The editor replayed a history step; the step already holds the result,
     /// so a callback's follow-ups are dropped.
     HistoryRestored,
+    /// Another peer made the edit and already ran its callbacks, so a local
+    /// callback's follow-ups are dropped the same way.
+    Remote,
 }
 
 impl FieldEditCause {
@@ -64,7 +67,14 @@ impl FieldEditCause {
         match self {
             Self::Authored => "authored",
             Self::HistoryRestored => "history_restored",
+            Self::Remote => "remote",
         }
+    }
+
+    /// Whether a person or a script made the edit here; only then may callbacks
+    /// replace, refuse or follow it up.
+    pub fn is_authored(self) -> bool {
+        matches!(self, Self::Authored)
     }
 }
 

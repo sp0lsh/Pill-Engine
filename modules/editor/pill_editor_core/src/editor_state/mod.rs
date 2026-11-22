@@ -2159,6 +2159,7 @@ mod tests {
                         ("enabled".to_string(), FieldValue::Bool(true)),
                     ],
                 }],
+                id: None,
             }],
         );
         assert!(failures.is_empty(), "create failed: {failures:?}");
@@ -2512,6 +2513,7 @@ mod tests {
                     ("enabled".to_string(), FieldValue::Bool(true)),
                 ],
             }],
+            id: None,
         };
         let recorded = EditorCommand::apply_recorded(&mut engine, std::slice::from_ref(&create));
         assert!(recorded.failures.is_empty(), "{:?}", recorded.failures);

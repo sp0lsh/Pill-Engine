@@ -1176,6 +1176,7 @@ impl PendingEditorCommands {
             replay: None,
             replay_label: None,
             phase: FieldEditPhase::Committed,
+            remote: false,
         });
     }
 
@@ -1200,6 +1201,22 @@ impl PendingEditorCommands {
             replay: Some(direction),
             replay_label: label.map(str::to_string),
             phase: FieldEditPhase::Committed,
+            remote: false,
+        });
+    }
+
+    /// Queues an edit another peer made: applied as `FieldEditCause::Remote`,
+    /// never recorded and never sent back out.
+    pub fn push_remote(&mut self, commands: Vec<EditorCommand>) {
+        self.batches.push(PendingCommandBatch {
+            commands,
+            record: false,
+            label: String::new(),
+            coalesce_key: None,
+            replay: None,
+            replay_label: None,
+            phase: FieldEditPhase::Committed,
+            remote: true,
         });
     }
 
@@ -1260,6 +1277,7 @@ impl PendingEditorCommands {
             replay: None,
             replay_label: None,
             phase,
+            remote: false,
         });
     }
 }
@@ -1284,6 +1302,7 @@ pub struct PendingCommandBatch {
     /// The interaction phase its field edits report to the editor API's
     /// callbacks.
     pub phase: FieldEditPhase,
+    pub remote: bool,
 }
 
 impl pill_engine::Resource for PendingEditorCommands {

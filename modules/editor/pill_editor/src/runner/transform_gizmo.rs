@@ -70,7 +70,7 @@ impl EditorWindow {
                 .get_resource::<EditorSelection>()
                 .and_then(|selection| selection.primary());
             match selected_entity.and_then(|entity| {
-                read_transform(world, entity).map(|transform| (entity, transform))
+                gizmo::read_transform(world, entity).map(|transform| (entity, transform))
             }) {
                 Some((entity, transform)) => {
                     // The handles are drawn in the frame a press would drag
@@ -211,7 +211,7 @@ impl EditorWindow {
                 info!(
                     target: telemetry_target::EDITOR,
                     entity = %entity,
-                    mode = gizmo_mode_name(gizmo_settings.mode),
+                    mode = gizmo::mode_name(gizmo_settings.mode),
                     space = gizmo_space_name(gizmo_settings.space),
                     frame = frame_name.as_deref().unwrap_or("-"),
                     x,
@@ -273,7 +273,7 @@ impl EditorWindow {
         }
         info!(
             target: telemetry_target::EDITOR,
-            mode = gizmo_mode_name(mode),
+            mode = gizmo::mode_name(mode),
             "[editor] gizmo tool"
         );
     }
@@ -303,22 +303,8 @@ impl EditorWindow {
     /// numbers the renderer projects with, so a pick and a drag agree about
     /// what a pixel looks at.
     pub(super) fn scene_ray(&self, view: usize, x: f32, y: f32) -> Option<([f32; 3], [f32; 3])> {
-        let (width, height) = self.scene_pixel_size(view)?;
-        let (tangent, aspect) = projection_terms(width, height);
-        let camera = &self.cameras[view];
-        let forward = camera.forward();
-        let right = camera.right();
-        let up = gizmo::cross(right, forward);
-        let ndc_x = x / width * 2.0 - 1.0;
-        let ndc_y = 1.0 - y / height * 2.0;
-        let direction = gizmo::add(
-            forward,
-            gizmo::add(
-                gizmo::scale(right, ndc_x * tangent * aspect),
-                gizmo::scale(up, ndc_y * tangent),
-            ),
-        );
-        gizmo::normalize(direction).map(|direction| (camera.eye(), direction))
+        let size = self.scene_pixel_size(view)?;
+        gizmo::camera_ray(&self.cameras[view], (x, y), size)
     }
 
     /// Returns where a world point appears on the active scene view's
@@ -340,7 +326,7 @@ impl EditorWindow {
     /// recompute them per point. Returns `None` when the view has no window.
     pub(super) fn screen_projection(&self, view: usize) -> Option<ScreenProjection> {
         let (width, height) = self.scene_pixel_size(view)?;
-        let (tangent, aspect) = projection_terms(width, height);
+        let (tangent, aspect) = gizmo::projection_terms(width, height);
         let camera = &self.cameras[view];
         let forward = camera.forward();
         let right = camera.right();
@@ -388,7 +374,7 @@ impl EditorWindow {
             let Some(entity) = selected_entity else {
                 return;
             };
-            let Some(original) = read_transform(world, entity) else {
+            let Some(original) = gizmo::read_transform(world, entity) else {
                 return;
             };
             let basis = gizmo_frame_basis(world, entity, gizmo_state, &original);
@@ -481,7 +467,7 @@ impl EditorWindow {
         match kind.plane() {
             Some((first, second)) => info!(
                 target: telemetry_target::EDITOR,
-                mode = gizmo_mode_name(GizmoMode::Translate),
+                mode = gizmo::mode_name(GizmoMode::Translate),
                 plane = gizmo_plane_name(first, second),
                 entity = %entity,
                 handle,
@@ -489,7 +475,7 @@ impl EditorWindow {
             ),
             None => info!(
                 target: telemetry_target::EDITOR,
-                mode = gizmo_mode_name(gizmo::handle_axis(handle).map(|(mode, _)| mode).unwrap_or(GizmoMode::Translate)),
+                mode = gizmo::mode_name(gizmo::handle_axis(handle).map(|(mode, _)| mode).unwrap_or(GizmoMode::Translate)),
                 axis = gizmo_axis_name(kind.axis().map(|(_, axis)| axis).unwrap_or(0)),
                 entity = %entity,
                 handle,
@@ -813,27 +799,7 @@ impl EditorWindow {
         component_values: &[f32],
     ) -> bool {
         let world = self.host.host_mut().engine_mut().world_mut();
-        let mut written = true;
-        for (index, value) in component_values.iter().enumerate() {
-            if let Err(error) = world.write_component_array_element(
-                entity,
-                TRANSFORM_SHARED_NAME,
-                transform_field,
-                index,
-                FieldValue::F32(*value),
-            ) {
-                warn!(
-                    target: telemetry_target::EDITOR,
-                    entity = %entity,
-                    field = %transform_field,
-                    index,
-                    error = %error,
-                    "[editor] gizmo write refused"
-                );
-                written = false;
-            }
-        }
-        written
+        gizmo::write_transform_field(world, entity, transform_field, component_values)
     }
 
     /// Writes the whole transform from before the press back, so a cancelled
@@ -880,7 +846,7 @@ impl EditorWindow {
             // value, which the drag has already overwritten.
             let registry = tools::tool_registry_mut(world).clone();
             registry.active_set_transforms(drag.entity, &restored, world);
-            let label = format!("gizmo {}", gizmo_mode_name(mode));
+            let label = format!("gizmo {}", gizmo::mode_name(mode));
             let command = EditorCommand::SetElementTransforms {
                 entity: drag.entity,
                 kind: kind.clone(),
@@ -923,7 +889,7 @@ impl EditorWindow {
                 .0
             })
             .collect();
-        let label = format!("gizmo {}", gizmo_mode_name(mode));
+        let label = format!("gizmo {}", gizmo::mode_name(mode));
         let world = self.host.host_mut().engine_mut().world_mut();
         if let Some(pending) = world.get_resource_mut::<PendingEditorCommands>() {
             pending.push_recorded(recorded_commands, label, None);
@@ -948,7 +914,7 @@ impl EditorWindow {
         match (drag.kind.plane(), drag.last_value) {
             (Some((first, second)), Some(value)) => info!(
                 target: telemetry_target::EDITOR,
-                mode = gizmo_mode_name(mode),
+                mode = gizmo::mode_name(mode),
                 plane = gizmo_plane_name(first, second),
                 entity = %drag.entity,
                 value = ?value,
@@ -957,14 +923,14 @@ impl EditorWindow {
             ),
             (Some((first, second)), None) => info!(
                 target: telemetry_target::EDITOR,
-                mode = gizmo_mode_name(mode),
+                mode = gizmo::mode_name(mode),
                 plane = gizmo_plane_name(first, second),
                 entity = %drag.entity,
                 "[editor] gizmo drag ended without a move"
             ),
             (None, Some(value)) => info!(
                 target: telemetry_target::EDITOR,
-                mode = gizmo_mode_name(mode),
+                mode = gizmo::mode_name(mode),
                 axis = gizmo_axis_name(drag.kind.axis().map(|(_, axis)| axis).unwrap_or(0)),
                 entity = %drag.entity,
                 value = ?value,
@@ -973,7 +939,7 @@ impl EditorWindow {
             ),
             (None, None) => info!(
                 target: telemetry_target::EDITOR,
-                mode = gizmo_mode_name(mode),
+                mode = gizmo::mode_name(mode),
                 axis = gizmo_axis_name(drag.kind.axis().map(|(_, axis)| axis).unwrap_or(0)),
                 entity = %drag.entity,
                 "[editor] gizmo drag ended without a move"
@@ -1017,7 +983,7 @@ impl EditorWindow {
         }
         info!(
             target: telemetry_target::EDITOR,
-            mode = gizmo_mode_name(gizmo_drag_mode(drag.kind)),
+            mode = gizmo::mode_name(gizmo_drag_mode(drag.kind)),
             entity = %drag.entity,
             "[editor] gizmo drag canceled"
         );
@@ -1086,7 +1052,7 @@ impl EditorWindow {
                 );
                 return;
             };
-            let Some(transform) = read_transform(world, entity) else {
+            let Some(transform) = gizmo::read_transform(world, entity) else {
                 warn!(
                     target: telemetry_target::EDITOR,
                     entity = %entity,

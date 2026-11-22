@@ -153,7 +153,7 @@ impl HookSession {
                     Some(HookVerdict::Replace(value)) => {
                         // A replay must reproduce the step, not a callback's
                         // opinion of it: the step already holds the result.
-                        if cause != FieldEditCause::HistoryRestored {
+                        if cause.is_authored() {
                             view.current = value.clone();
                             replacement = Some(value);
                         }
@@ -161,7 +161,7 @@ impl HookSession {
                     Some(HookVerdict::Refuse(reason)) => {
                         // A callback may not veto the history it is watching;
                         // the remaining callbacks still see the edit.
-                        if cause == FieldEditCause::HistoryRestored {
+                        if !cause.is_authored() {
                             continue;
                         }
                         self.notices.push(HookNotice {
@@ -467,6 +467,7 @@ impl HookSession {
                 replay: None,
                 replay_label: None,
                 phase: FieldEditPhase::Committed,
+                remote: false,
             });
         }
         let (commands, source) = self.queue.take_edits();
@@ -483,6 +484,7 @@ impl HookSession {
                 replay: None,
                 replay_label: None,
                 phase: FieldEditPhase::Committed,
+                remote: false,
             });
         }
         batches

@@ -257,7 +257,7 @@ impl<'a> HookContext<'a> {
     /// Dropped when the edit is a history replay: the step already holds the
     /// result. A command queued this way never fires the callbacks again.
     pub fn queue(&mut self, command: EditorCommand) {
-        if self.cause == FieldEditCause::HistoryRestored {
+        if !self.cause.is_authored() {
             self.queue.report_drop(self.source);
             return;
         }
@@ -276,7 +276,7 @@ impl<'a> HookContext<'a> {
         space: Option<GizmoSpace>,
         snap: Option<bool>,
     ) {
-        if self.cause == FieldEditCause::HistoryRestored {
+        if !self.cause.is_authored() {
             self.queue.report_drop(self.source);
             return;
         }

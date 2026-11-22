@@ -27,10 +27,14 @@
 //! renderer never needs to know what a handle means.
 
 // External crates
-use pill_engine::{Entity, FieldValue};
+use pill_core::telemetry::telemetry_target;
+use pill_engine::common_components::{TransformComponent, TRANSFORM_SHARED_NAME};
+use pill_engine::{Entity, FieldValue, World};
+use pill_renderer_api::CameraComponent;
 use serde::{Deserialize, Serialize};
 
 // Current crate
+use crate::camera::OrbitCamera;
 use crate::tools::{ElementMove, ElementTransform};
 
 // =============================================================================
@@ -1647,6 +1651,139 @@ pub fn release_edits(pressed_values: &[f32], released_values: &[f32]) -> Option<
             .map(|(index, value)| (index, *value))
             .collect(),
     )
+}
+
+/// The wire name of a gizmo mode, as logs and history labels spell it.
+pub fn mode_name(mode: GizmoMode) -> &'static str {
+    match mode {
+        GizmoMode::Translate => "translate",
+        GizmoMode::Rotate => "rotate",
+        GizmoMode::Scale => "scale",
+    }
+}
+
+/// The transform field a gizmo drag writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransformField {
+    Translation,
+    Rotation,
+    Scale,
+}
+
+impl TransformField {
+    /// The field's name in the transform's layout.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Translation => "translation",
+            Self::Rotation => "rotation",
+            Self::Scale => "scale",
+        }
+    }
+
+    /// This field's components in `transform`.
+    pub fn of(self, transform: &TransformComponent) -> Vec<f32> {
+        match self {
+            Self::Translation => transform.translation.to_vec(),
+            Self::Rotation => transform.rotation.to_vec(),
+            Self::Scale => transform.scale.to_vec(),
+        }
+    }
+}
+
+/// An entity's transform read through the field layer, or `None` when it has
+/// no transform the layer can read.
+pub fn read_transform(world: &World, entity: Entity) -> Option<TransformComponent> {
+    let read = |field: &str| -> Option<Vec<f32>> {
+        let FieldValue::Array(elements) = world
+            .read_component_field(entity, TRANSFORM_SHARED_NAME, field)
+            .ok()?
+        else {
+            return None;
+        };
+        elements
+            .iter()
+            .map(|element| match element {
+                FieldValue::F32(value) => Some(*value),
+                _ => None,
+            })
+            .collect()
+    };
+    Some(TransformComponent {
+        translation: read("translation")?.try_into().ok()?,
+        rotation: read("rotation")?.try_into().ok()?,
+        scale: read("scale")?.try_into().ok()?,
+    })
+}
+
+/// Writes one transform field's components in order; false when any write was
+/// refused, each refusal logged with its index.
+pub fn write_transform_field(
+    world: &mut World,
+    entity: Entity,
+    transform_field: &str,
+    component_values: &[f32],
+) -> bool {
+    let mut written = true;
+    for (index, value) in component_values.iter().enumerate() {
+        if let Err(error) = world.write_component_array_element(
+            entity,
+            TRANSFORM_SHARED_NAME,
+            transform_field,
+            index,
+            FieldValue::F32(*value),
+        ) {
+            pill_core::warn!(
+                target: telemetry_target::EDITOR,
+                entity = %entity,
+                field = %transform_field,
+                index,
+                error = %error,
+                "[editor] gizmo write refused"
+            );
+            written = false;
+        }
+    }
+    written
+}
+
+/// The frame a gizmo's axes are measured in: the world axes, or the entity's
+/// rotated ones in local space.
+pub fn space_basis(space: GizmoSpace, transform: &TransformComponent) -> [[f32; 3]; 3] {
+    match space {
+        GizmoSpace::World => AXES,
+        GizmoSpace::Local => basis_from_rotation(transform.rotation),
+    }
+}
+
+/// The tangent of half the scene camera's vertical field of view, and the
+/// surface's aspect ratio.
+pub fn projection_terms(width: f32, height: f32) -> (f32, f32) {
+    let vertical_fov_degrees = CameraComponent::default().vertical_fov.clamp(1.0, 179.0);
+    let tangent = (vertical_fov_degrees.to_radians() * 0.5).tan();
+    (tangent, (width / height.max(1.0)).max(1e-3))
+}
+
+/// The ray from `camera` through one physical pixel of a `size` surface, or
+/// `None` when it has no length. Picks and drags share it, so they agree.
+pub fn camera_ray(
+    camera: &OrbitCamera,
+    point: (f32, f32),
+    size: (f32, f32),
+) -> Option<([f32; 3], [f32; 3])> {
+    let (tangent, aspect) = projection_terms(size.0, size.1);
+    let forward = camera.forward();
+    let right = camera.right();
+    let up = cross(right, forward);
+    let ndc_x = point.0 / size.0.max(1.0) * 2.0 - 1.0;
+    let ndc_y = 1.0 - point.1 / size.1.max(1.0) * 2.0;
+    let direction = add(
+        forward,
+        add(
+            scale(right, ndc_x * tangent * aspect),
+            scale(up, ndc_y * tangent),
+        ),
+    );
+    normalize(direction).map(|direction| (camera.eye(), direction))
 }
 
 // =============================================================================

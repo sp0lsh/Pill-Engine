@@ -2181,7 +2181,7 @@ impl EditorWindow {
         if gizmo_settings.mode != GizmoMode::Translate {
             warn!(
                 target: telemetry_target::EDITOR,
-                mode = gizmo_mode_name(gizmo_settings.mode),
+                mode = gizmo::mode_name(gizmo_settings.mode),
                 "[editor] plane handles belong to the translate tool"
             );
             return None;

@@ -35,6 +35,10 @@
 
 /// The scripted channel the page drives the editor through.
 pub mod scripted;
+/// The edit stream to the page: applied edits out, outside ops in.
+pub mod edit_stream;
+/// The scene viewport: camera, picking, outline and gizmo.
+pub mod viewport;
 
 // Standard library
 use std::cell::RefCell;
@@ -152,6 +156,7 @@ struct WebEditorApplication {
     /// registered. A browser build never unloads an image, so one marker
     /// serves the whole session.
     hook_liveness: Arc<ModuleLiveness>,
+    viewport: viewport::SceneViewport,
 }
 
 impl ApplicationHandler for WebEditorApplication {
@@ -288,6 +293,7 @@ impl ApplicationHandler for WebEditorApplication {
                     }
                 }
                 WindowEvent::RedrawRequested => self.frame(),
+                WindowEvent::Touch(touch) => self.viewport.push_touch(touch),
                 other => {
                     for input in translate_window_event(&other) {
                         self.pending_events.push(input);
@@ -333,17 +339,17 @@ impl WebEditorApplication {
 
         // Step 1: measure this frame's rate and smooth it for the shell.
         let now = Instant::now();
-        if let Some(last) = self.last_frame_time {
-            let delta_time = now.duration_since(last).as_secs_f32();
-            if delta_time > 0.0 {
-                let instant_frames_per_second = 1.0 / delta_time;
-                self.frames_per_second = if self.frames_per_second > 0.0 {
-                    self.frames_per_second * (1.0 - FPS_SMOOTHING)
-                        + instant_frames_per_second * FPS_SMOOTHING
-                } else {
-                    instant_frames_per_second
-                };
-            }
+        let delta_seconds = self
+            .last_frame_time
+            .map_or(0.0, |last| now.duration_since(last).as_secs_f32());
+        if self.last_frame_time.is_some() && delta_seconds > 0.0 {
+            let instant_frames_per_second = 1.0 / delta_seconds;
+            self.frames_per_second = if self.frames_per_second > 0.0 {
+                self.frames_per_second * (1.0 - FPS_SMOOTHING)
+                    + instant_frames_per_second * FPS_SMOOTHING
+            } else {
+                instant_frames_per_second
+            };
         }
         self.last_frame_time = Some(now);
 
@@ -445,6 +451,15 @@ impl WebEditorApplication {
                 };
             }
         }
+        let scene_size = scene_window.inner_size();
+        self.viewport.frame(
+            driver.engine_mut(),
+            &events,
+            (scene_size.width as f32, scene_size.height as f32),
+            scale_factor,
+            delta_seconds,
+        );
+        crate::edit_stream::emit_outbox(driver.engine_mut());
         publish_snapshot(driver.engine_mut(), self.frame_index);
 
         // Step 5: run the world frame. The shell's egui pass runs inside it and
@@ -460,6 +475,7 @@ impl WebEditorApplication {
         }
 
         // Step 6: draw the shell's frame into the UI canvas.
+        self.viewport.read_shell_frame(driver.engine());
         draw_ui(&ui_surface, driver.engine_mut());
         if self.frame_index.is_multiple_of(FRAME_HEARTBEAT_FRAMES) {
             let (entities, systems) = driver
@@ -525,6 +541,7 @@ pub fn run(project: StaticProject, scene_canvas_id: &str, ui_canvas_id: &str) {
             last_frame_time: None,
             frame_index: 0,
             hook_liveness: ModuleLiveness::new(),
+            viewport: viewport::SceneViewport::default(),
         });
     });
 }
@@ -546,10 +563,12 @@ fn apply_pending_commands(
 ) {
     // Step 1: run the scripted lines the page appended.
     run_scripted_lines(engine, scripted_lines);
+    crate::edit_stream::before_drain(engine);
     // Step 2: apply everything the shell queued, recording history the way
     // the desktop editor does.
     let now_millis = elapsed_since_start.as_millis() as u64;
     let _ = drain::apply_pending(engine, now_millis);
+    crate::edit_stream::after_drain(engine);
     // Step 3: hand the notices the callbacks posted to the editor's own list.
     // The browser has no executable republishing that resource, so it is
     // written directly.

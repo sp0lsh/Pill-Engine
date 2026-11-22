@@ -27,6 +27,7 @@ pub fn entity_create() -> (EditorCommand, String) {
     (
         EditorCommand::CreateEntity {
             components: Vec::new(),
+            id: None,
         },
         "new entity".to_string(),
     )
@@ -66,7 +67,8 @@ mod tests {
         assert_eq!(
             command,
             EditorCommand::CreateEntity {
-                components: Vec::new()
+                components: Vec::new(),
+                id: None,
             }
         );
         assert_eq!(label, "new entity");

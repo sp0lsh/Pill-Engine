@@ -52,6 +52,9 @@ pub const DOLLY_EXPONENT_PER_PIXEL: f32 = 0.006;
 /// How much one wheel line moves the eye, as a distance ratio.
 pub const ZOOM_RATIO_PER_LINE: f32 = 1.15;
 
+/// Touchpad scroll pixels that count as one wheel line.
+pub const PIXELS_PER_WHEEL_LINE: f32 = 40.0;
+
 /// The downward pitch a new camera starts with, in radians.
 const DEFAULT_PITCH: f32 = 0.30;
 
@@ -163,6 +166,53 @@ impl OrbitCamera {
     pub fn zoom(&mut self, lines: f32) {
         let factor = ZOOM_RATIO_PER_LINE.powf(-lines);
         self.distance = (self.distance * factor).clamp(MIN_DISTANCE, MAX_DISTANCE);
+    }
+
+    /// Orbits as `orbit` does, but around `point`, which keeps its place on screen.
+    pub fn orbit_around(&mut self, point: [f32; 3], delta_x: f32, delta_y: f32) {
+        let offset = [
+            self.pivot[0] - point[0],
+            self.pivot[1] - point[1],
+            self.pivot[2] - point[2],
+        ];
+        let frame = [self.right(), self.up(), self.forward()];
+        let local = frame.map(|axis| axis[0] * offset[0] + axis[1] * offset[1] + axis[2] * offset[2]);
+        self.orbit(delta_x, delta_y);
+        let frame = [self.right(), self.up(), self.forward()];
+        for index in 0..3 {
+            self.pivot[index] = point[index]
+                + frame[0][index] * local[0]
+                + frame[1][index] * local[1]
+                + frame[2][index] * local[2];
+        }
+    }
+
+    /// Dollies as `dolly` does, but toward `point`.
+    pub fn dolly_toward(&mut self, point: [f32; 3], delta_y: f32) {
+        self.scale_toward(point, 2.0f32.powf(delta_y * DOLLY_EXPONENT_PER_PIXEL));
+    }
+
+    /// Zooms as `zoom` does, but toward `point`.
+    pub fn zoom_toward(&mut self, point: [f32; 3], lines: f32) {
+        self.scale_toward(point, ZOOM_RATIO_PER_LINE.powf(-lines));
+    }
+
+    /// Looks at `point` from the current direction and distance.
+    pub fn focus(&mut self, point: [f32; 3]) {
+        self.pivot = point;
+    }
+
+    /// Scales the eye's offset from `point` by `factor`, keeping the view direction.
+    fn scale_toward(&mut self, point: [f32; 3], factor: f32) {
+        let distance = (self.distance * factor).clamp(MIN_DISTANCE, MAX_DISTANCE);
+        let factor = distance / self.distance;
+        let eye = self.eye();
+        let forward = self.forward();
+        self.distance = distance;
+        for index in 0..3 {
+            let moved_eye = point[index] + (eye[index] - point[index]) * factor;
+            self.pivot[index] = moved_eye + forward[index] * distance;
+        }
     }
 }
 
@@ -443,5 +493,41 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// The point's coordinates in the camera's right, up and forward frame.
+    fn view_coordinates(camera: &OrbitCamera, point: [f32; 3]) -> [f32; 3] {
+        let eye = camera.eye();
+        let offset = [point[0] - eye[0], point[1] - eye[1], point[2] - eye[2]];
+        [camera.right(), camera.up(), camera.forward()]
+            .map(|axis| axis[0] * offset[0] + axis[1] * offset[1] + axis[2] * offset[2])
+    }
+
+    #[test]
+    fn orbit_around_point_keeps_the_point_in_view_coordinates() {
+        let mut camera = OrbitCamera::default();
+        let point = [2.0, 1.0, -3.0];
+        let before = view_coordinates(&camera, point);
+        camera.orbit_around(point, 40.0, -25.0);
+        let after = view_coordinates(&camera, point);
+        for index in 0..3 {
+            assert!((before[index] - after[index]).abs() < 1e-3, "{before:?} vs {after:?}");
+        }
+    }
+
+    #[test]
+    fn zoom_toward_point_halves_the_eye_offset_and_keeps_direction() {
+        let mut camera = OrbitCamera::default();
+        let point = [1.0, 0.0, 0.0];
+        let forward = camera.forward();
+        let eye = camera.eye();
+        let lines = -(0.5f32.ln() / ZOOM_RATIO_PER_LINE.ln());
+        camera.zoom_toward(point, lines);
+        let moved = camera.eye();
+        for index in 0..3 {
+            let expected = point[index] + (eye[index] - point[index]) * 0.5;
+            assert!((moved[index] - expected).abs() < 1e-3, "{moved:?}");
+            assert!((camera.forward()[index] - forward[index]).abs() < 1e-6);
+        }
     }
 }

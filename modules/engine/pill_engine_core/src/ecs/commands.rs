@@ -65,7 +65,7 @@ use pill_core::warn;
 // Current crate
 use crate::archetype::ComponentColumns;
 use crate::component::{Component, ComponentId};
-use crate::entity::Entity;
+use crate::entity::{Entity, EntityId};
 use crate::error::WorldError;
 use crate::world::World;
 
@@ -205,6 +205,7 @@ enum DeferredCommand {
         component_adders: Vec<Box<dyn ComponentAdder>>,
         /// Type-erased runtime components to write after the row exists.
         descriptor_components: Vec<(ComponentId, Vec<u8>)>,
+        stable_id: Option<EntityId>,
     },
     /// Add a native component to an existing entity.
     AddComponentToEntity {
@@ -284,6 +285,7 @@ impl CommandQueue {
             entity,
             component_adders: components,
             descriptor_components: Vec::new(),
+            stable_id: None,
         });
     }
 
@@ -299,6 +301,24 @@ impl CommandQueue {
             entity,
             component_adders: native_components,
             descriptor_components,
+            stable_id: None,
+        });
+    }
+
+    /// Queues a mixed entity under a caller-chosen stable id, as a peer replaying
+    /// another peer's create does. The caller checks that no live entity holds it.
+    pub fn create_mixed_entity_with_id(
+        &mut self,
+        entity: Entity,
+        stable_id: EntityId,
+        native_components: Vec<Box<dyn ComponentAdder>>,
+        descriptor_components: Vec<(ComponentId, Vec<u8>)>,
+    ) {
+        self.commands.push(DeferredCommand::CreateEntity {
+            entity,
+            component_adders: native_components,
+            descriptor_components,
+            stable_id: Some(stable_id),
         });
     }
 
@@ -413,6 +433,7 @@ impl CommandQueue {
                     entity,
                     component_adders,
                     descriptor_components,
+                    stable_id,
                 } => {
                     // A creation can fail to write one or more components after
                     // the row exists. Every failure is collected instead of
@@ -423,6 +444,7 @@ impl CommandQueue {
                         entity,
                         component_adders,
                         descriptor_components,
+                        stable_id,
                     ) {
                         errors.append(&mut failures);
                     }
@@ -511,6 +533,7 @@ impl CommandQueue {
         entity: Entity,
         component_adders: Vec<Box<dyn ComponentAdder>>,
         descriptor_components: Vec<(ComponentId, Vec<u8>)>,
+        stable_id: Option<EntityId>,
     ) -> Result<(), Vec<CommandError>> {
         // Step 1: Collect the full component-ID set that defines the new archetype.
         let mut component_ids: Vec<ComponentId> = component_adders
@@ -542,16 +565,14 @@ impl CommandQueue {
         // Step 3: Insert the entity row and write its native components into
         // storage.
         //
-        // A command never supplies the stable id: the world creates one, and a
-        // `ReserveEntity` call from the C# side reads it back afterwards.
-        //
         // By the time an adder runs, the entity's row is already in every other
         // column. An adder that refuses therefore cannot be retried or undone
         // here. Its failure is carried out of the closure and reported with the
         // rest of the batch, because dropping it would leave the entity's
         // columns out of step from then on.
         let mut write_failure: Option<(ComponentId, WorldError)> = None;
-        world.insert_entity_with_components(entity, component_ids, None, |storage| {
+        // Without a stable id the world mints one; C#'s `ReserveEntity` reads it back.
+        world.insert_entity_with_components(entity, component_ids, stable_id, |storage| {
             for component_adder in component_adders {
                 let component_id = component_adder.component_id();
                 if let Err(error) = component_adder.add_component_to_storage(storage) {

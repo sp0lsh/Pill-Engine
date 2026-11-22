@@ -871,6 +871,60 @@ fn legacy_opaque_discriminant(
     })
 }
 
+/// One field value in the scene document's encoding, or `None` when it has none;
+/// another world of the same project reads it back with [`decode_document_field`].
+pub fn encode_document_field(world: &World, field_value: &FieldValue) -> Option<serde_json::Value> {
+    let assets = world.get_resource::<AssetManager>()?;
+    let fallback;
+    let registry = match world.get_resource::<ImportRegistry>() {
+        Some(registry) => registry,
+        None => {
+            fallback = ImportRegistry::default();
+            &fallback
+        }
+    };
+    encode_field_value(world, assets, registry, field_value)
+}
+
+/// Decodes one document-encoded value for the field tagged `tag`, resolving asset and
+/// entity references in this world. Errors when it does not read or names a missing entity.
+pub fn decode_document_field(
+    engine: &mut Engine,
+    tag: &'static str,
+    document_value: &serde_json::Value,
+) -> Result<FieldValue, String> {
+    match decoded_field(tag, document_value)? {
+        DecodedField::Plain(field_value) => Ok(field_value),
+        DecodedField::Asset(saved_asset_reference) => {
+            let database = crate::assets::loading::scene_database(engine);
+            let registry = engine
+                .world()
+                .get_resource::<ImportRegistry>()
+                .cloned()
+                .unwrap_or_default();
+            let assets = engine
+                .world_mut()
+                .get_resource_mut::<AssetManager>()
+                .ok_or_else(|| "the world has no asset manager".to_owned())?;
+            Ok(restore_asset_reference(
+                assets,
+                &database,
+                &registry,
+                &saved_asset_reference,
+            ))
+        }
+        DecodedField::Entity(id) => engine
+            .world()
+            .entity_by_id(id)
+            .map(|target| FieldValue::Entity {
+                id: target.id(),
+                generation: target.generation(),
+            })
+            .ok_or_else(|| format!("names entity {id}, which is not in the world")),
+        DecodedField::Cleared => Ok(cleared_reference_value(tag)),
+    }
+}
+
 /// The value that restores a reference field the document wrote as `null`.
 fn cleared_reference_value(tag: &str) -> FieldValue {
     if tag == "entity" {

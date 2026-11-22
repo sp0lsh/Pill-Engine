@@ -301,9 +301,34 @@ pub fn register_all_systems(engine: &mut Engine) {
             .then_with(|| left.name.cmp(right.name))
     });
     // Step 2: Register each one through the function the attribute emitted.
+    let whole_image = !has_declaration_baseline();
     for descriptor in descriptors {
+        // Without a baseline every linked module walks the whole image.
+        if whole_image && !first_registration(engine.world_mut(), descriptor) {
+            continue;
+        }
         (descriptor.register)(engine);
     }
+}
+
+/// The system declarations an engine registered from a whole-image walk, by
+/// address: a static image is never unmapped, so an address names one forever.
+#[derive(Default)]
+struct WholeImageSystems {
+    registered: HashSet<usize>,
+}
+
+impl pill_engine_core::Resource for WholeImageSystems {}
+
+/// Whether `descriptor` is new to this engine, marking it registered.
+fn first_registration(world: &mut World, descriptor: &'static PillSystemDescriptor) -> bool {
+    if world.get_resource::<WholeImageSystems>().is_none() {
+        world.register_resource::<WholeImageSystems>();
+        world.insert_resource(WholeImageSystems::default());
+    }
+    world
+        .get_resource_mut::<WholeImageSystems>()
+        .is_some_and(|systems| systems.registered.insert(std::ptr::from_ref(descriptor) as usize))
 }
 
 /// Registers every script component this artifact declares.

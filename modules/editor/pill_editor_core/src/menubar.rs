@@ -660,7 +660,8 @@ mod tests {
                 assert_eq!(
                     commands,
                     &vec![EditorCommand::CreateEntity {
-                        components: Vec::new()
+                        components: Vec::new(),
+                        id: None,
                     }]
                 );
             }

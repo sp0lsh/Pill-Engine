@@ -4262,15 +4262,6 @@ fn resolve_component_name(world: &pill_engine_core::World, name: &str) -> Option
 // Gizmo Geometry
 // =============================================================================
 
-/// The wire name of a tool mode, for logs and suite tokens.
-fn gizmo_mode_name(mode: GizmoMode) -> &'static str {
-    match mode {
-        GizmoMode::Translate => "translate",
-        GizmoMode::Rotate => "rotate",
-        GizmoMode::Scale => "scale",
-    }
-}
-
 /// The wire name of a gizmo space.
 fn gizmo_space_name(space: GizmoSpace) -> &'static str {
     match space {
@@ -4298,46 +4289,6 @@ fn parse_gizmo_axis(name: &str) -> Option<usize> {
     }
 }
 
-/// Read one entity's transform as plain arrays; `None` when the entity is
-/// not alive, carries no transform, or a field does not read back as floats.
-fn read_transform(world: &pill_engine_core::World, entity: Entity) -> Option<TransformComponent> {
-    let read = |field: &str| -> Option<Vec<f32>> {
-        let value = world
-            .read_component_field(entity, TRANSFORM_SHARED_NAME, field)
-            .ok()?;
-        let FieldValue::Array(elements) = value else {
-            return None;
-        };
-        elements
-            .iter()
-            .map(|element| match element {
-                FieldValue::F32(value) => Some(*value),
-                _ => None,
-            })
-            .collect()
-    };
-    let translation: [f32; 3] = read("translation")?.try_into().ok()?;
-    let rotation: [f32; 4] = read("rotation")?.try_into().ok()?;
-    let scale: [f32; 3] = read("scale")?.try_into().ok()?;
-    Some(TransformComponent {
-        translation,
-        rotation,
-        scale,
-    })
-}
-
-/// The frame the gizmo's axes are measured in.
-fn gizmo_basis(space: GizmoSpace, transform: &TransformComponent) -> [[f32; 3]; 3] {
-    if space == GizmoSpace::World {
-        return gizmo::AXES;
-    }
-    [
-        gizmo::rotate_vector(transform.rotation, gizmo::AXES[0]),
-        gizmo::rotate_vector(transform.rotation, gizmo::AXES[1]),
-        gizmo::rotate_vector(transform.rotation, gizmo::AXES[2]),
-    ]
-}
-
 /// The frame the gizmo's axes are measured in, a tool's own frame included.
 ///
 /// A frame the active tool offers for the selection wins over the settings, so
@@ -4351,7 +4302,7 @@ fn gizmo_frame_basis(
 ) -> [[f32; 3]; 3] {
     match active_tool_frame(world, entity, gizmo_state.tool_frame) {
         Some(frame) => gizmo::basis_from_rotation(frame.rotation),
-        None => gizmo_basis(gizmo_state.settings.space, transform),
+        None => gizmo::space_basis(gizmo_state.settings.space, transform),
     }
 }
 
@@ -4429,13 +4380,6 @@ fn element_pivot(elements: &[(u64, tools::ElementTransform)], fallback: [f32; 3]
         .map(|(_, transform)| transform.translation)
         .collect();
     gizmo::selection_pivot(&translations).unwrap_or(fallback)
-}
-
-/// The tangent of half the vertical field of view, and the aspect ratio.
-fn projection_terms(width: f32, height: f32) -> (f32, f32) {
-    let vertical_fov_degrees = CameraComponent::default().vertical_fov.clamp(1.0, 179.0);
-    let tangent = (vertical_fov_degrees.to_radians() * 0.5).tan();
-    (tangent, (width / height).max(1e-3))
 }
 
 // =============================================================================

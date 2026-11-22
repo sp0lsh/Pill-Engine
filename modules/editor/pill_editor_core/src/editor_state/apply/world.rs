@@ -64,7 +64,14 @@ pub(super) fn apply(
     command: &EditorCommand,
 ) -> Result<CommandOutcome, String> {
     match command {
-        EditorCommand::CreateEntity { components } => {
+        EditorCommand::CreateEntity { components, id } => {
+            // A chosen id another live entity holds would make two entities
+            // answer to one stable id.
+            if let Some(id) = id {
+                if engine.world().entity_id_is_taken(*id) {
+                    return Err(format!("{command:?}: the id {id} is already taken"));
+                }
+            }
             // Step 1: Build and check every component image before touching
             // the world, so one bad seed leaves the world unchanged.
             let mut native_components: Vec<Box<dyn pill_engine::commands::ComponentAdder>> =
@@ -106,14 +113,21 @@ pub(super) fn apply(
             // lock, and no lookup that could fail.
             let assigned = engine.world_mut().reserve_entity();
             let origin = editor_origin(engine, ChangeOrigin::Authoring);
+            let stable_id = *id;
             engine
                 .with_change_origin(origin, move |engine| {
-                    engine.queue_deferred_commands(move |_world, queue| {
-                        queue.create_mixed_entity(
+                    engine.queue_deferred_commands(move |_world, queue| match stable_id {
+                        Some(stable_id) => queue.create_mixed_entity_with_id(
+                            assigned,
+                            stable_id,
+                            native_components,
+                            descriptor_components,
+                        ),
+                        None => queue.create_mixed_entity(
                             assigned,
                             native_components,
                             descriptor_components,
-                        );
+                        ),
                     });
                     engine.flush_deferred_commands()
                 })
@@ -127,6 +141,7 @@ pub(super) fn apply(
             // Capture the component values before the destroy: the restore
             // re-creates the entity from them.
             let seeds = super::EditorCommand::capture_seeds(engine, *entity)?;
+            let stable_id = engine.world().entity_id(*entity);
             // The destroy goes through the command queue, so the scripts on the
             // entity hear that it stops existing before it goes. A capture
             // above already refused an entity that was gone.
@@ -142,6 +157,7 @@ pub(super) fn apply(
                 .map_err(|errors| format!("{command:?}: {errors:?}"))?;
             Ok(CommandOutcome::inverse(EditorCommand::RestoreEntity {
                 previous: destroyed_entity,
+                id: stable_id,
                 components: seeds,
             }))
         }
@@ -252,6 +268,7 @@ pub(super) fn apply(
 
         EditorCommand::RestoreEntity {
             previous,
+            id,
             components,
         } => {
             // A restore goes through the creation path so that the fresh
@@ -260,6 +277,7 @@ pub(super) fn apply(
             // never becomes one.
             let create_command = EditorCommand::CreateEntity {
                 components: components.clone(),
+                id: *id,
             };
             let create_outcome = engine
                 .with_change_origin(ChangeOrigin::HistoryRestore, |engine| {

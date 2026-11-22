@@ -98,7 +98,9 @@ pub fn apply_pending(engine: &mut Engine, now_millis: u64) -> DrainOutcome {
             // Step 2b: the editor API's before-callbacks see the whole batch
             // first, so a refusal drops every command of it instead of leaving
             // part of a multi-selection edit applied and unrecorded.
-            let cause = if batch.replay.is_some() {
+            let cause = if batch.remote {
+                FieldEditCause::Remote
+            } else if batch.replay.is_some() {
                 FieldEditCause::HistoryRestored
             } else {
                 FieldEditCause::Authored
@@ -118,6 +120,13 @@ pub fn apply_pending(engine: &mut Engine, now_millis: u64) -> DrainOutcome {
                 }
                 continue;
             }
+            // Step 2c: a remote edit is not streamed back out; every other batch is
+            // converted while its entities still have their ids.
+            let outbound = if batch.remote {
+                Vec::new()
+            } else {
+                crate::edit_stream::take_outbound(engine.world(), &mut batch.commands)
+            };
             let recorded_apply =
                 EditorCommand::apply_recorded_observed(engine, &batch.commands, &mut hook_session);
             let failed_command_count = recorded_apply.failures.len();
@@ -138,6 +147,7 @@ pub fn apply_pending(engine: &mut Engine, now_millis: u64) -> DrainOutcome {
                 .map(|(index, _)| *index)
                 .collect();
             follow_selection(engine, &batch.commands, &failed_command_indices);
+            crate::edit_stream::publish_outbound(engine.world_mut(), outbound, &failed_command_indices);
             // A batch that moved files refreshes the asset listing at once,
             // because the Assets toolbar acts on what the listing says.
             if batch.commands.iter().any(command_touches_files) {

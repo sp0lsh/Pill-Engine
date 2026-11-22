@@ -19,7 +19,7 @@
 //! [`CommandFamily`].
 
 // External crates
-use pill_engine::Entity;
+use pill_engine::{Entity, EntityId};
 
 // Current crate
 use super::*;
@@ -41,6 +41,7 @@ pub enum EditorCommand {
     CreateEntity {
         /// Components to attach; each must have a registered field layout.
         components: Vec<ComponentSeed>,
+        id: Option<EntityId>,
     },
     /// Destroy one entity.
     DestroyEntity {
@@ -72,6 +73,7 @@ pub enum EditorCommand {
     RestoreEntity {
         /// The handle the entity had before it was destroyed.
         previous: Entity,
+        id: Option<EntityId>,
         /// The components to put back, with their type names and values.
         components: Vec<ComponentSeed>,
     },
@@ -548,7 +550,7 @@ impl EditorCommand {
             | EditorCommand::RestoreComponent { component, .. } => {
                 identifiers.push(component.clone());
             }
-            EditorCommand::CreateEntity { components }
+            EditorCommand::CreateEntity { components, .. }
             | EditorCommand::RestoreEntity { components, .. } => {
                 for seed in components {
                     identifiers.push(seed.type_name.clone());

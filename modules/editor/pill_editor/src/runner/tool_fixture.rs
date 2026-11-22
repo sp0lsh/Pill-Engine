@@ -476,7 +476,7 @@ fn fixture_menu_run(
     }
     match item {
         FIXTURE_MENU_INSERT => {
-            let Some(transform) = read_transform(world, entity) else {
+            let Some(transform) = gizmo::read_transform(world, entity) else {
                 return Err("the entity has no transform".to_string());
             };
             let storage = world.get_resource::<FixtureElements>();
@@ -507,7 +507,7 @@ fn fixture_menu_run(
             }])
         }
         FIXTURE_MENU_RESET => {
-            let Some(transform) = read_transform(world, entity) else {
+            let Some(transform) = gizmo::read_transform(world, entity) else {
                 return Err("the entity has no transform".to_string());
             };
             let moves = fixture_layout()
@@ -546,7 +546,7 @@ fn fixture_insert(
     if kind != FIXTURE_POINT_KIND {
         return None;
     }
-    let entity_transform = read_transform(world, entity)?;
+    let entity_transform = gizmo::read_transform(world, entity)?;
     let storage = world.get_resource_mut::<FixtureElements>()?;
     let elements = storage.entities_elements(entity);
     let assigned = match id {
@@ -684,7 +684,7 @@ fn fixture_kinds(out: &mut Vec<tools::ElementKind>) {
 /// An entity with no readable transform reports nothing, which is also the
 /// state a suite sees when it has no entity selected.
 fn fixture_elements(entity: Entity, world: &World, out: &mut Vec<tools::ToolElement>) {
-    let Some(transform) = read_transform(world, entity) else {
+    let Some(transform) = gizmo::read_transform(world, entity) else {
         return;
     };
     // A written layout wins; until the first move, the default one is
@@ -731,7 +731,7 @@ fn fixture_kind_of(id: u64) -> &'static str {
 /// transforms and it decides what that means for its own component, which is
 /// the contract every tool keeps.
 fn fixture_set_transforms(entity: Entity, moves: &[tools::ElementMove], world: &mut World) {
-    let Some(transform) = read_transform(world, entity) else {
+    let Some(transform) = gizmo::read_transform(world, entity) else {
         return;
     };
     if world.get_resource::<FixtureElements>().is_none() {

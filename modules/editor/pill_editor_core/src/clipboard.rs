@@ -443,6 +443,7 @@ pub fn paste_plan(
             Ok(PastePlan {
                 commands: vec![EditorCommand::CreateEntity {
                     components: component_seeds,
+                    id: None,
                 }],
                 label: "paste entity".to_string(),
                 skipped,
@@ -886,7 +887,7 @@ mod tests {
         assert_eq!(plan.skipped, vec!["Gone".to_string()]);
         assert_eq!(plan.commands.len(), 1);
         match &plan.commands[0] {
-            EditorCommand::CreateEntity { components } => {
+            EditorCommand::CreateEntity { components, .. } => {
                 assert_eq!(components.len(), 1, "the unregistered component is skipped");
                 assert_eq!(components[0].type_name, "Position");
                 assert_eq!(
@@ -916,7 +917,7 @@ mod tests {
         .expect("the paste plans");
         assert_eq!(plan.skipped, vec!["Demo.second".to_string()]);
         match &plan.commands[0] {
-            EditorCommand::CreateEntity { components } => {
+            EditorCommand::CreateEntity { components, .. } => {
                 assert_eq!(
                     components[0].fields,
                     vec![("first".to_string(), FieldValue::F32(1.5))],

@@ -623,6 +623,7 @@ fn the_component_and_entity_events_name_what_changed() {
         &mut engine,
         vec![EditorCommand::CreateEntity {
             components: Vec::new(),
+            id: None,
         }],
     );
     queue_plain(&mut engine, vec![EditorCommand::DestroyEntity { entity }]);

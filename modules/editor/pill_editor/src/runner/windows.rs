@@ -415,7 +415,7 @@ impl EditorWindow {
                 let lines = match delta {
                     winit::event::MouseScrollDelta::LineDelta(_, lines) => *lines,
                     winit::event::MouseScrollDelta::PixelDelta(position) => {
-                        position.y as f32 / 40.0
+                        position.y as f32 / pill_editor_core::camera::PIXELS_PER_WHEEL_LINE
                     }
                 };
                 if lines == 0.0 {

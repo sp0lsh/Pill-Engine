@@ -3106,12 +3106,15 @@ name = "pill_web_editor"
 version = "0.1.0"
 dependencies = [
  "egui-wgpu",
+ "js-sys",
  "pill_core",
  "pill_editor_core",
  "pill_engine_core",
  "pill_input",
  "pill_player",
  "pill_web",
+ "serde",
+ "serde_json",
  "wasm-bindgen",
  "web-sys",
  "wgpu",

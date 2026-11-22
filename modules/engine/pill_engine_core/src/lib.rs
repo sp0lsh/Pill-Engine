@@ -211,7 +211,8 @@ pub use scene::saved_references::{
     SavedEntityLinks, SavedReference,
 };
 pub use scene::scene::{
-    load_scene, save_scene, Scene, SceneDocument, SceneEntity, SceneLoad, SceneSave,
+    decode_document_field, encode_document_field, load_scene, save_scene, Scene, SceneDocument,
+    SceneEntity, SceneLoad, SceneSave,
 };
 pub use scene::startup_scene::{apply_startup_scene, queue_startup_scene, StartupScene};
 pub use services::debug_draw::{

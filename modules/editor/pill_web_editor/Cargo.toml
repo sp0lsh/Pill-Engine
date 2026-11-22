@@ -30,6 +30,10 @@ winit = "0.30"
 pill_input = { path = "../../frontends/pill_input", features = ["winit"] }
 # The scripted channel's wasm export.
 wasm-bindgen = "0.2"
+# The edit stream: ops as JSON to and from the page's listener.
+js-sys = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 web-sys = { version = "0.3", features = [
     "Document",
     "Element",

@@ -498,7 +498,7 @@ pub fn estimate_bytes(commands: &[EditorCommand]) -> usize {
             EditorCommand::AddComponent { component, .. }
             | EditorCommand::RemoveComponent { component, .. }
             | EditorCommand::RestoreComponent { component, .. } => component.len(),
-            EditorCommand::CreateEntity { components }
+            EditorCommand::CreateEntity { components, .. }
             | EditorCommand::RestoreEntity { components, .. } => components
                 .iter()
                 .map(|seed| {
