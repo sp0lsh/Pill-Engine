@@ -199,6 +199,23 @@ impl AssetDatabase {
         self.insert(record);
     }
 
+    /// Indexes the sourced asset at `path` from its `.meta` bytes, replacing the
+    /// path's previous record. Returns false when the bytes carry no identity.
+    pub fn index_sourced(&mut self, path: &str, metadata: &[u8]) -> bool {
+        let Some((asset_type, guid)) = read_identity(metadata) else {
+            return false;
+        };
+        let path = to_slash_path(path);
+        self.remove_path(&path);
+        self.insert(AssetRecord {
+            guid,
+            path,
+            asset_type,
+            standalone: false,
+        });
+        true
+    }
+
     /// The asset with `guid`, if one is indexed.
     pub fn by_guid(&self, guid: AssetGuid) -> Option<&AssetRecord> {
         self.records.get(self.paths_by_guid.get(&guid)?)
@@ -402,6 +419,16 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use std::path::PathBuf;
     use trait_type_map::impl_trait_accessible;
+
+    #[test]
+    fn index_sourced_meta_guid_by_guid_finds_path() {
+        let mut database = AssetDatabase::new();
+        let meta = b"asset_type: pill_master_renderer::Mesh\nformat_version: 1\nguid: 0f0e0d0c0b0a09080706050403020100\nsettings: {}\n";
+        assert!(database.index_sourced("assets\\a\\cube.obj", meta));
+        let guid = database.by_path("assets/a/cube.obj").expect("indexed").guid;
+        assert_eq!(database.by_guid(guid).map(|record| record.path.as_str()), Some("assets/a/cube.obj"));
+        assert!(!database.index_sourced("assets/a/bad.obj", b"not a header"));
+    }
 
     /// An imported test asset: the text of a `.note` file.
     #[derive(Debug)]

@@ -240,6 +240,7 @@ impl<'bytes> PackReader<'bytes> {
 /// project's asset directory and the directories extension modules declared.
 #[derive(Default)]
 struct Mounts {
+    runtime_files: HashMap<String, Arc<[u8]>>,
     packs: Vec<Arc<AssetPack>>,
     project_directory: Option<PathBuf>,
     module_roots: Vec<ModuleAssetRoot>,
@@ -258,6 +259,19 @@ pub fn mount_pack(pack: AssetPack) {
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     mounts.packs.insert(0, Arc::new(pack));
+}
+
+/// Makes `bytes` readable at `path` ahead of every pack, replacing an earlier file
+/// at that path. Returns false for an empty, absolute or `..` path.
+pub fn mount_runtime_file(path: &str, bytes: Vec<u8>) -> bool {
+    let Some(key) = pack_key(Path::new(path)) else {
+        return false;
+    };
+    let mut mounts = mounts()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    mounts.runtime_files.insert(key, Arc::from(bytes));
+    true
 }
 
 /// Mount `directory` as the project's asset directory, replacing the previous
@@ -531,14 +545,18 @@ pub fn is_module_asset(path: &Path) -> bool {
 /// [`AssetLoadError::PathNotFound`] when no mount has the path, or
 /// [`AssetLoadError::Read`] when the file was found but could not be read.
 pub fn read(path: &Path) -> AssetLoadResult<Vec<u8>> {
-    // Step 1: Look in the packs first. A shipped game reads what it was built
-    // with.
+    // Step 1: Look in the runtime files, then the packs. A shipped game reads
+    // what it was built with, plus what its page mounted since.
     if let Some(key) = pack_key(path) {
-        let packs = mounts()
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .packs
-            .clone();
+        let (runtime_file, packs) = {
+            let mounts = mounts()
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            (mounts.runtime_files.get(&key).cloned(), mounts.packs.clone())
+        };
+        if let Some(bytes) = runtime_file {
+            return Ok(bytes.to_vec());
+        }
         if let Some(bytes) = packs.iter().find_map(|pack| pack.get(&key)) {
             return Ok(bytes.to_vec());
         }
@@ -902,6 +920,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&directory);
         std::fs::create_dir_all(&directory).unwrap();
         directory
+    }
+
+    #[test]
+    fn runtime_file_remount_same_path_new_bytes_old_freed() {
+        assert!(mount_runtime_file("runtime-test/remount.obj", b"old".to_vec()));
+        let old = mounts().read().unwrap().runtime_files["runtime-test/remount.obj"].clone();
+        assert!(mount_runtime_file("runtime-test\\remount.obj", b"new".to_vec()));
+        assert_eq!(read(Path::new("runtime-test/remount.obj")).unwrap(), b"new");
+        assert_eq!(Arc::strong_count(&old), 1);
+    }
+
+    #[test]
+    fn runtime_file_pack_mounted_after_runtime_bytes_still_read() {
+        assert!(mount_runtime_file("runtime-test/shadow.obj", b"runtime".to_vec()));
+        mount_pack(AssetPack::parse(pack_of(&[("runtime-test/shadow.obj", b"bundled")])).unwrap());
+        assert_eq!(read(Path::new("runtime-test/shadow.obj")).unwrap(), b"runtime");
+    }
+
+    #[test]
+    fn runtime_file_unsafe_path_refused() {
+        assert!(!mount_runtime_file("../escape.obj", b"x".to_vec()));
+        assert!(!mount_runtime_file("", b"x".to_vec()));
     }
 
     /// A module root answers a module resource by name, and the store calls

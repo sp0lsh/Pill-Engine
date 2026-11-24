@@ -128,8 +128,11 @@ EDITOR_CRATE_SUFFIX = "_editor"
 # into the web app. `generated/` beside them holds the host's wrappers.
 EDITOR_DIRECTORY = Path("modules") / "editor"
 EDITOR_GENERATED_DIRECTORY_NAME = "generated"
-EDITOR_FRONTENDS = ("egui",)
+EDITOR_FRONTENDS = ("egui", "web")
 DEFAULT_EDITOR_FRONTEND = "egui"
+# Frontends whose UI is the host page's own DOM: no shell module is linked and
+# the scene is the page's only canvas.
+SHELL_LESS_EDITOR_FRONTENDS = ("web",)
 EDITOR_UI_CANVAS_ID = "pill-editor-ui"
 # The crates a bundle names: the runtime always (the static-link types), and the
 # C# bridge for a managed project (its external project backend). Never the
@@ -1044,7 +1047,19 @@ def build_web_app_source(
     second canvas above the scene's. `editor_frontend` names the runner, and
     the only runner the page accepts is the egui one.
     """
-    if editor:
+    if editor and editor_frontend in SHELL_LESS_EDITOR_FRONTENDS:
+        entry = (
+            f"    pill_web_editor::run_viewer(\n"
+            f"        {BUNDLE_CRATE_NAME}::static_project(),\n"
+            f'        "{WEB_CANVAS_ID}",\n'
+            "    );"
+        )
+        responsibilities = (
+            "//! - Run the shipping bundle's project as the shell-less editor in the\n"
+            "//!   page's canvas when the browser has instantiated this module:\n"
+            "//!   the scene, picking and gizmo; the page draws every panel."
+        )
+    elif editor:
         entry = (
             f"    pill_web_editor::run(\n"
             f"        {BUNDLE_CRATE_NAME}::static_project(),\n"
@@ -1357,7 +1372,7 @@ def main() -> int:
             declared_package_name(directory)
             for directory in editor_module_directories(root, editor_frontend)
         ]
-        if not editor_modules:
+        if not editor_modules and editor_frontend not in SHELL_LESS_EDITOR_FRONTENDS:
             print(
                 f"error: no editor module under {EDITOR_DIRECTORY} is tagged for the "
                 f"`{editor_frontend}` editor frontend",

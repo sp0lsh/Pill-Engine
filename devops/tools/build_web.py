@@ -37,14 +37,15 @@
 #   restore the committed stub afterwards with
 #   `git checkout -- build/pill_shipping_bundle`.
 #
-# USAGE: python devops/tools/build_web.py [--dev] [--editor] [--editor-frontend egui]
+# USAGE: python devops/tools/build_web.py [--dev] [--editor] [--editor-frontend egui|web]
 #          [--no-wasm-opt] [project_path]
 #          --dev           unoptimized build with debug info (faster to build)
 #          --editor        build the editor posture: the shell compiled into
 #                          the wasm, the two-canvas editor page beside it
 #          --editor-frontend
 #                          which editor shell an --editor build links:
-#                          only `egui` exists
+#                          `egui` (default), or `web`: no shell, one canvas,
+#                          panels left to the host page
 #          --no-wasm-opt   skip wasm-opt in a shipping build
 #          [project_path]  workspace-relative project directory; defaults to
 #                          the PROJECT_PATH environment variable
@@ -70,8 +71,10 @@ PAGE_TEMPLATE = Path("devops") / "tools" / "web" / "index.html"
 # The editor posture's page: two stacked canvases
 # and the scripted channel's page hook.
 EDITOR_PAGE_TEMPLATE = Path("devops") / "tools" / "web" / "editor.html"
+# The shell-less editor's page: one canvas, panels left to the host page.
+VIEWER_PAGE_TEMPLATE = Path("devops") / "tools" / "web" / "viewer.html"
 # The editor shells an `--editor` build can link (the generator's list).
-EDITOR_FRONTENDS = ("egui",)
+EDITOR_FRONTENDS = ("egui", "web")
 DEFAULT_EDITOR_FRONTEND = "egui"
 WEB_APP_DIRECTORY = Path("build") / "pill_web_app"
 WORKSPACE_LOCK = Path("modules") / "Cargo.lock"
@@ -139,7 +142,7 @@ def main() -> int:
         return 2
     if len(positional) > 1:
         print(
-            "usage: build_web.py [--dev] [--editor] [--editor-frontend egui] "
+            "usage: build_web.py [--dev] [--editor] [--editor-frontend egui|web] "
             "[--no-wasm-opt] [project_path]",
             file=sys.stderr,
         )
@@ -192,7 +195,12 @@ def main() -> int:
     status = run(command, web_app_directory, environment)
     if status != 0:
         return status
-    page_template = EDITOR_PAGE_TEMPLATE if editor else PAGE_TEMPLATE
+    if editor and editor_frontend == "web":
+        page_template = VIEWER_PAGE_TEMPLATE
+    elif editor:
+        page_template = EDITOR_PAGE_TEMPLATE
+    else:
+        page_template = PAGE_TEMPLATE
     shutil.copyfile(root / page_template, output_directory / "index.html")
 
     # The bundle's build script packed the project's `res` directory beside

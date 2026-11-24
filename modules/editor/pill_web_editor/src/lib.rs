@@ -39,6 +39,12 @@ pub mod scripted;
 pub mod edit_stream;
 /// The scene viewport: camera, picking, outline and gizmo.
 pub mod viewport;
+/// The shell-less editor: one canvas, panels left to the page.
+pub mod viewer;
+/// Files the page mounts at runtime.
+pub mod page_api;
+
+pub use viewer::run_viewer;
 
 // Standard library
 use std::cell::RefCell;
@@ -355,13 +361,14 @@ impl WebEditorApplication {
 
         // Step 2: pass the UI window's events on as engine input. The shell's
         // egui pass reads the same events.
-        let events: Vec<InputEvent> = std::mem::take(&mut self.pending_events);
-        let scripted_lines = take_scripted_lines();
         let ui_surface = Rc::clone(&self.ui_surface);
         let mut driver_slot = self.driver.borrow_mut();
         let Some(driver) = driver_slot.as_mut() else {
             return;
         };
+        // Taken only once the renderer is attached; until then they stay queued.
+        let events: Vec<InputEvent> = std::mem::take(&mut self.pending_events);
+        let scripted_lines = take_scripted_lines();
         for event in &events {
             driver.push_input(event.clone());
         }
@@ -389,6 +396,7 @@ impl WebEditorApplication {
         // page scripted. The marker is permanent: a static build never unloads
         // an image, so there is nothing to invalidate.
         sync_hooks(driver.engine_mut().world_mut(), &self.hook_liveness);
+        crate::page_api::apply_runtime_mounts(driver.engine_mut().world_mut());
         apply_pending_commands(
             driver.engine_mut(),
             now.duration_since(self.started_at),
